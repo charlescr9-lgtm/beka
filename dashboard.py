@@ -656,10 +656,14 @@ def _limpar_nome_loja(nome_raw):
     return nome.strip() or 'Loja_Desconhecida'
 
 
-def _extrair_loja_nfe(nfe):
+def _extrair_loja_nfe(nfe, cnpj_loja_map=None):
     emit = nfe.get("emit", {})
     if isinstance(emit, str):
         return "Desconhecida"
+    # Tentar usar nome da loja Shopee (mesmo mapeamento do processamento principal)
+    cnpj = str(emit.get("CNPJ", "")).strip()
+    if cnpj_loja_map and cnpj in cnpj_loja_map:
+        return cnpj_loja_map[cnpj]
     nome_raw = str(emit.get("xNome", "")).strip()
     return _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
 
@@ -677,8 +681,8 @@ def _buscar_custo_inteligente(sku_xml, dict_custos, chaves_ordenadas):
     return 0.0, False
 
 
-def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=None):
-    nome_loja = _extrair_loja_nfe(nfe)
+def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=None, cnpj_loja_map=None):
+    nome_loja = _extrair_loja_nfe(nfe, cnpj_loja_map)
     cfg_loja = cfg_por_loja.get(nome_loja, {})
     perc_declarado = float(cfg_loja.get("perc_declarado", cfg.get("perc_declarado", 100))) / 100
     taxa_shopee = float(cfg_loja.get("taxa_shopee", cfg.get("taxa_shopee", 18))) / 100
@@ -758,6 +762,9 @@ def api_gerar_lucro():
 
         cfg_por_loja = cfg.get("lucro_por_loja", {})
 
+        # Usar mapeamento CNPJ->loja do processamento principal (nomes da loja Shopee)
+        _cnpj_loja_map = estado.get("_proc_config", {}).get("cnpj_loja", {})
+
         import zipfile
         loja_dados = defaultdict(lambda: {"itens": [], "linhas_sem_custo": []})
 
@@ -768,7 +775,7 @@ def api_gerar_lucro():
                 nfe = doc["NFe"]["infNFe"]
             else:
                 return
-            nome_loja, itens, sem_custo = _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, _chaves_custos_ordenadas)
+            nome_loja, itens, sem_custo = _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, _chaves_custos_ordenadas, _cnpj_loja_map)
             offset = len(loja_dados[nome_loja]["itens"])
             loja_dados[nome_loja]["itens"].extend(itens)
             loja_dados[nome_loja]["linhas_sem_custo"].extend([i + offset for i in sem_custo])
@@ -1117,6 +1124,12 @@ def _executar_processamento(user_id):
         try:
             pasta_entrada = estado["configuracoes"]["pasta_entrada"]
             pasta_saida = estado["configuracoes"]["pasta_saida"]
+
+            # Limpar pasta de saida antes de processar (evita duplicatas)
+            import shutil
+            if os.path.exists(pasta_saida):
+                shutil.rmtree(pasta_saida)
+            os.makedirs(pasta_saida, exist_ok=True)
 
             adicionar_log(estado, "Iniciando processamento...", "info")
 
