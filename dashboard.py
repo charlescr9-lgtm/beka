@@ -42,10 +42,11 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'chave-secreta-trocar-em
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'jwt-secret-trocar-em-producao')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
-# Banco de dados SQLite
-DB_DIR = os.environ.get('DB_DIR', os.path.join(_BASE_DIR, 'data'))
-os.makedirs(DB_DIR, exist_ok=True)
-app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(DB_DIR, 'app.db')}"
+# Banco de dados SQLite — usar volume persistente do Railway
+# Railway monta o volume no path definido em RAILWAY_VOLUME_MOUNT_PATH
+_VOLUME_PATH = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', os.environ.get('DB_DIR', os.path.join(_BASE_DIR, 'data')))
+os.makedirs(_VOLUME_PATH, exist_ok=True)
+app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(_VOLUME_PATH, 'app.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Inicializar extensoes

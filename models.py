@@ -66,13 +66,23 @@ class User(db.Model):
         db.session.commit()
 
     def get_pasta_entrada(self):
-        base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
+        # Usar volume persistente do Railway se disponivel
+        volume = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "")
+        if volume:
+            base = os.path.join(volume, "users")
+        else:
+            base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
         pasta = os.path.join(base, str(self.id), "entrada")
         os.makedirs(pasta, exist_ok=True)
         return pasta
 
     def get_pasta_saida(self):
-        base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
+        # Usar volume persistente do Railway se disponivel
+        volume = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "")
+        if volume:
+            base = os.path.join(volume, "users")
+        else:
+            base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
         pasta = os.path.join(base, str(self.id), "saida")
         os.makedirs(pasta, exist_ok=True)
         return pasta
