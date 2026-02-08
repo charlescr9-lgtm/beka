@@ -221,24 +221,51 @@ class ProcessadorEtiquetasShopee:
         Estrategia: encontrar o tracking code (BR + digitos + letra) e
         pegar a proxima linha que nao e endereco/CEP/numero.
         """
-        # Buscar apos tracking code tipo BR261920610412I
-        m = re.search(r'BR\d{10,}[A-Z]\s*\n((?:[^\n]+\n){1,3})', texto)
-        if m:
-            linhas = [l.strip() for l in m.group(1).split('\n') if l.strip()]
+        def _filtrar_nome(linhas):
+            """Filtra linhas candidatas a nome da loja."""
             for linha in linhas:
                 # Pular enderecos
-                if re.match(r'^(Rua|Avenida|Travessa|Alameda|R\s|CEP)', linha, re.IGNORECASE):
+                if re.match(r'^(Rua|Avenida|Travessa|Alameda|R\s|Av\s|CEP|Estrada|Rodovia|Praca|Largo)', linha, re.IGNORECASE):
                     continue
                 # Pular CEPs e numeros puros
-                if re.match(r'^[\d\s.,-]+$', linha):
+                if re.match(r'^[\d\s.,-/]+$', linha):
                     continue
                 # Pular linhas curtas
                 if len(linha) < 3:
                     continue
-                # Pular "Envio previsto" e similares
-                if 'envio previsto' in linha.lower():
+                # Pular "Envio previsto", "Peso" e similares
+                if re.match(r'^(envio previsto|peso|volume|frete|destinat)', linha, re.IGNORECASE):
+                    continue
+                # Pular linhas que sao apenas estado/cidade (formato: Cidade - UF)
+                if re.match(r'^[A-Z]{2}$', linha):
                     continue
                 return linha
+            return None
+
+        # Estrategia 1: Buscar apos tracking code tipo BR261920610412I
+        m = re.search(r'BR\d{10,}[A-Z]\s*\n((?:[^\n]+\n){1,3})', texto)
+        if m:
+            linhas = [l.strip() for l in m.group(1).split('\n') if l.strip()]
+            nome = _filtrar_nome(linhas)
+            if nome:
+                return nome
+
+        # Estrategia 2: Buscar apos "REMETENTE" (quando nao tem tracking BR)
+        m2 = re.search(r'REMETENTE\s*\n((?:[^\n]+\n){1,5})', texto, re.IGNORECASE)
+        if m2:
+            linhas = [l.strip() for l in m2.group(1).split('\n') if l.strip()]
+            nome = _filtrar_nome(linhas)
+            if nome:
+                return nome
+
+        # Estrategia 3: Buscar apos sequencia de tracking generico (qualquer codigo longo)
+        m3 = re.search(r'[A-Z]{2}\d{9,}[A-Z]?\s*\n((?:[^\n]+\n){1,3})', texto)
+        if m3:
+            linhas = [l.strip() for l in m3.group(1).split('\n') if l.strip()]
+            nome = _filtrar_nome(linhas)
+            if nome:
+                return nome
+
         return None
 
     def get_nome_loja(self, cnpj):
@@ -296,7 +323,7 @@ class ProcessadorEtiquetasShopee:
                 sku = dados_nf['produtos'][0].get('codigo', '')
                 num_produtos = len(dados_nf['produtos'])
 
-            # Extrair nome da loja do REMETENTE (apenas 1 vez por CNPJ)
+            # Extrair nome da loja do REMETENTE (tentar em todas as etiquetas ate achar)
             if cnpj and cnpj not in self.cnpj_loja:
                 texto_quad = pagina.get_text(clip=clip)
                 nome_loja = self._extrair_nome_loja_remetente(texto_quad)

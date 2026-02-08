@@ -506,6 +506,59 @@ def api_limpar_saida():
     return jsonify({"ok": True})
 
 
+@app.route('/api/novo-lote', methods=['POST'])
+@jwt_required()
+def api_novo_lote():
+    """Limpa todos os arquivos de entrada, saida e reseta o estado para novo processamento."""
+    import shutil
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+
+    if estado["processando"]:
+        return jsonify({"erro": "Aguarde o processamento atual terminar"}), 409
+
+    pasta_entrada = estado["configuracoes"]["pasta_entrada"]
+    pasta_saida = estado["configuracoes"]["pasta_saida"]
+
+    # Limpar pasta de entrada (exceto _config.json e planilha de custos)
+    custos_path = estado["configuracoes"].get("planilha_custos", "")
+    custos_filename = os.path.basename(custos_path) if custos_path else ""
+    if os.path.exists(pasta_entrada):
+        for f in os.listdir(pasta_entrada):
+            if f.startswith('_'):
+                continue  # Preservar _config.json etc
+            if custos_filename and f == custos_filename:
+                continue  # Preservar planilha de custos
+            fp = os.path.join(pasta_entrada, f)
+            if os.path.isfile(fp):
+                os.remove(fp)
+
+    # Limpar pasta de saida
+    if os.path.exists(pasta_saida):
+        shutil.rmtree(pasta_saida)
+        os.makedirs(pasta_saida, exist_ok=True)
+
+    # Resetar estado
+    estado["ultimo_resultado"] = None
+    estado["ultimo_lucro"] = None
+    estado["logs"] = []
+    estado["_etiquetas_por_cnpj"] = {}
+    estado["_proc_config"] = {}
+
+    # Limpar arquivos de resultado persistidos
+    rp = _resultado_path(user_id)
+    if rp and os.path.exists(rp):
+        os.remove(rp)
+    lp = _lucro_path(user_id)
+    if lp and os.path.exists(lp):
+        os.remove(lp)
+
+    adicionar_log(estado, "Novo lote iniciado - arquivos limpos", "success")
+    return jsonify({"ok": True, "mensagem": "Pronto para novo lote"})
+
+
 @app.route('/api/download-todos')
 @jwt_required()
 def api_download_todos():
@@ -696,37 +749,41 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
     if not isinstance(dets, list):
         dets = [dets]
 
-    itens = []
-    sem_custo = []
+    # Extrair SKU principal (primeiro item da NF) para busca de custo
+    sku_principal = ""
+    if dets:
+        prod_primeiro = dets[0].get("prod", {})
+        sku_principal = str(prod_primeiro.get("cProd", "")).strip()
+
+    # Buscar custo usando apenas o SKU principal
+    c_principal_unit, encontrou_principal = _buscar_custo_inteligente(sku_principal, dict_custos, chaves_ordenadas)
+
+    # Somar todos os itens da NF como uma unica linha usando o SKU principal
+    qtd_total = 0
+    v_declarado_total = 0
     for item in dets:
         prod = item.get("prod", {})
-        sku_xml = str(prod.get("cProd", "")).strip()
-        qtd = float(prod.get("qCom", 1))
+        qtd_total += float(prod.get("qCom", 1))
+        v_declarado_total += float(prod.get("vProd", 0))
 
-        c_produto_unit, encontrou = _buscar_custo_inteligente(sku_xml, dict_custos, chaves_ordenadas)
-        c_produto_total = c_produto_unit * qtd
+    c_produto_total = c_principal_unit * qtd_total
 
-        if not encontrou:
-            sem_custo.append(len(itens))
+    v_real = v_declarado_total / perc_declarado if perc_declarado > 0 else v_declarado_total
+    c_imposto = v_declarado_total * taxa_imposto
+    c_shopee = (v_real * taxa_shopee) + (custo_fixo * qtd_total)
+    lucro = v_real - c_imposto - c_shopee - c_produto_total
 
-        v_declarado = float(prod.get("vProd", 0))
-        v_real = v_declarado / perc_declarado if perc_declarado > 0 else v_declarado
-
-        c_imposto = v_declarado * taxa_imposto
-        c_shopee = (v_real * taxa_shopee) + (custo_fixo * qtd)
-
-        lucro = v_real - c_imposto - c_shopee - c_produto_total
-
-        itens.append({
-            "SKU": sku_xml,
-            "Qtd": qtd,
-            "V. Real": round(v_real, 2),
-            "V. Decl.": round(v_declarado, 2),
-            "Custo": round(c_produto_total, 2),
-            "Shopee": round(c_shopee, 2),
-            "Imposto": round(c_imposto, 2),
-            "LUCRO": round(lucro, 2),
-        })
+    itens = [{
+        "SKU": sku_principal,
+        "Qtd": qtd_total,
+        "V. Real": round(v_real, 2),
+        "V. Decl.": round(v_declarado_total, 2),
+        "Custo": round(c_produto_total, 2),
+        "Shopee": round(c_shopee, 2),
+        "Imposto": round(c_imposto, 2),
+        "LUCRO": round(lucro, 2),
+    }]
+    sem_custo = [0] if not encontrou_principal else []
 
     return nome_loja, itens, sem_custo
 

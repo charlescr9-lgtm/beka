@@ -918,6 +918,9 @@
                         <i class="fas fa-question-circle"></i>
                     </button>
                 </div>
+                <button class="btn btn-lg" id="btnNovoLote" onclick="novoLote()" style="background: var(--warning); color: #000; border: none; cursor: pointer; font-weight:600;">
+                    <i class="fas fa-broom"></i> Novo Lote
+                </button>
             </div>
         </div>
 
@@ -1672,6 +1675,35 @@ async function limparSaida() {
     await fetchAPI('/api/limpar-saida', { method: 'POST' });
     toast('Pasta de saida limpa', 'warning');
     atualizarStatus();
+}
+
+async function novoLote() {
+    if (!confirm('Isso vai limpar TODOS os arquivos (entrada e saida) para iniciar um novo lote. A planilha de custos sera mantida. Continuar?')) return;
+    const data = await fetchAPI('/api/novo-lote', { method: 'POST' });
+    if (data && data.ok) {
+        toast('Pronto para novo lote! Adicione os novos arquivos.', 'success');
+        _ultimoResultadoJSON = '';
+        document.getElementById('ultimoResultado').innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-inbox"></i>
+                <h3>Nenhum processamento realizado</h3>
+                <p>Clique em "Iniciar Processamento" para comecar</p>
+            </div>`;
+        document.getElementById('resultadosLojas').innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-box-open"></i>
+                <h3>Nenhum resultado ainda</h3>
+                <p>Processe as etiquetas para ver os resultados aqui</p>
+            </div>`;
+        document.getElementById('resumoGeral').innerHTML = '';
+        document.getElementById('resumoLucro').innerHTML = '';
+        const logC = document.getElementById('logContainer');
+        if (logC) logC.innerHTML = '<div style="color:var(--text-muted);">Aguardando...</div>';
+        logOffset = 0;
+        atualizarStatus();
+    } else if (data && data.erro) {
+        toast(data.erro, 'warning');
+    }
 }
 
 async function removerArquivo(nome) {
