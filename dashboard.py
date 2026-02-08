@@ -160,6 +160,84 @@ def _carregar_config_usuario(user_id):
                         estado["configuracoes"][chave] = valor
     except Exception as e:
         print(f"Aviso: nao carregou config user {user_id}: {e}")
+    # Carregar ultimo_resultado salvo em disco
+    _carregar_resultado_usuario(user_id)
+
+
+def _resultado_path(user_id):
+    """Caminho do arquivo de resultado do usuario."""
+    user = User.query.get(int(user_id))
+    if not user:
+        return None
+    pasta = user.get_pasta_saida()
+    return os.path.join(pasta, "_ultimo_resultado.json")
+
+
+def _salvar_resultado_usuario(user_id):
+    """Salva ultimo_resultado do usuario em JSON no volume persistente."""
+    try:
+        estado = estados.get(int(user_id))
+        if not estado or not estado.get("ultimo_resultado"):
+            return
+        path = _resultado_path(user_id)
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(estado["ultimo_resultado"], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Aviso: nao salvou resultado user {user_id}: {e}")
+
+
+def _carregar_resultado_usuario(user_id):
+    """Carrega ultimo_resultado do usuario se existir no disco."""
+    try:
+        path = _resultado_path(user_id)
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                resultado_salvo = json.load(f)
+            estado = estados.get(int(user_id))
+            if estado and not estado["ultimo_resultado"]:
+                estado["ultimo_resultado"] = resultado_salvo
+    except Exception as e:
+        print(f"Aviso: nao carregou resultado user {user_id}: {e}")
+    # Carregar ultimo_lucro salvo em disco
+    _carregar_lucro_usuario(user_id)
+
+
+def _lucro_path(user_id):
+    """Caminho do arquivo de lucro do usuario."""
+    user = User.query.get(int(user_id))
+    if not user:
+        return None
+    pasta = user.get_pasta_saida()
+    return os.path.join(pasta, "_ultimo_lucro.json")
+
+
+def _salvar_lucro_usuario(user_id):
+    """Salva ultimo_lucro do usuario em JSON no volume persistente."""
+    try:
+        estado = estados.get(int(user_id))
+        if not estado or not estado.get("ultimo_lucro"):
+            return
+        path = _lucro_path(user_id)
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(estado["ultimo_lucro"], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Aviso: nao salvou lucro user {user_id}: {e}")
+
+
+def _carregar_lucro_usuario(user_id):
+    """Carrega ultimo_lucro do usuario se existir no disco."""
+    try:
+        path = _lucro_path(user_id)
+        if path and os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                lucro_salvo = json.load(f)
+            estado = estados.get(int(user_id))
+            if estado and not estado.get("ultimo_lucro"):
+                estado["ultimo_lucro"] = lucro_salvo
+    except Exception as e:
+        print(f"Aviso: nao carregou lucro user {user_id}: {e}")
 
 
 def adicionar_log(estado, msg, tipo="info"):
@@ -753,6 +831,9 @@ def api_gerar_lucro():
             "lojas": lojas_lucro,
         }
 
+        # Salvar lucro em disco para persistir entre deploys
+        _salvar_lucro_usuario(user_id)
+
         adicionar_log(estado, f"Relatorio de lucro gerado: {total_itens} itens, {len(lojas_lucro)} lojas, Lucro: R$ {lucro_total:.2f}", "success")
 
         return jsonify({
@@ -1217,6 +1298,9 @@ def _executar_processamento(user_id):
             estado["ultimo_resultado"] = resultado
             estado["historico"].insert(0, resultado)
             estado["historico"] = estado["historico"][:20]
+
+            # Salvar resultado em disco para persistir entre deploys
+            _salvar_resultado_usuario(user_id)
 
             # Registrar processamento no contador do usuario
             user = User.query.get(user_id)

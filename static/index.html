@@ -1333,6 +1333,31 @@ async function fetchAPI(url, options = {}) {
     }
 }
 
+async function baixarArquivo(url, nomeArquivo) {
+    try {
+        const token = getToken();
+        const res = await fetch(API + url, {
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.status === 401 || res.status === 422) { sair(); return; }
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(err.erro || 'Erro ao baixar arquivo');
+            return;
+        }
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = nomeArquivo || 'download';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
+    } catch (e) {
+        console.error('Download error:', e);
+        alert('Erro ao baixar arquivo');
+    }
+}
+
 // ================================================================
 // ATUALIZAR DASHBOARD
 // ================================================================
@@ -1496,12 +1521,12 @@ function renderResultadosLojas(res) {
                 ${l.sem_xml > 0 ? ` &bull; <span style="color:var(--warning)">${l.sem_xml} sem XML</span>` : ''}
             </div>
             <div class="loja-actions">
-                <a class="btn btn-secondary btn-sm" href="/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.pdf)}" target="_blank">
+                <button class="btn btn-secondary btn-sm" onclick="baixarArquivo('/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.pdf)}', '${l.pdf}')">
                     <i class="fas fa-file-pdf"></i> PDF
-                </a>
-                <a class="btn btn-secondary btn-sm" href="/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.xlsx)}" target="_blank">
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="baixarArquivo('/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.xlsx)}', '${l.xlsx}')">
                     <i class="fas fa-file-excel"></i> XLSX
-                </a>
+                </button>
             </div>
         </div>`;
     }).join('') + '</div>';
@@ -1737,9 +1762,9 @@ function renderResumoGeral(res) {
         <div class="card">
             <div class="card-header" style="margin-bottom:12px;">
                 <span class="card-title"><i class="fas fa-chart-pie"></i> Resumo Geral</span>
-                <a class="btn btn-secondary btn-sm" href="/api/download-resumo-geral" target="_blank">
+                <button class="btn btn-secondary btn-sm" onclick="baixarArquivo('/api/download-resumo-geral', 'resumo_geral.xlsx')">
                     <i class="fas fa-file-excel"></i> Baixar XLSX
-                </a>
+                </button>
             </div>
             <table style="width:100%; border-collapse:collapse; font-size:13px;">
                 <thead>
@@ -2030,9 +2055,9 @@ function renderResumoLucro(data) {
                 <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:right; font-size:13px; color:var(--warning);">R$ ${l.custo.toFixed(2)}</td>
                 <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:right; font-size:14px; font-weight:700; color:${corL};">R$ ${l.lucro.toFixed(2)}</td>
                 <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:center;">
-                    <a class="btn btn-secondary btn-sm" href="/api/download-lucro/${encodeURIComponent(l.nome)}" target="_blank" style="font-size:11px;">
+                    <button class="btn btn-secondary btn-sm" onclick="baixarArquivo('/api/download-lucro/${encodeURIComponent(l.nome)}', 'lucro_${l.nome}.xlsx')" style="font-size:11px;">
                         <i class="fas fa-file-excel"></i> XLSX
-                    </a>
+                    </button>
                 </td>
             </tr>`;
         }).join('');
@@ -2064,7 +2089,7 @@ function renderResumoLucro(data) {
     <div class="card">
         <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <span class="card-title"><i class="fas fa-calculator"></i> Resumo de Lucro</span>
-            <button class="btn btn-primary btn-sm" onclick="window.location.href='/api/download-lucro'">
+            <button class="btn btn-primary btn-sm" onclick="baixarArquivo('/api/download-lucro', 'lucro_consolidado.xlsx')">
                 <i class="fas fa-download"></i> Baixar XLSX Consolidado
             </button>
         </div>
