@@ -767,11 +767,18 @@
             <div class="status-dot" id="statusDot"></div>
             <span id="statusText">Pronto</span>
         </div>
+        <span id="planoBadge" style="padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600; background:#2d1b4e; color:#a78bfa; display:none;">Free</span>
+        <button id="btnAssinar" class="btn btn-sm" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9); color:#fff; display:none;" onclick="assinarPremium()">
+            <i class="fas fa-crown"></i> Assinar Premium
+        </button>
         <button class="btn btn-secondary btn-sm" onclick="abrirPasta('entrada')">
             <i class="fas fa-folder-open"></i> Pasta Entrada
         </button>
         <button class="btn btn-secondary btn-sm" onclick="abrirPasta('saida')">
             <i class="fas fa-folder"></i> Pasta Saida
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="sair()" title="Sair">
+            <i class="fas fa-sign-out-alt"></i> Sair
         </button>
     </div>
 </header>
@@ -1118,6 +1125,94 @@ let pollingInterval = null;
 let logOffset = 0;
 
 // ================================================================
+// AUTH
+// ================================================================
+function getToken() {
+    return localStorage.getItem('token');
+}
+
+async function sair() {
+    try {
+        await fetch(API + '/api/auth/logout', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + getToken() }
+        });
+    } catch(e) {}
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    window.location.href = '/login';
+}
+
+async function assinarPremium() {
+    // Buscar planos disponiveis e mostrar modal
+    const res = await fetchAPI('/api/planos');
+    if (!res || !res.planos) {
+        toast('Erro ao carregar planos', 'error');
+        return;
+    }
+    let html = '<div style="text-align:center; margin-bottom:16px;"><h3 style="margin-bottom:4px;">Escolha seu plano</h3><span style="color:var(--text-secondary); font-size:13px;">Processamentos ilimitados em todos os planos pagos</span></div>';
+    for (const p of res.planos) {
+        html += `<div onclick="contratarPlano('${p.id}')" style="cursor:pointer; padding:16px; margin-bottom:10px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); display:flex; justify-content:space-between; align-items:center; transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+            <div>
+                <div style="font-weight:600; font-size:15px;">${p.nome}</div>
+                <div style="font-size:12px; color:var(--text-secondary);">Ate ${p.max_ips} dispositivo(s)</div>
+            </div>
+            <div style="font-size:18px; font-weight:700; color:var(--accent);">R$ ${p.valor.toFixed(2)}<span style="font-size:11px; color:var(--text-muted);">/mes</span></div>
+        </div>`;
+    }
+    // Criar modal simples
+    let modal = document.getElementById('modalPlanos');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalPlanos';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999;';
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = `<div style="background:var(--bg-card); border-radius:var(--radius); padding:24px; width:380px; max-width:90vw;">${html}<div style="text-align:center; margin-top:8px;"><button onclick="document.getElementById('modalPlanos').remove()" class="btn btn-secondary btn-sm">Cancelar</button></div></div>`;
+}
+
+async function contratarPlano(planoId) {
+    const modal = document.getElementById('modalPlanos');
+    if (modal) modal.remove();
+
+    toast('Redirecionando para pagamento...', 'info');
+    const res = await fetchAPI('/api/payment/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plano: planoId }),
+    });
+    if (res && res.url) {
+        window.open(res.url, '_blank');
+    } else {
+        toast(res?.erro || 'Erro ao criar pagamento', 'error');
+    }
+}
+
+function atualizarInfoUsuario(user) {
+    if (!user) return;
+    const badge = document.getElementById('planoBadge');
+    const btnAssinar = document.getElementById('btnAssinar');
+    badge.style.display = 'inline-block';
+
+    if (user.plano !== 'free') {
+        badge.textContent = `${user.plano_nome} (${user.dispositivos}/${user.max_dispositivos} IPs)`;
+        badge.style.background = '#1b2d1b';
+        badge.style.color = '#22c55e';
+        btnAssinar.textContent = ' Upgrade';
+        btnAssinar.innerHTML = '<i class="fas fa-crown"></i> Upgrade';
+        btnAssinar.style.display = 'inline-flex';
+    } else {
+        const limite = user.limite_mes > 0 ? `${user.processamentos_mes}/${user.limite_mes}` : '';
+        badge.textContent = `Free ${limite}`;
+        badge.style.background = '#2d1b4e';
+        badge.style.color = '#a78bfa';
+        btnAssinar.innerHTML = '<i class="fas fa-crown"></i> Assinar';
+        btnAssinar.style.display = 'inline-flex';
+    }
+}
+
+// ================================================================
 // TABS
 // ================================================================
 let configCarregada = false;
@@ -1134,7 +1229,18 @@ function trocarTab(tab) {
 // ================================================================
 async function fetchAPI(url, options = {}) {
     try {
+        const token = getToken();
+        if (!options.headers) options.headers = {};
+        if (token) options.headers['Authorization'] = 'Bearer ' + token;
+
         const res = await fetch(API + url, options);
+
+        // Se nao autorizado, redireciona pro login
+        if (res.status === 401 || res.status === 422) {
+            sair();
+            return null;
+        }
+
         return await res.json();
     } catch (e) {
         console.error('API Error:', e);
@@ -1148,6 +1254,9 @@ async function fetchAPI(url, options = {}) {
 async function atualizarStatus() {
     const data = await fetchAPI('/api/status');
     if (!data) return;
+
+    // Atualizar info do usuario
+    if (data.user) atualizarInfoUsuario(data.user);
 
     // Status
     const dot = document.getElementById('statusDot');
@@ -1770,7 +1879,7 @@ async function uploadCustos(input) {
     if (!input.files || !input.files[0]) return;
     const formData = new FormData();
     formData.append('arquivo', input.files[0]);
-    const resp = await fetch('/api/upload-custos', { method: 'POST', body: formData });
+    const resp = await fetch('/api/upload-custos', { method: 'POST', body: formData, headers: { 'Authorization': 'Bearer ' + getToken() } });
     const data = await resp.json();
     if (data.erro) {
         toast(data.erro, 'error');
@@ -1905,6 +2014,12 @@ function renderResumoLucro(data) {
 // INIT
 // ================================================================
 async function init() {
+    // Verificar se esta logado
+    if (!getToken()) {
+        window.location.href = '/login';
+        return;
+    }
+
     await atualizarStatus();
     await atualizarLogs();
 

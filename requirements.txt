@@ -1,8 +1,12 @@
 flask
 flask-cors
+flask-sqlalchemy
+flask-bcrypt
+flask-jwt-extended
 gunicorn
 xmltodict
 pandas
 openpyxl
 PyMuPDF
 python-barcode
+mercadopago
