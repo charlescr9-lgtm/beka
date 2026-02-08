@@ -1,0 +1,1921 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Etiquetas Shopee - Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d27;
+            --bg-card: #222632;
+            --bg-card-hover: #2a2f3e;
+            --bg-input: #181b24;
+            --border: #2d3348;
+            --border-focus: #f05d23;
+            --text-primary: #e8eaf0;
+            --text-secondary: #8b90a0;
+            --text-muted: #5a5f72;
+            --accent: #f05d23;
+            --accent-hover: #ff7340;
+            --accent-glow: rgba(240, 93, 35, 0.25);
+            --success: #22c55e;
+            --success-bg: rgba(34, 197, 94, 0.12);
+            --warning: #f59e0b;
+            --warning-bg: rgba(245, 158, 11, 0.12);
+            --error: #ef4444;
+            --error-bg: rgba(239, 68, 68, 0.12);
+            --info: #3b82f6;
+            --info-bg: rgba(59, 130, 246, 0.12);
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            --shadow-lg: 0 8px 40px rgba(0, 0, 0, 0.4);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --radius-xs: 6px;
+            --transition: all 0.2s ease;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* SCROLLBAR */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+        /* HEADER */
+        .header {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-card) 100%);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(12px);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo {
+            width: 42px;
+            height: 42px;
+            background: linear-gradient(135deg, var(--accent), #ff8c42);
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            color: white;
+            box-shadow: 0 4px 16px var(--accent-glow);
+        }
+
+        .header-title h1 {
+            font-size: 18px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }
+
+        .header-title span {
+            font-size: 12px;
+            color: var(--text-secondary);
+            font-weight: 400;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            background: var(--bg-input);
+            border-radius: 20px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+
+        .status-dot.processing {
+            background: var(--warning);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.3); }
+        }
+
+        /* NAVIGATION TABS */
+        .nav-tabs {
+            display: flex;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            padding: 0 32px;
+            gap: 0;
+        }
+
+        .nav-tab {
+            padding: 14px 24px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: var(--transition);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+
+        .nav-tab:hover { color: var(--text-primary); background: rgba(255,255,255,0.03); }
+        .nav-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+        .nav-tab i { font-size: 14px; }
+
+        /* MAIN CONTENT */
+        .main-content {
+            padding: 24px 32px;
+            max-width: 1440px;
+            margin: 0 auto;
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* GRID */
+        .grid { display: grid; gap: 20px; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+
+        @media (max-width: 1200px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 768px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+        /* CARDS */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: var(--transition);
+        }
+
+        .card:hover { border-color: var(--border-focus); box-shadow: var(--shadow); }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .card-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: var(--radius-xs);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+        }
+
+        .card-icon.orange { background: var(--accent-glow); color: var(--accent); }
+        .card-icon.green { background: var(--success-bg); color: var(--success); }
+        .card-icon.blue { background: var(--info-bg); color: var(--info); }
+        .card-icon.yellow { background: var(--warning-bg); color: var(--warning); }
+
+        .card-value {
+            font-size: 32px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            margin-bottom: 4px;
+        }
+
+        .card-sub {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* STAT CARDS */
+        .stat-mini {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            background: var(--bg-input);
+            border-radius: var(--radius-sm);
+            margin-top: 8px;
+        }
+
+        .stat-mini-icon {
+            font-size: 18px;
+            opacity: 0.7;
+        }
+
+        .stat-mini-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .stat-mini-value {
+            font-weight: 700;
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        /* BUTTONS */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: var(--radius-sm);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: var(--transition);
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #ff7340);
+            color: white;
+            box-shadow: 0 4px 16px var(--accent-glow);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 24px var(--accent-glow);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover { background: var(--bg-card-hover); border-color: var(--text-muted); }
+
+        .btn-danger {
+            background: var(--error-bg);
+            color: var(--error);
+            border: 1px solid rgba(239,68,68,0.2);
+        }
+
+        .btn-danger:hover { background: rgba(239,68,68,0.2); }
+
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-lg { padding: 14px 28px; font-size: 15px; }
+
+        /* PROCESS BUTTON SPECIAL */
+        .process-section {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: linear-gradient(135deg, rgba(240,93,35,0.08), rgba(255,131,66,0.04));
+            border: 1px solid rgba(240,93,35,0.2);
+            border-radius: var(--radius);
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .process-info h3 {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+
+        .process-info p {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* PROGRESS BAR */
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: var(--bg-input);
+            border-radius: 2px;
+            margin-top: 12px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .progress-bar.active { display: block; }
+
+        .progress-bar-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #ff8c42);
+            border-radius: 2px;
+            animation: progress-indeterminate 1.5s infinite;
+            width: 40%;
+        }
+
+        @keyframes progress-indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(350%); }
+        }
+
+        /* TABLES */
+        .table-container {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+
+        .table-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .table-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 20px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-input);
+        }
+
+        td {
+            padding: 12px 20px;
+            font-size: 13px;
+            border-bottom: 1px solid rgba(45, 51, 72, 0.5);
+        }
+
+        tr:hover td { background: rgba(255, 255, 255, 0.02); }
+
+        .badge {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .badge-pdf { background: var(--error-bg); color: var(--error); }
+        .badge-zip { background: var(--info-bg); color: var(--info); }
+        .badge-success { background: var(--success-bg); color: var(--success); }
+        .badge-warning { background: var(--warning-bg); color: var(--warning); }
+
+        /* LOG PANEL */
+        .log-panel {
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            max-height: 500px;
+            overflow-y: auto;
+            font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            padding: 6px 16px;
+            display: flex;
+            gap: 12px;
+            border-bottom: 1px solid rgba(45, 51, 72, 0.3);
+            line-height: 1.5;
+        }
+
+        .log-entry:hover { background: rgba(255, 255, 255, 0.02); }
+        .log-time { color: var(--text-muted); white-space: nowrap; min-width: 60px; }
+        .log-msg { color: var(--text-secondary); word-break: break-all; }
+        .log-entry.success .log-msg { color: var(--success); }
+        .log-entry.warning .log-msg { color: var(--warning); }
+        .log-entry.error .log-msg { color: var(--error); }
+        .log-entry.info .log-msg { color: var(--text-secondary); }
+
+        .log-empty {
+            padding: 40px;
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        /* UPLOAD ZONE */
+        .upload-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius);
+            padding: 40px;
+            text-align: center;
+            transition: var(--transition);
+            cursor: pointer;
+            background: var(--bg-card);
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--accent);
+            background: rgba(240, 93, 35, 0.05);
+        }
+
+        .upload-zone i {
+            font-size: 36px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .upload-zone h4 {
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .upload-zone p {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* FILE LIST */
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--bg-input);
+            border-radius: var(--radius-sm);
+            margin-bottom: 8px;
+            border: 1px solid var(--border);
+            transition: var(--transition);
+        }
+
+        .file-item:hover { border-color: var(--text-muted); }
+
+        .file-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .file-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: var(--radius-xs);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+        }
+
+        .file-icon.pdf { background: var(--error-bg); color: var(--error); }
+        .file-icon.zip { background: var(--info-bg); color: var(--info); }
+        .file-icon.xlsx { background: var(--success-bg); color: var(--success); }
+
+        .file-name { font-size: 13px; font-weight: 500; }
+        .file-size { font-size: 11px; color: var(--text-muted); }
+
+        /* CONFIG FORM */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+            transition: var(--transition);
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+        }
+
+        /* LOJA CARDS */
+        .loja-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px;
+            transition: var(--transition);
+        }
+
+        .loja-card:hover {
+            border-color: var(--accent);
+            box-shadow: var(--shadow);
+            transform: translateY(-2px);
+        }
+
+        .loja-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .loja-avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: var(--radius-sm);
+            background: linear-gradient(135deg, var(--accent), #ff8c42);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: 800;
+            color: white;
+        }
+
+        .loja-name {
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .loja-cnpj {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: monospace;
+        }
+
+        .loja-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .loja-stat {
+            text-align: center;
+            padding: 10px 8px;
+            background: var(--bg-input);
+            border-radius: var(--radius-xs);
+        }
+
+        .loja-stat-value {
+            font-size: 20px;
+            font-weight: 800;
+            color: var(--accent);
+        }
+
+        .loja-stat-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .loja-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .loja-actions .btn { flex: 1; justify-content: center; }
+
+        /* SECTION TITLE */
+        .section-title {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .section-title i { color: var(--accent); }
+
+        /* EMPTY STATE */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state i {
+            font-size: 48px;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        .empty-state h3 {
+            font-size: 16px;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state p { font-size: 13px; }
+
+        /* TOAST */
+        .toast-container {
+            position: fixed;
+            top: 80px;
+            right: 24px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            padding: 14px 20px;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: var(--shadow-lg);
+            animation: slideIn 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 300px;
+        }
+
+        .toast.success { background: #16a34a; color: white; }
+        .toast.error { background: #dc2626; color: white; }
+        .toast.warning { background: #d97706; color: white; }
+        .toast.info { background: #2563eb; color: white; }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* RESULTADO RESUMO */
+        .resultado-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        /* SPINNER */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.6s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* TOOLTIP */
+        [data-tooltip] {
+            position: relative;
+        }
+
+        [data-tooltip]:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 6px 12px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 11px;
+            border-radius: var(--radius-xs);
+            white-space: nowrap;
+            border: 1px solid var(--border);
+            z-index: 10;
+            margin-bottom: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+    <div class="header-left">
+        <div class="logo"><i class="fas fa-tags"></i></div>
+        <div class="header-title">
+            <h1>Etiquetas Shopee</h1>
+            <span>Processador de Etiquetas &amp; DANFE</span>
+        </div>
+    </div>
+    <div class="header-actions">
+        <div class="status-indicator">
+            <div class="status-dot" id="statusDot"></div>
+            <span id="statusText">Pronto</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="abrirPasta('entrada')">
+            <i class="fas fa-folder-open"></i> Pasta Entrada
+        </button>
+        <button class="btn btn-secondary btn-sm" onclick="abrirPasta('saida')">
+            <i class="fas fa-folder"></i> Pasta Saida
+        </button>
+    </div>
+</header>
+
+<!-- NAV TABS -->
+<nav class="nav-tabs">
+    <div class="nav-tab active" data-tab="painel" onclick="trocarTab('painel')">
+        <i class="fas fa-chart-bar"></i> Painel
+    </div>
+    <div class="nav-tab" data-tab="arquivos" onclick="trocarTab('arquivos')">
+        <i class="fas fa-file-alt"></i> Arquivos
+    </div>
+    <div class="nav-tab" data-tab="resultados" onclick="trocarTab('resultados')">
+        <i class="fas fa-store"></i> Resultados
+    </div>
+    <div class="nav-tab" data-tab="logs" onclick="trocarTab('logs')">
+        <i class="fas fa-terminal"></i> Logs
+    </div>
+    <div class="nav-tab" data-tab="config" onclick="trocarTab('config')">
+        <i class="fas fa-cog"></i> Configuracoes
+    </div>
+</nav>
+
+<!-- TOAST CONTAINER -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- MAIN CONTENT -->
+<div class="main-content">
+
+    <!-- ==================== PAINEL ==================== -->
+    <div class="tab-content active" id="tab-painel">
+
+        <!-- Botao Processar -->
+        <div class="process-section">
+            <div class="process-info">
+                <h3><i class="fas fa-rocket"></i> Processar Etiquetas</h3>
+                <p>Carregar XMLs, recortar etiquetas dos PDFs e gerar saida por loja</p>
+                <div class="progress-bar" id="progressBar">
+                    <div class="progress-bar-fill"></div>
+                </div>
+            </div>
+            <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()">
+                    <i class="fas fa-play"></i> Iniciar Processamento
+                </button>
+                <button class="btn btn-lg" id="btnLucro" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer;">
+                    <i class="fas fa-dollar-sign"></i> Resumo de Lucro
+                </button>
+            </div>
+        </div>
+
+        <!-- Stats Cards -->
+        <div class="grid grid-4" id="statsCards">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">PDFs</span>
+                    <div class="card-icon orange"><i class="fas fa-file-pdf"></i></div>
+                </div>
+                <div class="card-value" id="statPdfs">-</div>
+                <div class="card-sub">Arquivos de etiquetas</div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">XMLs (ZIP)</span>
+                    <div class="card-icon blue"><i class="fas fa-file-archive"></i></div>
+                </div>
+                <div class="card-value" id="statZips">-</div>
+                <div class="card-sub">Arquivos de notas fiscais</div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Etiquetas</span>
+                    <div class="card-icon green"><i class="fas fa-tag"></i></div>
+                </div>
+                <div class="card-value" id="statEtiquetas">-</div>
+                <div class="card-sub">Total processadas</div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Lojas</span>
+                    <div class="card-icon yellow"><i class="fas fa-store"></i></div>
+                </div>
+                <div class="card-value" id="statLojas">-</div>
+                <div class="card-sub">Vendedores identificados</div>
+            </div>
+        </div>
+
+        <!-- Ultimo Resultado -->
+        <div style="margin-top: 24px;">
+            <h3 class="section-title"><i class="fas fa-clock"></i> Ultimo Processamento</h3>
+            <div id="ultimoResultado">
+                <div class="empty-state">
+                    <i class="fas fa-inbox"></i>
+                    <h3>Nenhum processamento realizado</h3>
+                    <p>Clique em "Iniciar Processamento" para comecar</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== ARQUIVOS ==================== -->
+    <div class="tab-content" id="tab-arquivos">
+        <h3 class="section-title"><i class="fas fa-upload"></i> Upload de Arquivos</h3>
+
+        <!-- Upload Zone -->
+        <div class="upload-zone" id="uploadZone"
+             ondragover="event.preventDefault(); this.classList.add('dragover')"
+             ondragleave="this.classList.remove('dragover')"
+             ondrop="handleDrop(event)"
+             onclick="document.getElementById('fileInput').click()">
+            <i class="fas fa-cloud-upload-alt"></i>
+            <h4>Arraste arquivos aqui ou clique para selecionar</h4>
+            <p>Aceita arquivos PDF (etiquetas) e ZIP (notas fiscais XML)</p>
+        </div>
+        <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip" onchange="handleUpload(this.files)">
+
+        <!-- Arquivos na Pasta -->
+        <div style="margin-top: 24px;">
+            <h3 class="section-title"><i class="fas fa-folder"></i> Arquivos na Pasta de Entrada</h3>
+            <div id="listaArquivos">
+                <div class="empty-state">
+                    <i class="fas fa-folder-open"></i>
+                    <h3>Carregando...</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== RESULTADOS ==================== -->
+    <div class="tab-content" id="tab-resultados">
+        <!-- Resumo Geral -->
+        <div id="resumoGeral" style="margin-bottom:24px;"></div>
+        <div id="resumoLucro" style="margin-bottom:24px;"></div>
+
+        <h3 class="section-title"><i class="fas fa-store"></i> Resultados por Loja</h3>
+        <div id="resultadosLojas">
+            <div class="empty-state">
+                <i class="fas fa-box-open"></i>
+                <h3>Nenhum resultado ainda</h3>
+                <p>Processe as etiquetas para ver os resultados aqui</p>
+            </div>
+        </div>
+
+        <!-- Barra de Agrupamento -->
+        <div id="agruparBar" style="display:none; margin-top:20px; padding:20px; background:linear-gradient(135deg, rgba(59,130,246,0.08), rgba(59,130,246,0.04)); border:1px solid rgba(59,130,246,0.2); border-radius:var(--radius); align-items:center; gap:16px;">
+            <div style="flex:1; display:flex; align-items:center; gap:12px;">
+                <i class="fas fa-layer-group" style="font-size:20px; color:var(--info);"></i>
+                <div>
+                    <div style="font-weight:600; font-size:14px;">Agrupar Lojas Selecionadas</div>
+                    <div style="font-size:12px; color:var(--text-secondary);" id="agruparInfo">Selecione 2+ lojas</div>
+                </div>
+            </div>
+            <input class="form-input" id="nomeAgrupamento" type="text" placeholder="Nome do grupo (opcional)" style="width:200px; flex:none;">
+            <button class="btn btn-primary" onclick="gerarAgrupado()">
+                <i class="fas fa-layer-group"></i> Gerar Agrupado
+            </button>
+        </div>
+    </div>
+
+    <!-- ==================== LOGS ==================== -->
+    <div class="tab-content" id="tab-logs">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+            <h3 class="section-title" style="margin-bottom:0;"><i class="fas fa-terminal"></i> Log do Sistema</h3>
+            <button class="btn btn-secondary btn-sm" onclick="limparLogs()">
+                <i class="fas fa-trash-alt"></i> Limpar
+            </button>
+        </div>
+        <div class="log-panel" id="logPanel">
+            <div class="log-empty">
+                <i class="fas fa-terminal" style="font-size:24px; display:block; margin-bottom:8px;"></i>
+                Aguardando logs do processamento...
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== CONFIGURACOES ==================== -->
+    <div class="tab-content" id="tab-config">
+        <h3 class="section-title"><i class="fas fa-cog"></i> Configuracoes</h3>
+
+        <div class="grid grid-2">
+            <!-- Pastas -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><i class="fas fa-folder"></i> Pastas</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Pasta de Entrada</label>
+                    <input class="form-input" id="cfgPastaEntrada" type="text">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Pasta de Saida</label>
+                    <input class="form-input" id="cfgPastaSaida" type="text">
+                </div>
+            </div>
+
+            <!-- Dimensoes -->
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><i class="fas fa-ruler"></i> Dimensoes da Pagina</span>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Largura (mm)</label>
+                        <input class="form-input" id="cfgLargura" type="number" min="50" max="300">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Altura (mm)</label>
+                        <input class="form-input" id="cfgAltura" type="number" min="50" max="400">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Margem Esquerda (pt)</label>
+                        <input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Margem Direita (pt)</label>
+                        <input class="form-input" id="cfgMargemDir" type="number" min="0" max="50">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Margem Topo (pt)</label>
+                        <input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Margem Inferior (pt)</label>
+                        <input class="form-input" id="cfgMargemInf" type="number" min="0" max="50">
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label">Fonte Produtos - SKU/Quantidade (pt)</label>
+                    <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:120px;">
+                    <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Padrao: 7pt</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agrupamento de Lojas -->
+        <div style="margin-top: 20px;">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
+                </div>
+                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                    Configure grupos de lojas para gerar PDFs agrupados automaticamente apos cada processamento.
+                </p>
+
+                <!-- Lista de grupos existentes -->
+                <div id="listaGrupos" style="margin-bottom:16px;"></div>
+
+                <!-- Adicionar novo grupo -->
+                <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px;">
+                    <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">Novo Grupo</div>
+                    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+                        <div class="form-group" style="margin-bottom:0; flex:none;">
+                            <label class="form-label">Nome do Grupo</label>
+                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:180px;">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px;">
+                            <label class="form-label">Lojas (selecione 2+)</label>
+                            <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:38px;">
+                                <span style="font-size:11px; color:var(--text-muted);">Processe etiquetas primeiro para ver lojas disponiveis</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0;">
+                            <i class="fas fa-plus"></i> Adicionar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Calculadora de Lucro -->
+        <div style="margin-top: 20px;">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"><i class="fas fa-calculator"></i> Calculadora de Lucro</span>
+                </div>
+                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                    Parametros para o calculo de lucro. O match de SKU usa os 4 primeiros digitos.
+                </p>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">% Valor Declarado</label>
+                        <input class="form-input" id="cfgPercDeclarado" type="number" min="1" max="100" value="100" style="width:120px;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Taxa Shopee (%)</label>
+                        <input class="form-input" id="cfgTaxaShopee" type="number" min="0" max="100" step="0.5" value="18" style="width:120px;">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Imposto Simples (%)</label>
+                        <input class="form-input" id="cfgImpostoSimples" type="number" min="0" max="100" step="0.5" value="4" style="width:120px;">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Custo Fixo (R$)</label>
+                        <input class="form-input" id="cfgCustoFixo" type="number" min="0" step="0.50" value="3" style="width:120px;">
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label">Planilha de Custos (.xlsx)</label>
+                    <div style="display:flex; gap:12px; align-items:center;">
+                        <button class="btn btn-primary btn-sm" onclick="document.getElementById('inputCustos').click()">
+                            <i class="fas fa-upload"></i> Upload Planilha
+                        </button>
+                        <input type="file" id="inputCustos" accept=".xlsx" style="display:none;" onchange="uploadCustos(this)">
+                        <span id="lblPlanilhaCustos" style="font-size:12px; color:var(--text-muted);">Nenhuma planilha carregada</span>
+                    </div>
+                    <span style="font-size:11px; color:var(--text-muted); margin-top:4px; display:block;">Formato: Coluna A = SKU, Coluna B = Custo unitario</span>
+                </div>
+
+                <!-- Config por loja -->
+                <div id="configLucroLojas" style="margin-top:20px; display:none;">
+                    <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">
+                        <i class="fas fa-store"></i> Configuracao Individual por Loja
+                        <span style="font-size:11px; font-weight:400; color:var(--text-muted); margin-left:8px;">Deixe vazio para usar o padrao global</span>
+                    </div>
+                    <div id="tabelaConfigLojas" style="overflow-x:auto;"></div>
+                    <button class="btn btn-primary btn-sm" onclick="salvarConfigLucroLojas()" style="margin-top:12px;">
+                        <i class="fas fa-save"></i> Salvar Config Lojas
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px; display: flex; gap: 12px;">
+            <button class="btn btn-primary" onclick="salvarConfig()">
+                <i class="fas fa-save"></i> Salvar Configuracoes
+            </button>
+            <button class="btn btn-danger" onclick="limparSaida()">
+                <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
+            </button>
+        </div>
+    </div>
+
+</div>
+
+<script>
+const API = '';
+let pollingInterval = null;
+let logOffset = 0;
+
+// ================================================================
+// TABS
+// ================================================================
+let configCarregada = false;
+
+function trocarTab(tab) {
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+    document.getElementById(`tab-${tab}`).classList.add('active');
+}
+
+// ================================================================
+// API CALLS
+// ================================================================
+async function fetchAPI(url, options = {}) {
+    try {
+        const res = await fetch(API + url, options);
+        return await res.json();
+    } catch (e) {
+        console.error('API Error:', e);
+        return null;
+    }
+}
+
+// ================================================================
+// ATUALIZAR DASHBOARD
+// ================================================================
+async function atualizarStatus() {
+    const data = await fetchAPI('/api/status');
+    if (!data) return;
+
+    // Status
+    const dot = document.getElementById('statusDot');
+    const txt = document.getElementById('statusText');
+    const bar = document.getElementById('progressBar');
+    const btn = document.getElementById('btnProcessar');
+
+    if (data.processando) {
+        dot.classList.add('processing');
+        txt.textContent = 'Processando...';
+        bar.classList.add('active');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Processando...';
+    } else {
+        dot.classList.remove('processing');
+        txt.textContent = 'Pronto';
+        bar.classList.remove('active');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+    }
+
+    // Stats
+    const pdfs = data.arquivos_entrada.filter(a => a.tipo === 'PDF').length;
+    const zips = data.arquivos_entrada.filter(a => a.tipo === 'ZIP').length;
+    document.getElementById('statPdfs').textContent = pdfs;
+    document.getElementById('statZips').textContent = zips;
+
+    if (data.ultimo_resultado) {
+        document.getElementById('statEtiquetas').textContent = data.ultimo_resultado.total_etiquetas;
+        document.getElementById('statLojas').textContent = data.ultimo_resultado.total_lojas;
+        renderUltimoResultado(data.ultimo_resultado);
+        renderResultadosLojas(data.ultimo_resultado);
+        renderResumoGeral(data.ultimo_resultado);
+    } else {
+        document.getElementById('statEtiquetas').textContent = '-';
+        document.getElementById('statLojas').textContent = '-';
+    }
+
+    // Arquivos
+    renderArquivos(data.arquivos_entrada);
+
+    // Config — so carrega uma vez para nao sobrescrever edicoes do usuario
+    if (!configCarregada) {
+        const cfg = data.configuracoes;
+        document.getElementById('cfgPastaEntrada').value = cfg.pasta_entrada;
+        document.getElementById('cfgPastaSaida').value = cfg.pasta_saida;
+        document.getElementById('cfgLargura').value = cfg.largura_mm;
+        document.getElementById('cfgAltura').value = cfg.altura_mm;
+        document.getElementById('cfgMargemEsq').value = cfg.margem_esq;
+        document.getElementById('cfgMargemDir').value = cfg.margem_dir;
+        document.getElementById('cfgMargemTopo').value = cfg.margem_topo;
+        document.getElementById('cfgMargemInf').value = cfg.margem_inf;
+        document.getElementById('cfgFonteProduto').value = cfg.fonte_produto || 7;
+        document.getElementById('cfgPercDeclarado').value = cfg.perc_declarado || 100;
+        document.getElementById('cfgTaxaShopee').value = cfg.taxa_shopee || 18;
+        document.getElementById('cfgImpostoSimples').value = cfg.imposto_simples || 4;
+        document.getElementById('cfgCustoFixo').value = cfg.custo_fixo || 3;
+        if (cfg.planilha_custos) {
+            document.getElementById('lblPlanilhaCustos').textContent = cfg.planilha_custos.split(/[/\\]/).pop();
+        }
+        configCarregada = true;
+    }
+
+    // Agrupamentos
+    if (data.agrupamentos) {
+        renderGruposSalvos(data.agrupamentos);
+    }
+
+    // Lojas disponiveis para agrupamento (do ultimo resultado)
+    if (data.ultimo_resultado && data.ultimo_resultado.lojas) {
+        renderLojasParaGrupo(data.ultimo_resultado.lojas);
+        renderConfigLucroLojas(data.ultimo_resultado.lojas);
+    }
+
+    // Lucro
+    if (data.ultimo_lucro) {
+        renderResumoLucro(data.ultimo_lucro);
+    }
+}
+
+function renderUltimoResultado(res) {
+    if (!res) return;
+    const el = document.getElementById('ultimoResultado');
+    const lojasHtml = res.lojas.map(l => `
+        <div class="stat-mini">
+            <span class="stat-mini-icon"><i class="fas fa-store"></i></span>
+            <div style="flex:1">
+                <div class="stat-mini-value">${l.nome}</div>
+                <div class="stat-mini-text">${l.etiquetas} etiquetas | ${l.skus} SKUs | ${l.total_qtd} unidades</div>
+            </div>
+            <span class="badge badge-success">${l.paginas} pags</span>
+        </div>
+    `).join('');
+
+    el.innerHTML = `
+        <div class="card">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <div>
+                    <span style="font-size:13px; color:var(--text-muted);">Processado em</span>
+                    <strong style="margin-left:8px;">${res.timestamp}</strong>
+                    <span class="badge badge-success" style="margin-left:8px;">${res.duracao_s}s</span>
+                </div>
+                <div style="display:flex; gap:16px; font-size:13px;">
+                    <span><strong>${res.total_xmls}</strong> XMLs</span>
+                    <span><strong>${res.total_etiquetas}</strong> etiquetas</span>
+                    <span><strong>${res.total_lojas}</strong> lojas</span>
+                </div>
+            </div>
+            ${lojasHtml}
+        </div>
+    `;
+}
+
+function renderResultadosLojas(res) {
+    if (!res || !res.lojas.length) return;
+    const el = document.getElementById('resultadosLojas');
+    const colors = ['#f05d23', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+
+    el.innerHTML = '<div class="resultado-grid">' + res.lojas.map((l, i) => {
+        const initial = l.nome.charAt(0).toUpperCase();
+        const color = colors[i % colors.length];
+        return `
+        <div class="loja-card">
+            <div class="loja-header">
+                <div class="loja-avatar" style="background:linear-gradient(135deg, ${color}, ${color}88)">${initial}</div>
+                <div style="flex:1">
+                    <div class="loja-name">${l.nome}</div>
+                    <div class="loja-cnpj">${formatCNPJ(l.cnpj)}</div>
+                </div>
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px; color:var(--text-secondary); padding:4px 8px; border:1px solid var(--border); border-radius:var(--radius-xs); background:var(--bg-input);">
+                    <input type="checkbox" class="loja-check" data-cnpj="${l.cnpj}" data-nome="${l.nome}" onchange="atualizarBarraAgrupar()">
+                    <i class="fas fa-layer-group"></i>
+                </label>
+            </div>
+            <div class="loja-stats">
+                <div class="loja-stat">
+                    <div class="loja-stat-value">${l.etiquetas}</div>
+                    <div class="loja-stat-label">Etiquetas</div>
+                </div>
+                <div class="loja-stat">
+                    <div class="loja-stat-value">${l.skus}</div>
+                    <div class="loja-stat-label">SKUs</div>
+                </div>
+                <div class="loja-stat">
+                    <div class="loja-stat-value">${l.total_qtd}</div>
+                    <div class="loja-stat-label">Unidades</div>
+                </div>
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); margin-bottom:12px;">
+                <span>${l.simples} simples</span> &bull;
+                <span>${l.multi_produto} multi-produto</span>
+                ${l.sem_xml > 0 ? ` &bull; <span style="color:var(--warning)">${l.sem_xml} sem XML</span>` : ''}
+            </div>
+            <div class="loja-actions">
+                <a class="btn btn-secondary btn-sm" href="/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.pdf)}" target="_blank">
+                    <i class="fas fa-file-pdf"></i> PDF
+                </a>
+                <a class="btn btn-secondary btn-sm" href="/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.xlsx)}" target="_blank">
+                    <i class="fas fa-file-excel"></i> XLSX
+                </a>
+                <button class="btn btn-secondary btn-sm" onclick="abrirPastaLoja('${l.nome}')">
+                    <i class="fas fa-folder-open"></i>
+                </button>
+            </div>
+        </div>`;
+    }).join('') + '</div>';
+}
+
+function renderArquivos(arquivos) {
+    const el = document.getElementById('listaArquivos');
+    if (!arquivos.length) {
+        el.innerHTML = `<div class="empty-state">
+            <i class="fas fa-folder-open"></i>
+            <h3>Pasta vazia</h3>
+            <p>Adicione arquivos PDF e ZIP para processar</p>
+        </div>`;
+        return;
+    }
+    el.innerHTML = arquivos.map(a => `
+        <div class="file-item">
+            <div class="file-info">
+                <div class="file-icon ${a.tipo.toLowerCase()}">
+                    <i class="fas fa-file-${a.tipo === 'PDF' ? 'pdf' : 'archive'}"></i>
+                </div>
+                <div>
+                    <div class="file-name">${a.nome}</div>
+                    <div class="file-size">${a.tamanho_fmt}</div>
+                </div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <span class="badge ${a.tipo === 'PDF' ? 'badge-pdf' : 'badge-zip'}">${a.tipo}</span>
+                <button class="btn btn-danger btn-sm" onclick="removerArquivo('${a.nome}')" data-tooltip="Remover">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+// ================================================================
+// LOGS
+// ================================================================
+async function atualizarLogs() {
+    const data = await fetchAPI(`/api/logs?desde=${logOffset}`);
+    if (!data || !data.logs.length) return;
+
+    const panel = document.getElementById('logPanel');
+    if (logOffset === 0 && data.logs.length > 0) {
+        panel.innerHTML = '';
+    }
+
+    data.logs.forEach(log => {
+        const div = document.createElement('div');
+        div.className = `log-entry ${log.tipo}`;
+        div.innerHTML = `<span class="log-time">${log.timestamp}</span><span class="log-msg">${escapeHtml(log.mensagem)}</span>`;
+        panel.appendChild(div);
+    });
+
+    logOffset = data.total;
+    panel.scrollTop = panel.scrollHeight;
+}
+
+function limparLogs() {
+    document.getElementById('logPanel').innerHTML = `
+        <div class="log-empty">
+            <i class="fas fa-terminal" style="font-size:24px; display:block; margin-bottom:8px;"></i>
+            Aguardando logs do processamento...
+        </div>`;
+    logOffset = 0;
+}
+
+// ================================================================
+// ACOES
+// ================================================================
+async function processar() {
+    const data = await fetchAPI('/api/processar', { method: 'POST' });
+    if (data && data.erro) {
+        toast(data.erro, 'warning');
+        return;
+    }
+    toast('Processamento iniciado!', 'info');
+    logOffset = 0;
+    trocarTab('logs');
+
+    // Polling mais rapido durante processamento
+    if (pollingInterval) clearInterval(pollingInterval);
+    pollingInterval = setInterval(async () => {
+        await atualizarStatus();
+        await atualizarLogs();
+
+        const dot = document.getElementById('statusDot');
+        if (!dot.classList.contains('processing')) {
+            clearInterval(pollingInterval);
+            pollingInterval = setInterval(() => { atualizarStatus(); atualizarLogs(); }, 5000);
+            toast('Processamento concluido!', 'success');
+        }
+    }, 800);
+}
+
+async function salvarConfig() {
+    const cfg = {
+        pasta_entrada: document.getElementById('cfgPastaEntrada').value,
+        pasta_saida: document.getElementById('cfgPastaSaida').value,
+        largura_mm: parseInt(document.getElementById('cfgLargura').value),
+        altura_mm: parseInt(document.getElementById('cfgAltura').value),
+        margem_esq: parseInt(document.getElementById('cfgMargemEsq').value),
+        margem_dir: parseInt(document.getElementById('cfgMargemDir').value),
+        margem_topo: parseInt(document.getElementById('cfgMargemTopo').value),
+        margem_inf: parseInt(document.getElementById('cfgMargemInf').value),
+        fonte_produto: parseInt(document.getElementById('cfgFonteProduto').value) || 7,
+        perc_declarado: parseFloat(document.getElementById('cfgPercDeclarado').value) || 100,
+        taxa_shopee: parseFloat(document.getElementById('cfgTaxaShopee').value) || 18,
+        imposto_simples: parseFloat(document.getElementById('cfgImpostoSimples').value) || 4,
+        custo_fixo: parseFloat(document.getElementById('cfgCustoFixo').value) || 3,
+    };
+    await fetchAPI('/api/configuracoes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+    });
+    toast('Configuracoes salvas!', 'success');
+}
+
+async function limparSaida() {
+    if (!confirm('Tem certeza que deseja limpar toda a pasta de saida?')) return;
+    await fetchAPI('/api/limpar-saida', { method: 'POST' });
+    toast('Pasta de saida limpa', 'warning');
+    atualizarStatus();
+}
+
+async function removerArquivo(nome) {
+    if (!confirm(`Remover ${nome}?`)) return;
+    await fetchAPI('/api/remover-arquivo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome }),
+    });
+    toast(`${nome} removido`, 'warning');
+    atualizarStatus();
+}
+
+async function abrirPasta(tipo) {
+    const status = await fetchAPI('/api/status');
+    if (!status) return;
+    const pasta = tipo === 'entrada' ? status.configuracoes.pasta_entrada : status.configuracoes.pasta_saida;
+    await fetchAPI('/api/abrir-pasta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pasta }),
+    });
+}
+
+async function abrirPastaLoja(nomeLoja) {
+    const status = await fetchAPI('/api/status');
+    if (!status) return;
+    const pasta = status.configuracoes.pasta_saida + '\\' + nomeLoja;
+    await fetchAPI('/api/abrir-pasta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pasta }),
+    });
+}
+
+// ================================================================
+// UPLOAD
+// ================================================================
+function handleDrop(event) {
+    event.preventDefault();
+    document.getElementById('uploadZone').classList.remove('dragover');
+    handleUpload(event.dataTransfer.files);
+}
+
+async function handleUpload(files) {
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('arquivo', file);
+        const res = await fetchAPI('/api/upload', { method: 'POST', body: formData });
+        if (res && res.mensagem) {
+            toast(res.mensagem, 'success');
+        } else if (res && res.erro) {
+            toast(res.erro, 'error');
+        }
+    }
+    atualizarStatus();
+    document.getElementById('fileInput').value = '';
+}
+
+// ================================================================
+// UTILS
+// ================================================================
+function formatCNPJ(cnpj) {
+    if (!cnpj || cnpj.length !== 14) return cnpj;
+    return cnpj.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, '$1.$2.$3/$4-$5');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function toast(msg, tipo = 'info') {
+    const container = document.getElementById('toastContainer');
+    const icons = { success: 'check-circle', error: 'exclamation-circle', warning: 'exclamation-triangle', info: 'info-circle' };
+    const div = document.createElement('div');
+    div.className = `toast ${tipo}`;
+    div.innerHTML = `<i class="fas fa-${icons[tipo]}"></i> ${escapeHtml(msg)}`;
+    container.appendChild(div);
+    setTimeout(() => { div.style.opacity = '0'; setTimeout(() => div.remove(), 300); }, 4000);
+}
+
+// ================================================================
+// RESUMO GERAL
+// ================================================================
+function renderResumoGeral(res) {
+    const el = document.getElementById('resumoGeral');
+    if (!res || !res.lojas || !res.lojas.length) {
+        el.innerHTML = '';
+        return;
+    }
+
+    const lojas = res.lojas;
+    let totalEtiq = 0, totalSkus = 0, totalUn = 0;
+    lojas.forEach(l => { totalEtiq += l.etiquetas; totalSkus += l.skus; totalUn += l.total_qtd; });
+
+    const rows = lojas.map(l => `
+        <tr>
+            <td style="padding:8px 14px; border-bottom:1px solid var(--border); font-weight:500;">${escapeHtml(l.nome)}</td>
+            <td style="padding:8px 14px; border-bottom:1px solid var(--border); text-align:center;">${l.etiquetas}</td>
+            <td style="padding:8px 14px; border-bottom:1px solid var(--border); text-align:center;">${l.skus}</td>
+            <td style="padding:8px 14px; border-bottom:1px solid var(--border); text-align:center; font-weight:700; color:var(--accent);">${l.total_qtd}</td>
+        </tr>
+    `).join('');
+
+    el.innerHTML = `
+        <div class="card">
+            <div class="card-header" style="margin-bottom:12px;">
+                <span class="card-title"><i class="fas fa-chart-pie"></i> Resumo Geral</span>
+                <a class="btn btn-secondary btn-sm" href="/api/download-resumo-geral" target="_blank">
+                    <i class="fas fa-file-excel"></i> Baixar XLSX
+                </a>
+            </div>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:var(--bg-input);">
+                        <th style="padding:10px 14px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Loja</th>
+                        <th style="padding:10px 14px; text-align:center; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Etiquetas</th>
+                        <th style="padding:10px 14px; text-align:center; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">SKUs</th>
+                        <th style="padding:10px 14px; text-align:center; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Unidades</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+                <tfoot>
+                    <tr style="background:var(--bg-input);">
+                        <td style="padding:10px 14px; font-weight:800; border-top:2px solid var(--border);">TOTAL</td>
+                        <td style="padding:10px 14px; text-align:center; font-weight:700; border-top:2px solid var(--border);">${totalEtiq}</td>
+                        <td style="padding:10px 14px; text-align:center; font-weight:700; border-top:2px solid var(--border);">${totalSkus}</td>
+                        <td style="padding:10px 14px; text-align:center; font-weight:800; border-top:2px solid var(--border); color:var(--accent); font-size:15px;">${totalUn}</td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    `;
+}
+
+// ================================================================
+// AGRUPAMENTO
+// ================================================================
+function atualizarBarraAgrupar() {
+    const checked = document.querySelectorAll('.loja-check:checked');
+    const bar = document.getElementById('agruparBar');
+    const info = document.getElementById('agruparInfo');
+    if (checked.length >= 2) {
+        bar.style.display = 'flex';
+        const nomes = Array.from(checked).map(c => c.dataset.nome);
+        info.textContent = `${checked.length} lojas selecionadas: ${nomes.join(', ')}`;
+    } else {
+        bar.style.display = 'none';
+    }
+}
+
+async function gerarAgrupado() {
+    const checked = document.querySelectorAll('.loja-check:checked');
+    if (checked.length < 2) {
+        toast('Selecione pelo menos 2 lojas para agrupar', 'warning');
+        return;
+    }
+
+    const cnpjs = Array.from(checked).map(c => c.dataset.cnpj);
+    const nome = document.getElementById('nomeAgrupamento').value.trim() || 'Agrupado';
+
+    const data = await fetchAPI('/api/agrupar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cnpjs, nome }),
+    });
+
+    if (data && data.erro) {
+        toast(data.erro, 'error');
+        return;
+    }
+
+    if (data && data.mensagem) {
+        toast(data.mensagem, 'success');
+        // Desmarcar checkboxes
+        checked.forEach(c => c.checked = false);
+        atualizarBarraAgrupar();
+        document.getElementById('nomeAgrupamento').value = '';
+        atualizarStatus();
+    }
+}
+
+// ================================================================
+// AGRUPAMENTO CONFIG (aba Configuracoes)
+// ================================================================
+let agrupamentosSalvos = [];
+
+function renderGruposSalvos(grupos) {
+    agrupamentosSalvos = grupos || [];
+    const el = document.getElementById('listaGrupos');
+    if (!grupos || !grupos.length) {
+        el.innerHTML = '<div style="font-size:12px; color:var(--text-muted); padding:12px; text-align:center;">Nenhum grupo configurado</div>';
+        return;
+    }
+    el.innerHTML = grupos.map((g, i) => `
+        <div style="display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); margin-bottom:8px;">
+            <i class="fas fa-layer-group" style="color:var(--info);"></i>
+            <div style="flex:1;">
+                <div style="font-size:13px; font-weight:600;">${escapeHtml(g.nome)}</div>
+                <div style="font-size:11px; color:var(--text-muted);">${(g.nomes_lojas || g.cnpjs || []).join(', ')}</div>
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="removerGrupo(${i})">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+    `).join('');
+}
+
+function renderLojasParaGrupo(lojas) {
+    const el = document.getElementById('novoGrupoLojas');
+    if (!lojas || !lojas.length) {
+        el.innerHTML = '<span style="font-size:11px; color:var(--text-muted);">Processe etiquetas primeiro</span>';
+        return;
+    }
+    el.innerHTML = lojas.map(l => `
+        <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer; padding:4px 8px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-xs);">
+            <input type="checkbox" class="grupo-loja-check" data-cnpj="${l.cnpj}" data-nome="${l.nome}">
+            ${escapeHtml(l.nome)}
+        </label>
+    `).join('');
+}
+
+async function adicionarGrupo() {
+    const nome = document.getElementById('novoGrupoNome').value.trim();
+    if (!nome) {
+        toast('Informe um nome para o grupo', 'warning');
+        return;
+    }
+    const checked = document.querySelectorAll('.grupo-loja-check:checked');
+    if (checked.length < 2) {
+        toast('Selecione pelo menos 2 lojas', 'warning');
+        return;
+    }
+    const cnpjs = Array.from(checked).map(c => c.dataset.cnpj);
+    const nomes_lojas = Array.from(checked).map(c => c.dataset.nome);
+
+    agrupamentosSalvos.push({ nome, cnpjs, nomes_lojas });
+
+    // Salvar no backend
+    await fetchAPI('/api/agrupamentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agrupamentos: agrupamentosSalvos }),
+    });
+
+    toast(`Grupo "${nome}" adicionado`, 'success');
+    document.getElementById('novoGrupoNome').value = '';
+    checked.forEach(c => c.checked = false);
+    renderGruposSalvos(agrupamentosSalvos);
+}
+
+async function removerGrupo(idx) {
+    agrupamentosSalvos.splice(idx, 1);
+    await fetchAPI('/api/agrupamentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agrupamentos: agrupamentosSalvos }),
+    });
+    toast('Grupo removido', 'warning');
+    renderGruposSalvos(agrupamentosSalvos);
+}
+
+// ================================================================
+// LUCRO
+// ================================================================
+let _lucroLojasDefaults = {};
+let _lucroLojasOverrides = {};
+
+function renderConfigLucroLojas(lojas) {
+    if (!lojas || !lojas.length) return;
+    document.getElementById('configLucroLojas').style.display = 'block';
+
+    // Carregar config existente
+    fetch('/api/configuracoes-lucro-lojas')
+        .then(r => r.json())
+        .then(data => {
+            _lucroLojasDefaults = data.defaults || {};
+            _lucroLojasOverrides = data.por_loja || {};
+            _renderTabelaConfigLojas(lojas);
+        });
+}
+
+function _renderTabelaConfigLojas(lojas) {
+    const d = _lucroLojasDefaults;
+    const el = document.getElementById('tabelaConfigLojas');
+    const rows = lojas.map(l => {
+        const o = _lucroLojasOverrides[l.nome] || {};
+        return `<tr>
+            <td style="padding:6px 8px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(l.nome)}</td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="perc_declarado" type="number" step="1" value="${o.perc_declarado || ''}" placeholder="${d.perc_declarado}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="taxa_shopee" type="number" step="0.5" value="${o.taxa_shopee || ''}" placeholder="${d.taxa_shopee}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="imposto_simples" type="number" step="0.5" value="${o.imposto_simples || ''}" placeholder="${d.imposto_simples}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="custo_fixo" type="number" step="0.5" value="${o.custo_fixo || ''}" placeholder="${d.custo_fixo}" style="width:70px; font-size:11px;"></td>
+        </tr>`;
+    }).join('');
+
+    el.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead><tr style="background:var(--bg-input);">
+            <th style="padding:8px; text-align:left;">Loja</th>
+            <th style="padding:8px; text-align:center;">% Declarado</th>
+            <th style="padding:8px; text-align:center;">Taxa Shopee %</th>
+            <th style="padding:8px; text-align:center;">Imposto %</th>
+            <th style="padding:8px; text-align:center;">Custo Fixo R$</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>`;
+}
+
+async function salvarConfigLucroLojas() {
+    const inputs = document.querySelectorAll('.cfg-loja-input');
+    const porLoja = {};
+    inputs.forEach(inp => {
+        const loja = inp.dataset.loja;
+        const campo = inp.dataset.campo;
+        const val = inp.value.trim();
+        if (val !== '') {
+            if (!porLoja[loja]) porLoja[loja] = {};
+            porLoja[loja][campo] = parseFloat(val);
+        }
+    });
+    await fetchAPI('/api/configuracoes-lucro-lojas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ por_loja: porLoja }),
+    });
+    toast('Config lucro por loja salva!', 'success');
+}
+
+async function uploadCustos(input) {
+    if (!input.files || !input.files[0]) return;
+    const formData = new FormData();
+    formData.append('arquivo', input.files[0]);
+    const resp = await fetch('/api/upload-custos', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.erro) {
+        toast(data.erro, 'error');
+    } else {
+        document.getElementById('lblPlanilhaCustos').textContent = input.files[0].name;
+        toast('Planilha de custos carregada!', 'success');
+    }
+    input.value = '';
+}
+
+async function gerarLucro() {
+    const btn = document.getElementById('btnLucro');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Gerando...';
+    toast('Gerando relatorio de lucro...', 'info');
+
+    try {
+        const resp = await fetch('/api/gerar-lucro', { method: 'POST' });
+        const data = await resp.json();
+        if (data.erro) {
+            toast(data.erro, 'error');
+        } else {
+            toast(`Lucro gerado! Total: R$ ${data.lucro_total.toFixed(2)}`, 'success');
+            renderResumoLucro(data);
+            trocarTab('resultados');
+        }
+    } catch (e) {
+        toast('Erro ao gerar lucro: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-dollar-sign"></i> Resumo de Lucro';
+    }
+}
+
+function renderResumoLucro(data) {
+    const el = document.getElementById('resumoLucro');
+    if (!data || data.lucro_total === undefined) {
+        el.innerHTML = '';
+        return;
+    }
+
+    const corLucro = data.lucro_total >= 0 ? 'var(--success)' : 'var(--error)';
+    const alertaCusto = data.itens_sem_custo > 0
+        ? `<div style="margin-top:10px; padding:8px 12px; background:#fff3cd; border:1px solid #ffc107; border-radius:var(--radius-sm); font-size:12px; color:#856404;"><i class="fas fa-exclamation-triangle"></i> ${data.itens_sem_custo} itens sem custo na planilha (destacados em amarelo no XLSX)</div>`
+        : '';
+
+    // Tabela por loja
+    let tabelaLojas = '';
+    if (data.lojas && data.lojas.length > 0) {
+        const colors = ['#f05d23', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
+        const rowsLojas = data.lojas.map((l, i) => {
+            const corL = l.lucro >= 0 ? 'var(--success)' : 'var(--error)';
+            const initial = l.nome.charAt(0).toUpperCase();
+            const color = colors[i % colors.length];
+            return `<tr>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border);">
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <div style="width:32px; height:32px; border-radius:6px; background:linear-gradient(135deg, ${color}, ${color}88); display:flex; align-items:center; justify-content:center; font-weight:800; color:white; font-size:13px;">${initial}</div>
+                        <div>
+                            <div style="font-weight:600; font-size:13px;">${escapeHtml(l.nome)}</div>
+                            ${l.itens_sem_custo > 0 ? `<div style="font-size:10px; color:var(--warning);">${l.itens_sem_custo} sem custo</div>` : ''}
+                        </div>
+                    </div>
+                </td>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:center; font-size:13px;">${l.total_itens}</td>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:right; font-size:13px; color:var(--info);">R$ ${l.receita.toFixed(2)}</td>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:right; font-size:13px; color:var(--warning);">R$ ${l.custo.toFixed(2)}</td>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:right; font-size:14px; font-weight:700; color:${corL};">R$ ${l.lucro.toFixed(2)}</td>
+                <td style="padding:10px 14px; border-bottom:1px solid var(--border); text-align:center;">
+                    <a class="btn btn-secondary btn-sm" href="/api/download-lucro/${encodeURIComponent(l.nome)}" target="_blank" style="font-size:11px;">
+                        <i class="fas fa-file-excel"></i> XLSX
+                    </a>
+                </td>
+            </tr>`;
+        }).join('');
+
+        tabelaLojas = `
+        <div style="margin-top:16px;">
+            <div style="font-size:13px; font-weight:600; color:var(--text-secondary); margin-bottom:10px;">
+                <i class="fas fa-store"></i> Detalhamento por Loja
+            </div>
+            <div style="overflow-x:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr style="background:var(--bg-input);">
+                            <th style="padding:10px 14px; text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Loja</th>
+                            <th style="padding:10px 14px; text-align:center; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Itens</th>
+                            <th style="padding:10px 14px; text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Receita</th>
+                            <th style="padding:10px 14px; text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Custo</th>
+                            <th style="padding:10px 14px; text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Lucro</th>
+                            <th style="padding:10px 14px; text-align:center; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:2px solid var(--border);">Download</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowsLojas}</tbody>
+                </table>
+            </div>
+        </div>`;
+    }
+
+    el.innerHTML = `
+    <div class="card">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="card-title"><i class="fas fa-calculator"></i> Resumo de Lucro</span>
+            <button class="btn btn-primary btn-sm" onclick="window.location.href='/api/download-lucro'">
+                <i class="fas fa-download"></i> Baixar XLSX Consolidado
+            </button>
+        </div>
+        <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin-top:12px;">
+            <div style="text-align:center; padding:12px; background:var(--bg-input); border-radius:var(--radius-sm);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Total Itens</div>
+                <div style="font-size:20px; font-weight:700;">${data.total_itens}</div>
+            </div>
+            <div style="text-align:center; padding:12px; background:var(--bg-input); border-radius:var(--radius-sm);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Receita</div>
+                <div style="font-size:20px; font-weight:700; color:var(--info);">R$ ${data.receita_total.toFixed(2)}</div>
+            </div>
+            <div style="text-align:center; padding:12px; background:var(--bg-input); border-radius:var(--radius-sm);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Custo Total</div>
+                <div style="font-size:20px; font-weight:700; color:var(--warning);">R$ ${data.custo_total.toFixed(2)}</div>
+            </div>
+            <div style="text-align:center; padding:12px; background:var(--bg-input); border-radius:var(--radius-sm);">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Lucro Total</div>
+                <div style="font-size:20px; font-weight:700; color:${corLucro};">R$ ${data.lucro_total.toFixed(2)}</div>
+            </div>
+        </div>
+        ${alertaCusto}
+        ${tabelaLojas}
+    </div>`;
+}
+
+// ================================================================
+// INIT
+// ================================================================
+async function init() {
+    await atualizarStatus();
+    await atualizarLogs();
+
+    // Polling normal
+    pollingInterval = setInterval(() => {
+        atualizarStatus();
+        atualizarLogs();
+    }, 5000);
+}
+
+init();
+</script>
+</body>
+</html>

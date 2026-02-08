@@ -1,0 +1,8 @@
+flask
+flask-cors
+gunicorn
+xmltodict
+pandas
+openpyxl
+PyMuPDF
+python-barcode

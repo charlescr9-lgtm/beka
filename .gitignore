@@ -1,0 +1,15 @@
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
+*.egg-info/
+.env
+config_dashboard.json
+tmp_*.json
+*.pdf
+*.zip
+*.xlsx
+xmls_extraidos/
+__analyze_temp.py
+UsersMicroDesktopEtiquetastmp_check.json
