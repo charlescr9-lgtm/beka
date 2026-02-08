@@ -452,6 +452,78 @@
         }
 
         /* UPLOAD ZONE */
+        /* HELP BUTTON */
+        .btn-help {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: var(--bg-input);
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: var(--transition);
+            flex-shrink: 0;
+        }
+        .btn-help:hover {
+            color: var(--accent);
+            border-color: var(--accent);
+            background: rgba(240, 93, 35, 0.1);
+        }
+
+        /* HELP MODAL */
+        .modal-ajuda {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            backdrop-filter: blur(4px);
+        }
+        .modal-ajuda-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            width: 520px;
+            max-width: 92vw;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-ajuda-content h3 {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .modal-ajuda-content h3 i { color: var(--accent); }
+        .modal-ajuda-content p, .modal-ajuda-content li {
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: 8px;
+        }
+        .modal-ajuda-content ol, .modal-ajuda-content ul {
+            padding-left: 20px;
+            margin-bottom: 12px;
+        }
+        .modal-ajuda-content .destaque {
+            background: rgba(240, 93, 35, 0.1);
+            border-left: 3px solid var(--accent);
+            padding: 10px 14px;
+            border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+            margin: 12px 0;
+            font-size: 12px;
+            color: var(--text-primary);
+        }
+
         .upload-zone {
             border: 2px dashed var(--border);
             border-radius: var(--radius);
@@ -771,12 +843,6 @@
         <button id="btnAssinar" class="btn btn-sm" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9); color:#fff; display:none;" onclick="assinarPremium()">
             <i class="fas fa-crown"></i> Assinar Premium
         </button>
-        <button class="btn btn-secondary btn-sm" onclick="abrirPasta('entrada')">
-            <i class="fas fa-folder-open"></i> Pasta Entrada
-        </button>
-        <button class="btn btn-secondary btn-sm" onclick="abrirPasta('saida')">
-            <i class="fas fa-folder"></i> Pasta Saida
-        </button>
         <button class="btn btn-secondary btn-sm" onclick="sair()" title="Sair">
             <i class="fas fa-sign-out-alt"></i> Sair
         </button>
@@ -811,22 +877,52 @@
     <!-- ==================== PAINEL ==================== -->
     <div class="tab-content active" id="tab-painel">
 
+        <!-- Upload Zone (no Painel) -->
+        <div style="margin-bottom: 24px;">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                <h3 class="section-title" style="margin-bottom:0;"><i class="fas fa-upload"></i> Upload de Arquivos</h3>
+                <button class="btn-help" onclick="mostrarAjuda('upload')" title="Como fazer upload">
+                    <i class="fas fa-question-circle"></i>
+                </button>
+            </div>
+            <div class="upload-zone" id="uploadZone"
+                 ondragover="event.preventDefault(); this.classList.add('dragover')"
+                 ondragleave="this.classList.remove('dragover')"
+                 ondrop="handleDrop(event)"
+                 onclick="document.getElementById('fileInput').click()">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <h4>Arraste arquivos aqui ou clique para selecionar</h4>
+                <p>Aceita arquivos PDF (etiquetas) e ZIP (notas fiscais XML)</p>
+            </div>
+            <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip" onchange="handleUpload(this.files)">
+        </div>
+
         <!-- Botao Processar -->
         <div class="process-section">
             <div class="process-info">
-                <h3><i class="fas fa-rocket"></i> Processar Etiquetas</h3>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <h3 style="margin:0;"><i class="fas fa-rocket"></i> Processar Etiquetas</h3>
+                    <button class="btn-help" onclick="mostrarAjuda('processar')" title="Como processar">
+                        <i class="fas fa-question-circle"></i>
+                    </button>
+                </div>
                 <p>Carregar XMLs, recortar etiquetas dos PDFs e gerar saida por loja</p>
                 <div class="progress-bar" id="progressBar">
                     <div class="progress-bar-fill"></div>
                 </div>
             </div>
-            <div style="display:flex; gap:12px; flex-wrap:wrap;">
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
                 <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()">
                     <i class="fas fa-play"></i> Iniciar Processamento
                 </button>
-                <button class="btn btn-lg" id="btnLucro" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer;">
-                    <i class="fas fa-dollar-sign"></i> Resumo de Lucro
-                </button>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <button class="btn btn-lg" id="btnLucro" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer;">
+                        <i class="fas fa-dollar-sign"></i> Resumo de Lucro
+                    </button>
+                    <button class="btn-help" onclick="mostrarAjuda('lucro')" title="Como funciona o calculo de lucro">
+                        <i class="fas fa-question-circle"></i>
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -881,28 +977,11 @@
 
     <!-- ==================== ARQUIVOS ==================== -->
     <div class="tab-content" id="tab-arquivos">
-        <h3 class="section-title"><i class="fas fa-upload"></i> Upload de Arquivos</h3>
-
-        <!-- Upload Zone -->
-        <div class="upload-zone" id="uploadZone"
-             ondragover="event.preventDefault(); this.classList.add('dragover')"
-             ondragleave="this.classList.remove('dragover')"
-             ondrop="handleDrop(event)"
-             onclick="document.getElementById('fileInput').click()">
-            <i class="fas fa-cloud-upload-alt"></i>
-            <h4>Arraste arquivos aqui ou clique para selecionar</h4>
-            <p>Aceita arquivos PDF (etiquetas) e ZIP (notas fiscais XML)</p>
-        </div>
-        <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip" onchange="handleUpload(this.files)">
-
-        <!-- Arquivos na Pasta -->
-        <div style="margin-top: 24px;">
-            <h3 class="section-title"><i class="fas fa-folder"></i> Arquivos na Pasta de Entrada</h3>
-            <div id="listaArquivos">
-                <div class="empty-state">
-                    <i class="fas fa-folder-open"></i>
-                    <h3>Carregando...</h3>
-                </div>
+        <h3 class="section-title"><i class="fas fa-folder"></i> Arquivos na Pasta de Entrada</h3>
+        <div id="listaArquivos">
+            <div class="empty-state">
+                <i class="fas fa-folder-open"></i>
+                <h3>Carregando...</h3>
             </div>
         </div>
     </div>
@@ -1057,9 +1136,12 @@
             <div class="card">
                 <div class="card-header">
                     <span class="card-title"><i class="fas fa-calculator"></i> Calculadora de Lucro</span>
+                    <button class="btn-help" onclick="mostrarAjuda('calculadora')" title="Como funciona a calculadora">
+                        <i class="fas fa-question-circle"></i>
+                    </button>
                 </div>
                 <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
-                    Parametros para o calculo de lucro. O match de SKU usa os 4 primeiros digitos.
+                    Parametros para o calculo de lucro. O match de SKU busca o SKU completo ou o maior prefixo correspondente.
                 </p>
                 <div class="form-row">
                     <div class="form-group">
@@ -1083,10 +1165,13 @@
                 </div>
                 <div class="form-group" style="margin-top:12px;">
                     <label class="form-label">Planilha de Custos (.xlsx)</label>
-                    <div style="display:flex; gap:12px; align-items:center;">
+                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                         <button class="btn btn-primary btn-sm" onclick="document.getElementById('inputCustos').click()">
                             <i class="fas fa-upload"></i> Upload Planilha
                         </button>
+                        <a class="btn btn-secondary btn-sm" href="/api/exemplo-custos" target="_blank">
+                            <i class="fas fa-download"></i> Baixar Exemplo
+                        </a>
                         <input type="file" id="inputCustos" accept=".xlsx" style="display:none;" onchange="uploadCustos(this)">
                         <span id="lblPlanilhaCustos" style="font-size:12px; color:var(--text-muted);">Nenhuma planilha carregada</span>
                     </div>
@@ -1417,9 +1502,6 @@ function renderResultadosLojas(res) {
                 <a class="btn btn-secondary btn-sm" href="/api/download/${encodeURIComponent(l.nome)}/${encodeURIComponent(l.xlsx)}" target="_blank">
                     <i class="fas fa-file-excel"></i> XLSX
                 </a>
-                <button class="btn btn-secondary btn-sm" onclick="abrirPastaLoja('${l.nome}')">
-                    <i class="fas fa-folder-open"></i>
-                </button>
             </div>
         </div>`;
     }).join('') + '</div>';
@@ -1897,8 +1979,7 @@ async function gerarLucro() {
     toast('Gerando relatorio de lucro...', 'info');
 
     try {
-        const resp = await fetch('/api/gerar-lucro', { method: 'POST' });
-        const data = await resp.json();
+        const data = await fetchAPI('/api/gerar-lucro', { method: 'POST' });
         if (data.erro) {
             toast(data.erro, 'error');
         } else {
@@ -2008,6 +2089,117 @@ function renderResumoLucro(data) {
         ${alertaCusto}
         ${tabelaLojas}
     </div>`;
+}
+
+// ================================================================
+// AJUDA / TUTORIAL
+// ================================================================
+function mostrarAjuda(topico) {
+    const ajudas = {
+        upload: {
+            titulo: 'Como fazer Upload de Arquivos',
+            icone: 'fa-upload',
+            conteudo: `
+                <ol>
+                    <li>Clique na area de upload ou arraste seus arquivos para ela</li>
+                    <li>Envie os <strong>PDFs</strong> das etiquetas geradas pela Shopee</li>
+                    <li>Envie os <strong>ZIPs</strong> contendo as notas fiscais em XML</li>
+                </ol>
+                <div class="destaque">
+                    <strong>Dica:</strong> Voce pode enviar varios arquivos de uma vez! Os PDFs contem as etiquetas e os ZIPs contem os XMLs das notas fiscais que serao usados para identificar lojas e produtos.
+                </div>
+                <p>Apos o upload, seus arquivos apareceram na aba <strong>Arquivos</strong> e estarao prontos para processamento.</p>
+            `
+        },
+        processar: {
+            titulo: 'Como Processar Etiquetas',
+            icone: 'fa-rocket',
+            conteudo: `
+                <ol>
+                    <li>Primeiro, faca upload dos <strong>PDFs</strong> (etiquetas) e <strong>ZIPs</strong> (XMLs das notas fiscais)</li>
+                    <li>Clique em <strong>"Iniciar Processamento"</strong></li>
+                    <li>O sistema ira automaticamente:
+                        <ul>
+                            <li>Ler os XMLs para identificar as lojas e produtos</li>
+                            <li>Recortar cada etiqueta do PDF</li>
+                            <li>Adicionar informacoes do produto (SKU e quantidade) em cada etiqueta</li>
+                            <li>Separar por loja e gerar um PDF por loja</li>
+                            <li>Gerar um resumo XLSX com todos os SKUs e quantidades</li>
+                        </ul>
+                    </li>
+                    <li>Acompanhe o progresso na aba <strong>Logs</strong></li>
+                    <li>Baixe os resultados na aba <strong>Resultados</strong></li>
+                </ol>
+                <div class="destaque">
+                    <strong>Importante:</strong> Cada loja tera sua propria pasta com PDF de etiquetas e planilha XLSX de resumo.
+                </div>
+            `
+        },
+        lucro: {
+            titulo: 'Como funciona o Resumo de Lucro',
+            icone: 'fa-dollar-sign',
+            conteudo: `
+                <ol>
+                    <li>Va em <strong>Configuracoes > Calculadora de Lucro</strong></li>
+                    <li>Faca upload da sua <strong>planilha de custos</strong> (.xlsx) com:
+                        <ul>
+                            <li>Coluna A = SKU do produto</li>
+                            <li>Coluna B = Custo unitario</li>
+                        </ul>
+                    </li>
+                    <li>Configure os parametros: taxa Shopee, imposto, custo fixo, etc.</li>
+                    <li>Processe as etiquetas normalmente</li>
+                    <li>Clique em <strong>"Resumo de Lucro"</strong></li>
+                </ol>
+                <p>O sistema calcula para cada item:</p>
+                <p><strong>Lucro = Valor Real - Imposto - Taxa Shopee - Custo Fixo - Custo Produto</strong></p>
+                <div class="destaque">
+                    <strong>Busca inteligente de SKU:</strong> O sistema primeiro busca o SKU exato na planilha. Se nao encontrar, busca pelo maior prefixo correspondente. Ex: se sua planilha tem "ABC" e o XML tem "ABC123", o sistema encontra o custo!
+                </div>
+                <p>Voce pode baixar um <strong>exemplo de planilha</strong> em Configuracoes > Calculadora de Lucro > "Baixar Exemplo".</p>
+            `
+        },
+        calculadora: {
+            titulo: 'Configuracao da Calculadora de Lucro',
+            icone: 'fa-calculator',
+            conteudo: `
+                <p>Configure os parametros usados no calculo de lucro:</p>
+                <ul>
+                    <li><strong>% Valor Declarado:</strong> Percentual do valor total declarado na NF (padrao: 100%)</li>
+                    <li><strong>Taxa Shopee:</strong> Percentual cobrado pela Shopee sobre o valor real (padrao: 18%)</li>
+                    <li><strong>Imposto Simples:</strong> Percentual de imposto sobre o valor declarado (padrao: 4%)</li>
+                    <li><strong>Custo Fixo:</strong> Custo fixo por unidade vendida, ex: embalagem (padrao: R$ 3,00)</li>
+                </ul>
+                <div class="destaque">
+                    <strong>Planilha de Custos:</strong> Faca upload de um arquivo .xlsx com Coluna A = SKU e Coluna B = Custo unitario. Clique em "Baixar Exemplo" para ver o formato correto.
+                </div>
+                <p><strong>Configuracao por loja:</strong> Apos processar etiquetas, voce pode definir parametros diferentes para cada loja na secao abaixo.</p>
+            `
+        },
+    };
+
+    const ajuda = ajudas[topico];
+    if (!ajuda) return;
+
+    let modal = document.getElementById('modalAjuda');
+    if (modal) modal.remove();
+
+    modal = document.createElement('div');
+    modal.id = 'modalAjuda';
+    modal.className = 'modal-ajuda';
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = `
+        <div class="modal-ajuda-content">
+            <h3><i class="fas ${ajuda.icone}"></i> ${ajuda.titulo}</h3>
+            ${ajuda.conteudo}
+            <div style="text-align:center; margin-top:16px;">
+                <button onclick="document.getElementById('modalAjuda').remove()" class="btn btn-primary btn-sm">
+                    <i class="fas fa-check"></i> Entendi
+                </button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
 }
 
 // ================================================================

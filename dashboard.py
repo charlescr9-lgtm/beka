@@ -445,6 +445,57 @@ def api_download_resumo_geral():
     return jsonify({"erro": "Arquivo nao encontrado"}), 404
 
 
+@app.route('/api/exemplo-custos')
+def api_exemplo_custos():
+    """Gera e retorna um XLSX de exemplo para a planilha de custos."""
+    import io
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Custos"
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin")
+    )
+
+    ws.append(["SKU", "Custo Unitario (R$)"])
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+        cell.border = thin_border
+
+    exemplos = [
+        ("PROD001", 12.50),
+        ("PROD002", 8.90),
+        ("ABC123", 15.00),
+        ("KIT-A", 25.00),
+        ("CAMISETA-P", 18.50),
+        ("CAMISETA-M", 18.50),
+        ("CAMISETA-G", 19.00),
+        ("CANECA01", 7.80),
+    ]
+    for sku, custo in exemplos:
+        ws.append([sku, custo])
+
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=2):
+        for cell in row:
+            cell.border = thin_border
+            if cell.col_idx == 2:
+                cell.number_format = 'R$ #,##0.00'
+
+    ws.column_dimensions['A'].width = 20
+    ws.column_dimensions['B'].width = 22
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name="exemplo_planilha_custos.xlsx",
+                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 @app.route('/api/upload-custos', methods=['POST'])
 @jwt_required()
 def api_upload_custos():
@@ -488,13 +539,29 @@ def _extrair_loja_nfe(nfe):
     return _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
 
 
-def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja):
+def _buscar_custo_inteligente(sku_xml, dict_custos, chaves_ordenadas):
+    """Busca inteligente de custo: primeiro match exato, depois maior prefixo."""
+    sku_upper = sku_xml.upper()
+    # Match exato
+    if sku_upper in dict_custos:
+        return dict_custos[sku_upper], True
+    # Busca por maior prefixo
+    for chave in chaves_ordenadas:
+        if sku_upper.startswith(chave):
+            return dict_custos[chave], True
+    return 0.0, False
+
+
+def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=None):
     nome_loja = _extrair_loja_nfe(nfe)
     cfg_loja = cfg_por_loja.get(nome_loja, {})
     perc_declarado = float(cfg_loja.get("perc_declarado", cfg.get("perc_declarado", 100))) / 100
     taxa_shopee = float(cfg_loja.get("taxa_shopee", cfg.get("taxa_shopee", 18))) / 100
     taxa_imposto = float(cfg_loja.get("imposto_simples", cfg.get("imposto_simples", 4))) / 100
     custo_fixo = float(cfg_loja.get("custo_fixo", cfg.get("custo_fixo", 3)))
+
+    if chaves_ordenadas is None:
+        chaves_ordenadas = sorted(dict_custos.keys(), key=len, reverse=True)
 
     dets = nfe.get("det", [])
     if not isinstance(dets, list):
@@ -506,13 +573,11 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja):
         prod = item.get("prod", {})
         sku_xml = str(prod.get("cProd", "")).strip()
         qtd = float(prod.get("qCom", 1))
-        sku_busca = sku_xml[:4]
 
-        c_produto_unit = dict_custos.get(sku_busca, 0.0)
+        c_produto_unit, encontrou = _buscar_custo_inteligente(sku_xml, dict_custos, chaves_ordenadas)
         c_produto_total = c_produto_unit * qtd
 
-        eh_sem_custo = sku_busca not in dict_custos
-        if eh_sem_custo:
+        if not encontrou:
             sem_custo.append(len(itens))
 
         v_declarado = float(prod.get("vProd", 0))
@@ -559,10 +624,12 @@ def api_gerar_lucro():
         df_custos = pd.read_excel(caminho_custos)
         dict_custos = {}
         for _, row in df_custos.iterrows():
-            sku_original = str(row.iloc[0]).strip()
+            sku_original = str(row.iloc[0]).strip().upper()
             custo = float(row.iloc[1]) if pd.notnull(row.iloc[1]) else 0.0
-            sku_chave = sku_original[:4]
-            dict_custos[sku_chave] = custo
+            if sku_original:
+                dict_custos[sku_original] = custo
+        # Pre-ordenar chaves por tamanho (maior primeiro) para busca inteligente
+        _chaves_custos_ordenadas = sorted(dict_custos.keys(), key=len, reverse=True)
 
         cfg_por_loja = cfg.get("lucro_por_loja", {})
 
@@ -576,7 +643,7 @@ def api_gerar_lucro():
                 nfe = doc["NFe"]["infNFe"]
             else:
                 return
-            nome_loja, itens, sem_custo = _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja)
+            nome_loja, itens, sem_custo = _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, _chaves_custos_ordenadas)
             offset = len(loja_dados[nome_loja]["itens"])
             loja_dados[nome_loja]["itens"].extend(itens)
             loja_dados[nome_loja]["linhas_sem_custo"].extend([i + offset for i in sem_custo])
