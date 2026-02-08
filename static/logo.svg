@@ -1,0 +1,24 @@
+<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 250' width='200' height='250'>
+  <!-- Cat body (large O shape) -->
+  <ellipse cx='85' cy='150' rx='60' ry='70' fill='none' stroke='black' stroke-width='28'/>
+  <!-- Cat head -->
+  <circle cx='85' cy='62' r='22' fill='black'/>
+  <!-- Cat ears -->
+  <polygon points='63,50 58,22 78,42' fill='black'/>
+  <polygon points='107,50 112,22 92,42' fill='black'/>
+  <!-- Cat eyes -->
+  <ellipse cx='76' cy='60' rx='8' ry='4' fill='white'/>
+  <ellipse cx='94' cy='60' rx='8' ry='4' fill='white'/>
+  <!-- Cat nose -->
+  <polygon points='85,67 82,71 88,71' fill='white'/>
+  <!-- Cat whiskers left -->
+  <line x1='40' y1='58' x2='70' y2='62' stroke='black' stroke-width='3'/>
+  <line x1='40' y1='66' x2='70' y2='66' stroke='black' stroke-width='3'/>
+  <line x1='40' y1='74' x2='70' y2='70' stroke='black' stroke-width='3'/>
+  <!-- Cat whiskers right -->
+  <line x1='100' y1='62' x2='130' y2='58' stroke='black' stroke-width='3'/>
+  <line x1='100' y1='66' x2='130' y2='66' stroke='black' stroke-width='3'/>
+  <line x1='100' y1='70' x2='130' y2='74' stroke='black' stroke-width='3'/>
+  <!-- Cat tail -->
+  <path d='M130,190 Q160,190 165,170 Q170,150 180,155 Q190,160 185,175 Q175,210 150,210' fill='none' stroke='black' stroke-width='14' stroke-linecap='round'/>
+</svg>

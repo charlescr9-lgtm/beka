@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Dashboard Interativo - Processador de Etiquetas Shopee
+Dashboard Interativo - Beka Market Place
 Backend Flask com API REST + Autenticacao JWT + Multi-usuario
 """
 
@@ -1332,7 +1332,7 @@ def _formatar_tamanho(bytes_val):
 # ----------------------------------------------------------------
 if __name__ == '__main__':
     print("=" * 60)
-    print("DASHBOARD - Processador de Etiquetas Shopee")
+    print("DASHBOARD - Beka Market Place")
     print("=" * 60)
     print(f"\n  Abra no navegador: http://localhost:5000\n")
     print("=" * 60)

@@ -83,7 +83,7 @@ class User(db.Model):
             base = os.path.join(volume, "users")
         else:
             base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
-        pasta = os.path.join(base, str(self.id), "saida")
+        pasta = os.path.join(base, str(self.id), "Etiquetas prontas")
         os.makedirs(pasta, exist_ok=True)
         return pasta
 

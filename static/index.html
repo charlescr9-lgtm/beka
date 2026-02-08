@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Etiquetas Shopee - Dashboard</title>
+    <title>Beka Market Place - Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <style>
@@ -76,14 +76,14 @@
         .logo {
             width: 42px;
             height: 42px;
-            background: linear-gradient(135deg, var(--accent), #ff8c42);
+            background: transparent;
             border-radius: var(--radius-sm);
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 20px;
             color: white;
-            box-shadow: 0 4px 16px var(--accent-glow);
+            overflow: hidden;
         }
 
         .header-title h1 {
@@ -828,9 +828,9 @@
 <!-- HEADER -->
 <header class="header">
     <div class="header-left">
-        <div class="logo"><i class="fas fa-tags"></i></div>
+        <div class="logo"><img src="/static/logo.svg" alt="Beka" style="width:100%; height:100%; object-fit:contain; border-radius:inherit;"></div>
         <div class="header-title">
-            <h1>Etiquetas Shopee</h1>
+            <h1>Beka Market Place</h1>
             <span>Processador de Etiquetas &amp; DANFE</span>
         </div>
     </div>
@@ -1208,6 +1208,7 @@
 const API = '';
 let pollingInterval = null;
 let logOffset = 0;
+let _ultimoResultadoJSON = '';  // Cache para evitar re-render desnecessario
 
 // ================================================================
 // AUTH
@@ -1397,9 +1398,43 @@ async function atualizarStatus() {
     if (data.ultimo_resultado) {
         document.getElementById('statEtiquetas').textContent = data.ultimo_resultado.total_etiquetas;
         document.getElementById('statLojas').textContent = data.ultimo_resultado.total_lojas;
-        renderUltimoResultado(data.ultimo_resultado);
-        renderResultadosLojas(data.ultimo_resultado);
-        renderResumoGeral(data.ultimo_resultado);
+
+        // So re-renderiza resultados se os dados mudaram (evita perder checkboxes marcados)
+        const resultadoJSON = JSON.stringify(data.ultimo_resultado);
+        if (resultadoJSON !== _ultimoResultadoJSON) {
+            _ultimoResultadoJSON = resultadoJSON;
+
+            // Salvar estado dos checkboxes antes de re-renderizar
+            const checkedLojas = new Set();
+            document.querySelectorAll('.loja-check:checked').forEach(c => checkedLojas.add(c.dataset.cnpj));
+            const checkedGrupoLojas = new Set();
+            document.querySelectorAll('.grupo-loja-check:checked').forEach(c => checkedGrupoLojas.add(c.dataset.cnpj));
+
+            renderUltimoResultado(data.ultimo_resultado);
+            renderResultadosLojas(data.ultimo_resultado);
+            renderResumoGeral(data.ultimo_resultado);
+
+            // Restaurar checkboxes apos re-render
+            if (checkedLojas.size > 0) {
+                document.querySelectorAll('.loja-check').forEach(c => {
+                    if (checkedLojas.has(c.dataset.cnpj)) c.checked = true;
+                });
+                atualizarBarraAgrupar();
+            }
+
+            // Lojas disponiveis para agrupamento
+            if (data.ultimo_resultado.lojas) {
+                renderLojasParaGrupo(data.ultimo_resultado.lojas);
+                renderConfigLucroLojas(data.ultimo_resultado.lojas);
+
+                // Restaurar checkboxes de grupo
+                if (checkedGrupoLojas.size > 0) {
+                    document.querySelectorAll('.grupo-loja-check').forEach(c => {
+                        if (checkedGrupoLojas.has(c.dataset.cnpj)) c.checked = true;
+                    });
+                }
+            }
+        }
     } else {
         document.getElementById('statEtiquetas').textContent = '-';
         document.getElementById('statLojas').textContent = '-';
@@ -1433,12 +1468,6 @@ async function atualizarStatus() {
     // Agrupamentos
     if (data.agrupamentos) {
         renderGruposSalvos(data.agrupamentos);
-    }
-
-    // Lojas disponiveis para agrupamento (do ultimo resultado)
-    if (data.ultimo_resultado && data.ultimo_resultado.lojas) {
-        renderLojasParaGrupo(data.ultimo_resultado.lojas);
-        renderConfigLucroLojas(data.ultimo_resultado.lojas);
     }
 
     // Lucro
