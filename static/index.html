@@ -76,7 +76,7 @@
         .logo {
             width: 42px;
             height: 42px;
-            background: transparent;
+            background: #f0ece6;
             border-radius: var(--radius-sm);
             display: flex;
             align-items: center;
@@ -84,6 +84,7 @@
             font-size: 20px;
             color: white;
             overflow: hidden;
+            padding: 4px;
         }
 
         .header-title h1 {
@@ -1514,7 +1515,18 @@ function renderResultadosLojas(res) {
     const el = document.getElementById('resultadosLojas');
     const colors = ['#f05d23', '#3b82f6', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
-    el.innerHTML = '<div class="resultado-grid">' + res.lojas.map((l, i) => {
+    // Botao grande de download no topo
+    let html = `
+    <div style="display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="baixarArquivo('/api/download-todos', 'Etiquetas_prontas.zip')" style="padding:14px 28px; font-size:15px; font-weight:700; flex:1; min-width:250px;">
+            <i class="fas fa-download" style="margin-right:8px;"></i> Baixar Todos os Resultados (ZIP)
+        </button>
+    </div>
+    <div style="font-size:12px; color:var(--text-muted); margin-bottom:16px;">
+        Ou baixe individualmente por loja:
+    </div>`;
+
+    html += '<div class="resultado-grid">' + res.lojas.map((l, i) => {
         const initial = l.nome.charAt(0).toUpperCase();
         const color = colors[i % colors.length];
         return `
@@ -1559,6 +1571,8 @@ function renderResultadosLojas(res) {
             </div>
         </div>`;
     }).join('') + '</div>';
+
+    el.innerHTML = html;
 }
 
 function renderArquivos(arquivos) {

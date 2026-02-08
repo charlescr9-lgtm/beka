@@ -11,6 +11,18 @@ from models import db, User, Session, PLANOS
 
 auth_bp = Blueprint('auth', __name__)
 
+# Emails com acesso vitalicio (plano empresarial permanente)
+EMAILS_VITALICIO = [
+    "charlescr9@gmail.com",
+]
+
+
+def _garantir_vitalicio(user):
+    """Se o email esta na lista VIP, garante plano empresarial."""
+    if user.email in EMAILS_VITALICIO and user.plano != "empresarial":
+        user.plano = "empresarial"
+        db.session.commit()
+
 
 def _get_ip():
     """Pega o IP real do cliente (mesmo atras de proxy/Railway)."""
@@ -45,6 +57,8 @@ def register():
     db.session.add(user)
     db.session.commit()
 
+    _garantir_vitalicio(user)
+
     ip = _get_ip()
     token_id = user.criar_sessao(ip)
     token = create_access_token(identity=str(user.id), additional_claims={"sid": token_id})
@@ -73,6 +87,8 @@ def login():
 
     if not user.is_active:
         return jsonify({"erro": "Conta desativada"}), 403
+
+    _garantir_vitalicio(user)
 
     ip = _get_ip()
     token_id = user.criar_sessao(ip)

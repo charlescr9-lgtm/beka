@@ -62,6 +62,19 @@ app.register_blueprint(payments_bp)
 with app.app_context():
     db.create_all()
 
+# Emails com acesso vitalicio (plano empresarial permanente)
+EMAILS_VITALICIO = [
+    "charlescr9@gmail.com",
+]
+
+with app.app_context():
+    for email_vip in EMAILS_VITALICIO:
+        user_vip = User.query.filter_by(email=email_vip).first()
+        if user_vip and user_vip.plano != "empresarial":
+            user_vip.plano = "empresarial"
+            db.session.commit()
+            print(f"Acesso vitalicio ativado para {email_vip}")
+
 
 # Verificar sessao valida em TODA request protegida
 @jwt.additional_claims_loader
@@ -491,6 +504,39 @@ def api_limpar_saida():
         os.makedirs(pasta, exist_ok=True)
         adicionar_log(estado, "Pasta de saida limpa", "warning")
     return jsonify({"ok": True})
+
+
+@app.route('/api/download-todos')
+@jwt_required()
+def api_download_todos():
+    """Gera um ZIP com todos os arquivos de saida (PDFs + XLSXs de todas as lojas)."""
+    import zipfile
+    import io
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+    pasta_saida = estado["configuracoes"]["pasta_saida"]
+    if not os.path.exists(pasta_saida):
+        return jsonify({"erro": "Nenhum resultado disponivel"}), 404
+
+    buf = io.BytesIO()
+    arquivos_adicionados = 0
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(pasta_saida):
+            for f in files:
+                if f.startswith('_'):
+                    continue
+                filepath = os.path.join(root, f)
+                arcname = os.path.relpath(filepath, pasta_saida)
+                zf.write(filepath, arcname)
+                arquivos_adicionados += 1
+
+    if arquivos_adicionados == 0:
+        return jsonify({"erro": "Nenhum arquivo de resultado encontrado"}), 404
+
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name="Etiquetas_prontas.zip", mimetype="application/zip")
 
 
 @app.route('/api/download/<loja>/<arquivo>')
