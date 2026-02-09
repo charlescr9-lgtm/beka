@@ -33,6 +33,14 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     is_active = db.Column(db.Boolean, default=True)
 
+    # Verificacao de email
+    email_verified = db.Column(db.Boolean, default=False)
+    email_code = db.Column(db.String(6), default='')
+    email_code_expires = db.Column(db.DateTime, nullable=True)
+
+    # Google OAuth
+    google_id = db.Column(db.String(255), nullable=True, unique=True)
+
     payments = db.relationship('Payment', backref='user', lazy=True)
     sessions = db.relationship('Session', backref='user', lazy=True)
 
@@ -143,6 +151,7 @@ class User(db.Model):
             "dispositivos": ips_ativos,
             "max_dispositivos": info["max_ips"],
             "created_at": self.created_at.strftime("%d/%m/%Y"),
+            "email_verified": self.email_verified,
         }
 
 

@@ -575,14 +575,44 @@ class ProcessadorEtiquetasShopee:
 
             if tem_dados_produto:
                 y_inicio = self.MARGEM_TOPO + alt_etiqueta + 2
-                self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
+                prox_prod = self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
                 com_xml += 1
+
+                # Gerar paginas de continuacao se sobraram produtos
+                cont_num = 1
+                while prox_prod < num_prods:
+                    pag_cont = doc_saida.new_page(
+                        width=self.LARGURA_PT,
+                        height=self.ALTURA_PT
+                    )
+                    # Cabecalho da continuacao
+                    pag_cont.insert_text(
+                        (self.MARGEM_ESQUERDA + 2, self.MARGEM_TOPO + 12),
+                        f"CONTINUACAO - NF: {nf}",
+                        fontsize=8, fontname="hebo", color=(0, 0, 0)
+                    )
+                    pag_cont.draw_line(
+                        (self.MARGEM_ESQUERDA, self.MARGEM_TOPO + 16),
+                        (self.LARGURA_PT - self.MARGEM_DIREITA, self.MARGEM_TOPO + 16),
+                        color=(0, 0, 0), width=0.5
+                    )
+                    # Desenhar produtos restantes
+                    prox_prod = self._desenhar_secao_produtos(
+                        pag_cont, dados, self.MARGEM_TOPO + 20, prod_inicio=prox_prod
+                    )
+                    # Numero de ordem na continuacao
+                    pag_cont.insert_text(
+                        (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                        f"p.{numero_ordem} (cont.{cont_num})",
+                        fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
+                    )
+                    cont_num += 1
             else:
                 sem_xml += 1
 
-            # Numero de ordem
+            # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR + 2),
+                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
                 f"p.{numero_ordem}",
                 fontsize=6,
                 fontname="helv",
@@ -599,8 +629,11 @@ class ProcessadorEtiquetasShopee:
 
         return total, n_simples, n_multi, com_xml, sem_xml
 
-    def _desenhar_secao_produtos(self, pagina, dados, y_inicio):
-        """Desenha a secao de codigo de barras + tabela de produtos abaixo da etiqueta."""
+    def _desenhar_secao_produtos(self, pagina, dados, y_inicio, prod_inicio=0):
+        """Desenha a secao de codigo de barras + tabela de produtos abaixo da etiqueta.
+        prod_inicio: indice do primeiro produto a desenhar (para continuacao).
+        Retorna indice do proximo produto nao desenhado (len(produtos) se todos couberam).
+        """
         preto = (0, 0, 0)
         fonte = "helv"
         fonte_bold = "hebo"
@@ -619,8 +652,8 @@ class ProcessadorEtiquetasShopee:
 
         y = y_inicio
 
-        # --- Codigo de barras da chave de acesso ---
-        if chave:
+        # --- Codigo de barras da chave de acesso (so na primeira pagina) ---
+        if chave and prod_inicio == 0:
             try:
                 svg_bytes = self._gerar_barcode_svg(chave)
                 barcode_rect = fitz.Rect(
@@ -642,6 +675,7 @@ class ProcessadorEtiquetasShopee:
             (margem_esq, y), (larg - margem_dir, y),
             color=preto, width=0.8
         )
+        y_tabela_topo = y
         y += line_h
 
         # Cabecalho - depende do modo de exibicao
@@ -654,12 +688,13 @@ class ProcessadorEtiquetasShopee:
         else:
             header_col1 = "CODIGO"
 
+        continuacao_txt = f" (cont. {prod_inicio + 1}-)" if prod_inicio > 0 else ""
         pagina.insert_text(
             (col_codigo, y), header_col1,
             fontsize=fs, fontname=fonte_bold, color=preto
         )
 
-        header_prod = f"VAR. (NF: {nf} T-ITENS: {total_itens} T-QUANT: {total_qtd})"
+        header_prod = f"VAR. (NF: {nf} T-ITENS: {total_itens} T-QUANT: {total_qtd}){continuacao_txt}"
         pagina.insert_text(
             (col_prod, y), header_prod,
             fontsize=fs, fontname=fonte_bold, color=preto
@@ -680,8 +715,10 @@ class ProcessadorEtiquetasShopee:
         # Limite inferior
         y_limite = self.ALTURA_PT - self.MARGEM_INFERIOR - 10
 
-        # Linhas de produtos
-        for i_prod, prod in enumerate(produtos[:10]):
+        # Linhas de produtos (sem limite fixo, respeita y_limite)
+        ultimo_desenhado = prod_inicio
+        for i_abs in range(prod_inicio, len(produtos)):
+            prod = produtos[i_abs]
             codigo = prod.get('codigo', '')
             descricao = prod.get('descricao', '')
             variacao = prod.get('variacao', '')
@@ -740,9 +777,10 @@ class ProcessadorEtiquetasShopee:
                 fontsize=fs_destaque, fontname=fonte_bold, color=preto
             )
             y += line_h
+            ultimo_desenhado = i_abs + 1
 
             # Linha divisoria entre produtos (exceto apos o ultimo)
-            if i_prod < len(produtos) - 1 and y + line_h <= y_limite:
+            if i_abs < len(produtos) - 1 and y + line_h <= y_limite:
                 pagina.draw_line(
                     (margem_esq, y - 1), (larg - margem_dir, y - 1),
                     color=(0.6, 0.6, 0.6), width=0.3
@@ -755,7 +793,7 @@ class ProcessadorEtiquetasShopee:
         )
 
         # Linhas verticais da tabela
-        y_top = y_inicio + 37 if chave else y_inicio + 5
+        y_top = y_tabela_topo + 5
         pagina.draw_line(
             (col_prod - 5, y_top), (col_prod - 5, y),
             color=preto, width=0.5
@@ -764,6 +802,8 @@ class ProcessadorEtiquetasShopee:
             (col_qtd - 5, y_top), (col_qtd - 5, y),
             color=preto, width=0.5
         )
+
+        return ultimo_desenhado
 
     # ----------------------------------------------------------------
     # ETIQUETAS ESPECIAIS: RETIRADA DO COMPRADOR (BEKA) E CPF
@@ -1542,9 +1582,9 @@ class ProcessadorEtiquetasShopee:
             if dados.get('produtos'):
                 self._desenhar_secao_produtos_cpf(nova_pag, dados, y_inicio, larg, alt_pagina=alt)
 
-            # Numero de ordem
+            # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (larg - self.MARGEM_DIREITA - 15, alt - self.MARGEM_INFERIOR + 2),
+                (larg - self.MARGEM_DIREITA - 15, alt - self.MARGEM_INFERIOR - 8),
                 f"p.{idx + 1}",
                 fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
             )
@@ -1889,9 +1929,9 @@ class ProcessadorEtiquetasShopee:
                 color=preto, width=0.5
             )
 
-            # Numero de ordem
+            # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (larg - margem_dir - 15, alt - margem_inf + 2),
+                (larg - margem_dir - 15, alt - margem_inf - 8),
                 f"p.{idx + 1}",
                 fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
             )

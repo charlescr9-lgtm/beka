@@ -910,13 +910,15 @@
                 </div>
             </div>
             <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-                <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()">
+                <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()" disabled>
                     <i class="fas fa-play"></i> Iniciar Processamento
                 </button>
                 <!-- Botao Lucro movido para aba Lucro -->
                 <button class="btn btn-lg" id="btnNovoLote" onclick="novoLote()" style="background: var(--warning); color: #000; border: none; cursor: pointer; font-weight:600;">
                     <i class="fas fa-broom"></i> Novo Lote
                 </button>
+            </div>
+            <div id="avisoUpload" style="display:none; margin-top:8px; padding:8px 14px; border-radius:8px; font-size:13px;">
             </div>
         </div>
 
@@ -1309,6 +1311,15 @@ function trocarTab(tab) {
     const tabEl = document.getElementById(`tab-${tab}`);
     if (navEl) navEl.classList.add('active');
     if (tabEl) tabEl.classList.add('active');
+    // Carregar lojas do Lucro independentemente (via XMLs da pasta_lucro)
+    if (tab === 'lucro') carregarLojasLucro();
+}
+
+async function carregarLojasLucro() {
+    const data = await fetchAPI('/api/lojas-lucro');
+    if (data && data.lojas && data.lojas.length > 0) {
+        renderConfigLucroLojas(data.lojas);
+    }
 }
 
 // ================================================================
@@ -1376,27 +1387,47 @@ async function atualizarStatus() {
     const bar = document.getElementById('progressBar');
     const btn = document.getElementById('btnProcessar');
 
+    // Stats
+    const pdfs = data.arquivos_entrada.filter(a => a.tipo === 'PDF').length;
+    const xlsxs = data.arquivos_entrada.filter(a => a.tipo === 'XLSX').length;
+    document.getElementById('statPdfs').textContent = pdfs;
+    document.getElementById('statZips').textContent = xlsxs;
+
+    // Aviso de upload
+    const avisoEl = document.getElementById('avisoUpload');
     if (data.processando) {
         dot.classList.add('processing');
         txt.textContent = 'Processando...';
         bar.classList.add('active');
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner"></span> Processando...';
+        avisoEl.style.display = 'none';
     } else {
         dot.classList.remove('processing');
         txt.textContent = 'Pronto';
         bar.classList.remove('active');
         if (!uploadEmAndamento) {
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+            if (pdfs === 0) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+                avisoEl.style.display = 'block';
+                avisoEl.style.background = 'rgba(255,80,80,0.15)';
+                avisoEl.style.color = '#ff6b6b';
+                avisoEl.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Envie pelo menos 1 arquivo PDF para processar.';
+            } else if (xlsxs === 0) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+                avisoEl.style.display = 'block';
+                avisoEl.style.background = 'rgba(255,193,7,0.15)';
+                avisoEl.style.color = '#ffc107';
+                avisoEl.innerHTML = '<i class="fas fa-info-circle"></i> Nenhum XLSX enviado. Os dados de produto (SKU, variacao) nao serao exibidos nas etiquetas.';
+            } else {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+                avisoEl.style.display = 'none';
+            }
         }
     }
-
-    // Stats
-    const pdfs = data.arquivos_entrada.filter(a => a.tipo === 'PDF').length;
-    const xlsxs = data.arquivos_entrada.filter(a => a.tipo === 'XLSX').length;
-    document.getElementById('statPdfs').textContent = pdfs;
-    document.getElementById('statZips').textContent = xlsxs;
 
     if (data.ultimo_resultado) {
         document.getElementById('statEtiquetas').textContent = data.ultimo_resultado.total_etiquetas;
@@ -1428,7 +1459,6 @@ async function atualizarStatus() {
             // Lojas disponiveis para agrupamento
             if (data.ultimo_resultado.lojas) {
                 renderLojasParaGrupo(data.ultimo_resultado.lojas);
-                renderConfigLucroLojas(data.ultimo_resultado.lojas);
 
                 // Restaurar checkboxes de grupo
                 if (checkedGrupoLojas.size > 0) {

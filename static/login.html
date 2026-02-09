@@ -195,6 +195,37 @@
                     <i class="fas fa-user-plus"></i> Criar Conta
                 </button>
             </div>
+
+            <!-- VERIFICACAO EMAIL -->
+            <div id="form-verificacao" class="form-section">
+                <p style="text-align:center; margin-bottom:20px; color:#aaa;">
+                    Enviamos um codigo de 6 digitos para o seu email.<br>
+                    <span id="verificacao-email-dest" style="color:#ff6b35;"></span>
+                </p>
+                <div class="form-group">
+                    <label>Codigo de Verificacao</label>
+                    <input type="text" id="verificacao-codigo" placeholder="000000" maxlength="6" style="text-align:center; font-size:24px; letter-spacing:8px;">
+                </div>
+                <button class="btn" onclick="verificarEmail()">
+                    <i class="fas fa-check"></i> Verificar
+                </button>
+                <button class="btn" onclick="reenviarCodigo()" style="background:transparent; border:1px solid #1e2540; margin-top:8px; font-size:13px;">
+                    <i class="fas fa-redo"></i> Reenviar codigo
+                </button>
+            </div>
+
+            <!-- SEPARADOR GOOGLE -->
+            <div id="google-separator" style="display:none; text-align:center; margin-top:20px; color:#555; font-size:13px;">
+                <span style="display:inline-block; width:40%; border-top:1px solid #1e2540; vertical-align:middle;"></span>
+                <span style="padding:0 10px;">ou</span>
+                <span style="display:inline-block; width:40%; border-top:1px solid #1e2540; vertical-align:middle;"></span>
+            </div>
+
+            <!-- BOTAO GOOGLE -->
+            <div id="google-btn-container" style="display:none; margin-top:16px;">
+                <div id="g_id_onload" data-callback="handleGoogleLogin" data-auto_prompt="false"></div>
+                <div class="g_id_signin" data-type="standard" data-shape="rectangular" data-theme="filled_black" data-text="signin_with" data-size="large" data-logo_alignment="left" data-width="356"></div>
+            </div>
         </div>
     </div>
 
@@ -214,9 +245,12 @@
             if (tab === 'login') {
                 document.querySelectorAll('.tab')[0].classList.add('active');
                 document.getElementById('form-login').classList.add('active');
-            } else {
+            } else if (tab === 'cadastro') {
                 document.querySelectorAll('.tab')[1].classList.add('active');
                 document.getElementById('form-cadastro').classList.add('active');
+            } else if (tab === 'verificacao') {
+                // Esconder tabs
+                document.getElementById('form-verificacao').classList.add('active');
             }
         }
 
@@ -293,12 +327,94 @@
                 const res = await fetch(API + '/api/auth/register', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, senha }),
+                    body: JSON.stringify({ email, senha, senha2 }),
                 });
                 const data = await res.json();
 
                 if (!res.ok) {
                     mostrarErro(data.erro || 'Erro ao cadastrar');
+                    return;
+                }
+
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('user', JSON.stringify(data.user));
+
+                // Se verificacao pendente, mostrar tela de verificacao
+                if (data.verificacao_pendente) {
+                    document.getElementById('verificacao-email-dest').textContent = email;
+                    trocarTab('verificacao');
+                    mostrarSucesso('Conta criada! Verifique seu email.');
+                } else {
+                    window.location.href = '/';
+                }
+            } catch (e) {
+                mostrarErro('Erro de conexao');
+            }
+        }
+
+        async function verificarEmail() {
+            esconderMensagens();
+            const codigo = document.getElementById('verificacao-codigo').value.trim();
+            if (!codigo || codigo.length !== 6) {
+                mostrarErro('Digite o codigo de 6 digitos');
+                return;
+            }
+
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(API + '/api/auth/verify-email', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                    body: JSON.stringify({ codigo }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    mostrarErro(data.erro || 'Erro ao verificar');
+                    return;
+                }
+
+                mostrarSucesso('Email verificado!');
+                setTimeout(() => { window.location.href = '/'; }, 1000);
+            } catch (e) {
+                mostrarErro('Erro de conexao');
+            }
+        }
+
+        async function reenviarCodigo() {
+            esconderMensagens();
+            try {
+                const token = localStorage.getItem('token');
+                const res = await fetch(API + '/api/auth/resend-code', {
+                    method: 'POST',
+                    headers: { 'Authorization': 'Bearer ' + token },
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    mostrarErro(data.erro || 'Erro ao reenviar');
+                    return;
+                }
+
+                mostrarSucesso(data.mensagem || 'Codigo reenviado!');
+            } catch (e) {
+                mostrarErro('Erro de conexao');
+            }
+        }
+
+        // Google OAuth callback
+        async function handleGoogleLogin(response) {
+            esconderMensagens();
+            try {
+                const res = await fetch(API + '/api/auth/google', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ credential: response.credential }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    mostrarErro(data.erro || 'Erro ao fazer login com Google');
                     return;
                 }
 
@@ -310,12 +426,42 @@
             }
         }
 
+        // Carregar Google Identity Services se configurado
+        async function initGoogle() {
+            try {
+                const res = await fetch(API + '/api/auth/google-client-id');
+                const data = await res.json();
+                if (data.client_id) {
+                    // Configurar o botao Google
+                    const onloadDiv = document.getElementById('g_id_onload');
+                    onloadDiv.setAttribute('data-client_id', data.client_id);
+
+                    // Carregar script do Google
+                    const script = document.createElement('script');
+                    script.src = 'https://accounts.google.com/gsi/client';
+                    script.async = true;
+                    script.defer = true;
+                    document.head.appendChild(script);
+
+                    // Mostrar separador e botao
+                    document.getElementById('google-separator').style.display = 'block';
+                    document.getElementById('google-btn-container').style.display = 'block';
+                }
+            } catch (e) {
+                // Google nao configurado, ignorar
+            }
+        }
+        initGoogle();
+
         // Enter para submeter
         document.getElementById('login-senha').addEventListener('keypress', e => {
             if (e.key === 'Enter') fazerLogin();
         });
         document.getElementById('cadastro-senha2').addEventListener('keypress', e => {
             if (e.key === 'Enter') fazerCadastro();
+        });
+        document.getElementById('verificacao-codigo').addEventListener('keypress', e => {
+            if (e.key === 'Enter') verificarEmail();
         });
     </script>
 </body>

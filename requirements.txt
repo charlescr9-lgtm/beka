@@ -10,3 +10,4 @@ openpyxl
 PyMuPDF
 python-barcode
 mercadopago
+google-auth

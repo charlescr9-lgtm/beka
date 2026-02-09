@@ -933,6 +933,53 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
     return nome_loja, itens, sem_custo
 
 
+@app.route('/api/lojas-lucro')
+@jwt_required()
+def api_lojas_lucro():
+    """Retorna lista de lojas encontradas nos XMLs da pasta_lucro (independente de etiquetas)."""
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+
+    cfg = estado["configuracoes"]
+    pasta_lucro = cfg.get("pasta_lucro", "")
+    lojas = []
+
+    if pasta_lucro and os.path.exists(pasta_lucro):
+        import zipfile
+        import re as re_mod
+        nomes_encontrados = set()
+
+        # Ler ZIPs
+        for f in os.listdir(pasta_lucro):
+            fp = os.path.join(pasta_lucro, f)
+            if f.lower().endswith('.zip') and zipfile.is_zipfile(fp):
+                try:
+                    with zipfile.ZipFile(fp) as zf:
+                        for nome in zf.namelist():
+                            if nome.lower().endswith('.xml'):
+                                conteudo = zf.read(nome).decode('utf-8', errors='ignore')
+                                m = re_mod.search(r'<xNome>([^<]+)</xNome>', conteudo)
+                                if m:
+                                    nomes_encontrados.add(m.group(1).strip())
+                except Exception:
+                    pass
+            elif f.lower().endswith('.xml'):
+                try:
+                    with open(fp, 'r', encoding='utf-8', errors='ignore') as xf:
+                        conteudo = xf.read()
+                    m = re_mod.search(r'<xNome>([^<]+)</xNome>', conteudo)
+                    if m:
+                        nomes_encontrados.add(m.group(1).strip())
+                except Exception:
+                    pass
+
+        lojas = [{"nome": n} for n in sorted(nomes_encontrados)]
+
+    return jsonify({"lojas": lojas})
+
+
 @app.route('/api/gerar-lucro', methods=['POST'])
 @jwt_required()
 def api_gerar_lucro():
