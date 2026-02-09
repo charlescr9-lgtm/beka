@@ -299,20 +299,64 @@ class ProcessadorEtiquetasShopee:
                 unicas.append(etq)
         return unicas, duplicadas
 
-    def _recortar_pagina(self, pagina, caminho_pdf):
-        """Recorta as 4 etiquetas de uma pagina A4 (grid 2x2)."""
+    def _detectar_layout_pagina(self, pagina):
+        """Detecta quantas etiquetas ha na pagina analisando o conteudo.
+        Retorna lista de clips (regioes) para recortar.
+        Layouts possiveis:
+          - 4 etiquetas (grid 2x2) - padrao Shopee para pedidos simples
+          - 2 etiquetas (2 linhas, largura total) - pedidos multi-produto
+          - 1 etiqueta (pagina inteira) - pedidos especiais
+        """
         rect = pagina.rect
         larg = rect.width
         alt = rect.height
         meio_x = larg / 2
         meio_y = alt / 2
 
-        quadrantes = [
+        # Testar grid 2x2 primeiro (padrao)
+        quadrantes_2x2 = [
             fitz.Rect(0, 0, meio_x, meio_y),
             fitz.Rect(meio_x, 0, larg, meio_y),
             fitz.Rect(0, meio_y, meio_x, alt),
             fitz.Rect(meio_x, meio_y, larg, alt),
         ]
+
+        # Contar quantos quadrantes 2x2 tem NF
+        nfs_2x2 = 0
+        for clip in quadrantes_2x2:
+            nf = self._extrair_nf_quadrante(pagina, clip)
+            if nf is not None:
+                nfs_2x2 += 1
+
+        # Se encontrou 2+ NFs no grid 2x2, usar este layout
+        if nfs_2x2 >= 2:
+            return quadrantes_2x2
+
+        # Testar layout 2 etiquetas (metade superior + metade inferior, largura total)
+        quadrantes_2x1 = [
+            fitz.Rect(0, 0, larg, meio_y),
+            fitz.Rect(0, meio_y, larg, alt),
+        ]
+
+        nfs_2x1 = 0
+        for clip in quadrantes_2x1:
+            nf = self._extrair_nf_quadrante(pagina, clip)
+            if nf is not None:
+                nfs_2x1 += 1
+
+        if nfs_2x1 >= 1:
+            return quadrantes_2x1
+
+        # Se nenhum layout funcionou mas grid 2x2 achou pelo menos 1 NF, usar 2x2
+        if nfs_2x2 >= 1:
+            return quadrantes_2x2
+
+        # Fallback: pagina inteira
+        return [fitz.Rect(0, 0, larg, alt)]
+
+    def _recortar_pagina(self, pagina, caminho_pdf):
+        """Recorta etiquetas de uma pagina, detectando automaticamente o layout."""
+        quadrantes = self._detectar_layout_pagina(pagina)
 
         etiquetas = []
         for idx, clip in enumerate(quadrantes):
