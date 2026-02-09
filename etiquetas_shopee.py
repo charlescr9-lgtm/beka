@@ -165,6 +165,7 @@ class ProcessadorEtiquetasShopee:
         pdfs = [f for f in os.listdir(pasta)
                 if f.lower().endswith('.pdf')
                 and not f.startswith('etiquetas_prontas')
+                and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
         todas_etiquetas = []
         for pdf_name in pdfs:
@@ -446,9 +447,16 @@ class ProcessadorEtiquetasShopee:
     # ORDENACAO
     # ----------------------------------------------------------------
     def _ordenar_etiquetas(self, etiquetas):
-        """Ordena: simples por SKU primeiro, multi-produto no final."""
-        simples = [e for e in etiquetas if e.get('num_produtos', 1) <= 1]
-        multiplos = [e for e in etiquetas if e.get('num_produtos', 1) > 1]
+        """Ordena: simples (1 item, qtd 1) por SKU primeiro, multi-produto/quantidade no final."""
+        simples = []
+        multiplos = []
+        for e in etiquetas:
+            num_prods = e.get('num_produtos', 1)
+            total_qtd = e.get('dados_xml', {}).get('total_qtd', 1)
+            if num_prods > 1 or total_qtd > 1:
+                multiplos.append(e)
+            else:
+                simples.append(e)
 
         simples.sort(key=lambda x: (x.get('sku', ''), x.get('nf', '')))
         multiplos.sort(key=lambda x: (x.get('sku', ''), x.get('nf', '')))
@@ -633,7 +641,7 @@ class ProcessadorEtiquetasShopee:
         y_limite = self.ALTURA_PT - self.MARGEM_INFERIOR - 10
 
         # Linhas de produtos
-        for prod in produtos[:10]:
+        for i_prod, prod in enumerate(produtos[:10]):
             codigo = prod.get('codigo', '')
             qtd = str(int(float(prod.get('qtd', '1'))))
 
@@ -653,6 +661,13 @@ class ProcessadorEtiquetasShopee:
                 fontsize=fs_destaque, fontname=fonte_bold, color=preto
             )
             y += line_h
+
+            # Linha divisoria entre produtos (exceto apos o ultimo)
+            if i_prod < len(produtos) - 1 and y + line_h <= y_limite:
+                pagina.draw_line(
+                    (margem_esq, y - 1), (larg - margem_dir, y - 1),
+                    color=(0.6, 0.6, 0.6), width=0.3
+                )
 
         # Linha inferior da tabela
         pagina.draw_line(
@@ -935,16 +950,21 @@ class ProcessadorEtiquetasShopee:
         return etiquetas
 
     def processar_cpf(self, pasta_entrada):
-        """Processa etiquetas CPF (lanim.pdf) usando dados de XLSX de declaracao.
+        """Processa etiquetas CPF (lanim*.pdf) usando dados de XLSX de declaracao.
         Detecta automaticamente qualquer XLSX com coluna order_sn + product_info.
+        Processa todos os PDFs com nome iniciando em 'lanim' (lanim.pdf, lanim 2.pdf, etc.)
         Retorna lista de etiquetas com loja fixa 'CPF'.
         """
-        caminho_pdf = os.path.join(pasta_entrada, 'lanim.pdf')
+        # Detectar todos os PDFs lanim*.pdf
+        pdfs_cpf = []
+        for f in os.listdir(pasta_entrada):
+            if f.lower().startswith('lanim') and f.lower().endswith('.pdf'):
+                pdfs_cpf.append(f)
 
-        if not os.path.exists(caminho_pdf):
+        if not pdfs_cpf:
             return []
 
-        print(f"\n  Processando etiquetas CPF...")
+        print(f"\n  Processando etiquetas CPF ({len(pdfs_cpf)} PDF(s))...")
 
         # Buscar XLSX de declaracao: primeiro lanim2.xlsx, depois qualquer XLSX com order_sn
         dados_xlsx = {}
@@ -972,7 +992,13 @@ class ProcessadorEtiquetasShopee:
             if not dados_xlsx and not xlsx_encontrados:
                 print(f"  AVISO: Nenhum XLSX de declaracao encontrado, etiquetas CPF sem dados de produto")
 
-        etiquetas = self.carregar_pdf_pagina_inteira(caminho_pdf, 'cpf', dados_xlsx)
+        etiquetas = []
+        for pdf_cpf in sorted(pdfs_cpf):
+            caminho_pdf = os.path.join(pasta_entrada, pdf_cpf)
+            etqs = self.carregar_pdf_pagina_inteira(caminho_pdf, 'cpf', dados_xlsx)
+            etiquetas.extend(etqs)
+            if len(pdfs_cpf) > 1:
+                print(f"  {pdf_cpf}: {len(etqs)} etiquetas CPF")
         return etiquetas
 
     # ----------------------------------------------------------------
@@ -1044,7 +1070,7 @@ class ProcessadorEtiquetasShopee:
         y_top_tabela = y_inicio + 2
 
         # Linhas de produtos
-        for prod in produtos[:10]:
+        for i_prod, prod in enumerate(produtos[:10]):
             if y + line_h > y_limite:
                 break
 
@@ -1073,6 +1099,13 @@ class ProcessadorEtiquetasShopee:
                 fontsize=fs_destaque, fontname=fonte_bold, color=preto
             )
             y += line_h
+
+            # Linha divisoria entre produtos (exceto apos o ultimo)
+            if i_prod < len(produtos) - 1 and y + line_h <= y_limite:
+                pagina.draw_line(
+                    (margem_esq, y - 1), (larg_pagina - margem_dir, y - 1),
+                    color=(0.6, 0.6, 0.6), width=0.3
+                )
 
         # Garantir que linhas nao ultrapassem o limite
         y_final = min(y, y_limite)
