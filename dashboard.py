@@ -1391,10 +1391,6 @@ def _executar_processamento(user_id):
                 adicionar_log(estado, f"AVISO: {n_sem_dados} etiquetas sem dados de produto (de {len(todas_etiquetas)} total)", "warning")
 
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
-            etiquetas_beka = proc.processar_beka(pasta_entrada)
-            if etiquetas_beka:
-                todas_etiquetas.extend(etiquetas_beka)
-                adicionar_log(estado, f"Retirada do comprador (beka): {len(etiquetas_beka)} etiquetas", "success")
 
             etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
             if etiquetas_cpf_especial:
@@ -1405,7 +1401,7 @@ def _executar_processamento(user_id):
             if etiquetas_shein:
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
 
-            if not etiquetas_beka and not etiquetas_cpf_especial and not etiquetas_shein:
+            if not etiquetas_cpf_especial and not etiquetas_shein:
                 adicionar_log(estado, "Nenhuma etiqueta especial encontrada", "info")
 
             todas_etiquetas, duplicadas = proc.remover_duplicatas(todas_etiquetas)

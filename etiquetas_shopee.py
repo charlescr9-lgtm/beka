@@ -763,7 +763,7 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
 
     # Nomes dos PDFs especiais (nao processados no grid 2x2)
-    PDFS_ESPECIAIS = ['beka.pdf', 'lanim.pdf', 'shein crua.pdf']
+    PDFS_ESPECIAIS = ['lanim.pdf', 'shein crua.pdf']
     # CNPJ e nome fixos para etiquetas CPF (sem XML/DANFE)
     LANIM_CNPJ = 'LANIM_CPF'
     LANIM_NOME = 'CPF'
@@ -2104,17 +2104,13 @@ def main():
     print("CARREGANDO ETIQUETAS...")
     todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
 
-    # 2b. Processar etiquetas especiais (retirada do comprador e CPF)
+    # 2b. Processar etiquetas especiais (CPF e Shein)
     print(f"\n{'='*40}")
     print("CARREGANDO ETIQUETAS ESPECIAIS...")
-    etiquetas_beka = proc.processar_beka(pasta_entrada)
     etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
     etiquetas_shein = proc.processar_shein(pasta_entrada)
-    todas_etiquetas.extend(etiquetas_beka)
     # CPF e Shein serao gerados com PDFs separados, mas ainda entram no resumo XLSX
     todas_etiquetas.extend(etiquetas_cpf_especial)
-    if etiquetas_beka:
-        print(f"  Retirada do comprador (beka): {len(etiquetas_beka)} etiquetas")
     if etiquetas_cpf_especial:
         print(f"  CPF: {len(etiquetas_cpf_especial)} etiquetas")
     if etiquetas_shein:
