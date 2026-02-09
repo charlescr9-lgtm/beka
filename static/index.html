@@ -887,7 +887,7 @@
                  onclick="document.getElementById('fileInput').click()">
                 <i class="fas fa-cloud-upload-alt"></i>
                 <h4>Arraste arquivos aqui ou clique para selecionar</h4>
-                <p>Aceita arquivos PDF (etiquetas), ZIP (notas fiscais XML) e XLSX (declaracao de conteudo)</p>
+                <p>Aceita arquivos PDF (etiquetas), XLSX (empacotamento) e ZIP (para calculadora de lucro)</p>
             </div>
             <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip,.xlsx,.xls" onchange="handleUpload(this.files)">
         </div>
@@ -936,11 +936,11 @@
             </div>
             <div class="card">
                 <div class="card-header">
-                    <span class="card-title">XMLs (ZIP)</span>
-                    <div class="card-icon blue"><i class="fas fa-file-archive"></i></div>
+                    <span class="card-title">XLSX</span>
+                    <div class="card-icon blue"><i class="fas fa-file-excel"></i></div>
                 </div>
                 <div class="card-value" id="statZips">-</div>
-                <div class="card-sub">Arquivos de notas fiscais</div>
+                <div class="card-sub">Planilhas de empacotamento</div>
             </div>
             <div class="card">
                 <div class="card-header">
@@ -1368,9 +1368,9 @@ async function atualizarStatus() {
 
     // Stats
     const pdfs = data.arquivos_entrada.filter(a => a.tipo === 'PDF').length;
-    const zips = data.arquivos_entrada.filter(a => a.tipo === 'ZIP').length;
+    const xlsxs = data.arquivos_entrada.filter(a => a.tipo === 'XLSX').length;
     document.getElementById('statPdfs').textContent = pdfs;
-    document.getElementById('statZips').textContent = zips;
+    document.getElementById('statZips').textContent = xlsxs;
 
     if (data.ultimo_resultado) {
         document.getElementById('statEtiquetas').textContent = data.ultimo_resultado.total_etiquetas;
@@ -2201,10 +2201,10 @@ function mostrarAjuda(topico) {
                 <ol>
                     <li>Clique na area de upload ou arraste seus arquivos para ela</li>
                     <li>Envie os <strong>PDFs</strong> das etiquetas geradas pela Shopee</li>
-                    <li>Envie os <strong>ZIPs</strong> contendo as notas fiscais em XML</li>
+                    <li>Envie os <strong>XLSX</strong> de empacotamento da Shopee (contem produtos e tracking)</li>
                 </ol>
                 <div class="destaque">
-                    <strong>Dica:</strong> Voce pode enviar varios arquivos de uma vez! Os PDFs contem as etiquetas e os ZIPs contem os XMLs das notas fiscais que serao usados para identificar lojas e produtos.
+                    <strong>Dica:</strong> Voce pode enviar varios arquivos de uma vez! Os PDFs contem as etiquetas e os XLSX contem os dados de produtos que serao usados para identificar lojas e montar a tabela de produtos.
                 </div>
                 <p>Apos o upload, seus arquivos apareceram na aba <strong>Arquivos</strong> e estarao prontos para processamento.</p>
             `
@@ -2214,11 +2214,11 @@ function mostrarAjuda(topico) {
             icone: 'fa-rocket',
             conteudo: `
                 <ol>
-                    <li>Primeiro, faca upload dos <strong>PDFs</strong> (etiquetas) e <strong>ZIPs</strong> (XMLs das notas fiscais)</li>
+                    <li>Primeiro, faca upload dos <strong>PDFs</strong> (etiquetas) e <strong>XLSX</strong> (empacotamento)</li>
                     <li>Clique em <strong>"Iniciar Processamento"</strong></li>
                     <li>O sistema ira automaticamente:
                         <ul>
-                            <li>Ler os XMLs para identificar as lojas e produtos</li>
+                            <li>Ler os XLSX para identificar produtos e tracking</li>
                             <li>Recortar cada etiqueta do PDF</li>
                             <li>Adicionar informacoes do produto (SKU e quantidade) em cada etiqueta</li>
                             <li>Separar por loja e gerar um PDF por loja</li>

@@ -302,7 +302,7 @@ def api_status():
             fp = os.path.join(pasta, f)
             if os.path.isfile(fp):
                 ext = os.path.splitext(f)[1].lower()
-                if ext in ('.pdf', '.zip', '.xlsx'):
+                if ext in ('.pdf', '.zip', '.xlsx', '.xls'):
                     tipo_arq = "PDF" if ext == '.pdf' else ("ZIP" if ext == '.zip' else "XLSX")
                     tamanho = os.path.getsize(fp)
                     arquivos.append({
@@ -1288,35 +1288,23 @@ def _executar_processamento(user_id):
             proc.fonte_produto = estado["configuracoes"].get("fonte_produto", 7)
             proc.exibicao_produto = estado["configuracoes"].get("exibicao_produto", "sku")
 
-            adicionar_log(estado, "Carregando XMLs dos arquivos ZIP...", "info")
-            zips = [f for f in os.listdir(pasta_entrada) if f.lower().endswith('.zip')]
-            total_xmls = 0
-            for z in zips:
-                caminho = os.path.join(pasta_entrada, z)
-                n = proc._carregar_zip(caminho)
-                total_xmls += n
-                adicionar_log(estado, f"  {z}: {n} XMLs", "info")
-
-            adicionar_log(estado, f"Total: {total_xmls} XMLs carregados", "success")
-            adicionar_log(estado, f"Lojas identificadas: {len(proc.cnpj_nome)}", "info")
-            for cnpj, nome in sorted(proc.cnpj_nome.items(), key=lambda x: x[1]):
-                adicionar_log(estado, f"  {nome} [{cnpj}]", "info")
-
-            # Carregar XLSX como fallback para quando nao tem XML
-            adicionar_log(estado, "Carregando XLSX (fallback para XML)...", "info")
+            # Carregar dados dos XLSX de empacotamento (produtos, tracking, order_sn)
+            adicionar_log(estado, "Carregando dados dos XLSX...", "info")
             proc.carregar_todos_xlsx(pasta_entrada)
             if proc.dados_xlsx_global:
                 adicionar_log(estado, f"XLSX: {len(proc.dados_xlsx_global)} pedidos, {len(proc.dados_xlsx_tracking)} trackings", "success")
+            else:
+                adicionar_log(estado, "Nenhum XLSX de empacotamento encontrado", "warning")
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
             todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
 
-            # Verificar quais etiquetas tem/nao tem XML correspondente
-            n_com_xml = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('chave'))
-            n_sem_xml = len(todas_etiquetas) - n_com_xml
-            if n_sem_xml > 0:
-                adicionar_log(estado, f"AVISO: {n_sem_xml} etiquetas sem XML correspondente (de {len(todas_etiquetas)} total)", "warning")
+            # Verificar quais etiquetas tem/nao tem dados de produto
+            n_com_dados = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('produtos'))
+            n_sem_dados = len(todas_etiquetas) - n_com_dados
+            if n_sem_dados > 0:
+                adicionar_log(estado, f"AVISO: {n_sem_dados} etiquetas sem dados de produto (de {len(todas_etiquetas)} total)", "warning")
 
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
             etiquetas_beka = proc.processar_beka(pasta_entrada)

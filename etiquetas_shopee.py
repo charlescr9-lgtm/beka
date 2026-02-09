@@ -2082,17 +2082,9 @@ def main():
 
     proc = ProcessadorEtiquetasShopee()
 
-    # 1. Carregar TODOS os XMLs
+    # 1. Carregar dados dos XLSX de empacotamento
     print(f"\n{'='*40}")
-    print("CARREGANDO XMLs...")
-    proc.carregar_todos_xmls(pasta_entrada)
-    print(f"  Lojas encontradas nos XMLs:")
-    for cnpj, nome in sorted(proc.cnpj_nome.items(), key=lambda x: x[1]):
-        print(f"    [{cnpj}] {nome}")
-
-    # 1b. Carregar TODOS os XLSX (fallback para quando nao tem XML)
-    print(f"\n{'='*40}")
-    print("CARREGANDO XLSX (fallback)...")
+    print("CARREGANDO XLSX...")
     proc.carregar_todos_xlsx(pasta_entrada)
 
     # 2. Carregar e recortar TODOS os PDFs
