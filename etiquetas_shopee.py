@@ -206,65 +206,70 @@ class ProcessadorEtiquetasShopee:
     def _extrair_nome_loja_remetente(self, texto):
         """Extrai o nome da loja do campo REMETENTE da etiqueta Shopee.
 
-        Formato tipico da etiqueta apos 'REMETENTE':
-            CEP:
-            Envio previsto:
-            [endereco destinatario]
-            [order_sn]
-            [CEP destinatario]
-            [bairro]
+        Formato tipico da etiqueta Shopee:
+            [dados destinatario]
             [tracking BR...]
             NOME_DA_LOJA          <-- queremos este
             [endereco remetente]
             [CEP remetente]
 
-        Estrategia: encontrar o tracking code (BR + digitos + letra) e
-        pegar a proxima linha que nao e endereco/CEP/numero.
+        Estrategia principal: encontrar o tracking code (BR + digitos + letra)
+        e pegar a PRIMEIRA linha seguinte que parece um nome de loja.
         """
-        def _filtrar_nome(linhas):
-            """Filtra linhas candidatas a nome da loja."""
-            for linha in linhas:
-                # Pular enderecos
-                if re.match(r'^(Rua|Avenida|Travessa|Alameda|R\s|Av\s|CEP|Estrada|Rodovia|Praca|Largo)', linha, re.IGNORECASE):
-                    continue
-                # Pular CEPs e numeros puros
-                if re.match(r'^[\d\s.,-/]+$', linha):
-                    continue
-                # Pular linhas curtas
-                if len(linha) < 3:
-                    continue
-                # Pular "Envio previsto", "Peso" e similares
-                if re.match(r'^(envio previsto|peso|volume|frete|destinat)', linha, re.IGNORECASE):
-                    continue
-                # Pular linhas que sao apenas estado/cidade (formato: Cidade - UF)
-                if re.match(r'^[A-Z]{2}$', linha):
-                    continue
-                return linha
-            return None
+        def _eh_endereco_ou_cep(linha):
+            """Retorna True se a linha parece ser endereco, CEP ou dado irrelevante."""
+            l = linha.strip()
+            if not l or len(l) < 3:
+                return True
+            # CEPs: 12345-678 ou 12345678 ou apenas numeros
+            if re.match(r'^[\d\s.,-/]+$', l):
+                return True
+            if re.match(r'^\d{5}-?\d{3}', l):
+                return True
+            # Enderecos
+            if re.match(r'^(Rua|Avenida|Travessa|Alameda|Estrada|Rodovia|Praca|Largo|R\.|Av\.|Rod\.|Est\.)\s', l, re.IGNORECASE):
+                return True
+            # Bairro / Complemento com numeros no meio: "Bloco A, 123" etc
+            if re.match(r'^(Bloco|Lote|Quadra|Qd|Lt|Sl|Sala|Apto|Apt|Conj|Casa|Galpao|N[°o]?\s)', l, re.IGNORECASE):
+                return True
+            # Linha que e so "Cidade, Estado" ou "Cidade - UF" ou "UF"
+            if re.match(r'^[A-Z]{2}$', l):
+                return True
+            # Formato "Cidade, Estado" ou "Cidade - UF" (ex: "Italva, Rio de Janeiro")
+            if re.match(r'^[A-Za-z\s]+,\s*[A-Za-z\s]+$', l) and len(l.split(',')) == 2:
+                parte2 = l.split(',')[1].strip()
+                # Se a segunda parte parece um estado brasileiro
+                estados = ['acre', 'alagoas', 'amapa', 'amazonas', 'bahia', 'ceara',
+                    'distrito federal', 'espirito santo', 'goias', 'maranhao', 'mato grosso',
+                    'mato grosso do sul', 'minas gerais', 'para', 'paraiba', 'parana',
+                    'pernambuco', 'piaui', 'rio de janeiro', 'rio grande do norte',
+                    'rio grande do sul', 'rondonia', 'roraima', 'santa catarina',
+                    'sao paulo', 'sergipe', 'tocantins']
+                if parte2.lower() in estados or len(parte2) == 2:
+                    return True
+            # Texto com CEP embutido
+            if re.search(r'\d{5}-?\d{3}', l):
+                return True
+            # Palavras-chave de etiqueta
+            if re.match(r'^(envio previsto|peso|volume|frete|destinat|remet|cep)', l, re.IGNORECASE):
+                return True
+            return False
 
         # Estrategia 1: Buscar apos tracking code tipo BR261920610412I
-        m = re.search(r'BR\d{10,}[A-Z]\s*\n((?:[^\n]+\n){1,3})', texto)
+        m = re.search(r'BR\d{10,}[A-Z]\s*\n((?:[^\n]+\n){1,5})', texto)
         if m:
             linhas = [l.strip() for l in m.group(1).split('\n') if l.strip()]
-            nome = _filtrar_nome(linhas)
-            if nome:
-                return nome
+            for linha in linhas:
+                if not _eh_endereco_ou_cep(linha):
+                    return linha
 
-        # Estrategia 2: Buscar apos "REMETENTE" (quando nao tem tracking BR)
-        m2 = re.search(r'REMETENTE\s*\n((?:[^\n]+\n){1,5})', texto, re.IGNORECASE)
+        # Estrategia 2: Buscar apos tracking generico (XX + digitos)
+        m2 = re.search(r'[A-Z]{2}\d{9,}[A-Z]?\s*\n((?:[^\n]+\n){1,5})', texto)
         if m2:
             linhas = [l.strip() for l in m2.group(1).split('\n') if l.strip()]
-            nome = _filtrar_nome(linhas)
-            if nome:
-                return nome
-
-        # Estrategia 3: Buscar apos sequencia de tracking generico (qualquer codigo longo)
-        m3 = re.search(r'[A-Z]{2}\d{9,}[A-Z]?\s*\n((?:[^\n]+\n){1,3})', texto)
-        if m3:
-            linhas = [l.strip() for l in m3.group(1).split('\n') if l.strip()]
-            nome = _filtrar_nome(linhas)
-            if nome:
-                return nome
+            for linha in linhas:
+                if not _eh_endereco_ou_cep(linha):
+                    return linha
 
         return None
 

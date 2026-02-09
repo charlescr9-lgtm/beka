@@ -1471,6 +1471,14 @@ function renderUltimoResultado(res) {
         </div>
     `).join('');
 
+    const avisoSemNf = (res.etiquetas_sem_nf && res.etiquetas_sem_nf > 0)
+        ? `<div style="margin-bottom:12px; padding:10px 14px; background:var(--warning-bg); border:1px solid rgba(245,158,11,0.3); border-radius:var(--radius-sm); font-size:12px; color:var(--warning);">
+            <i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>
+            <strong>${res.etiquetas_sem_nf}</strong> etiquetas sem nota fiscal ou declaracao de conteudo encontrada.
+            Verifique se todos os ZIPs de XMLs e XLSX de declaracoes foram incluidos.
+           </div>`
+        : '';
+
     el.innerHTML = `
         <div class="card">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -1485,6 +1493,7 @@ function renderUltimoResultado(res) {
                     <span><strong>${res.total_lojas}</strong> lojas</span>
                 </div>
             </div>
+            ${avisoSemNf}
             ${lojasHtml}
         </div>
     `;

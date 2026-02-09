@@ -721,16 +721,66 @@ def _extrair_loja_nfe(nfe, cnpj_loja_map=None):
     return _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
 
 
+def _extrair_sku_principal(sku_completo):
+    """Extrai o SKU principal (base) de um SKU completo.
+    Ex: 'TEN-BO-BR-38' -> 'TEN-BO-BR', 'ABC123-P-PRETO' -> 'ABC123'
+    Estrategia: pegar a parte antes de sufixos de tamanho/cor (numeros soltos, cores, etc.)
+    """
+    if not sku_completo:
+        return sku_completo
+    # Remover sufixos que parecem ser variacao (tamanho, cor)
+    # Padrao: tudo ate o ultimo grupo que nao parece tamanho/cor
+    # Primeiro tentar separar por '-'
+    partes = sku_completo.split('-')
+    if len(partes) <= 1:
+        return sku_completo
+    # Remover ultimas partes que parecem tamanho (numeros puros 1-3 digitos) ou cor (2-3 letras)
+    base = []
+    for i, parte in enumerate(partes):
+        p = parte.strip()
+        # Se e a primeira parte, sempre manter
+        if i == 0:
+            base.append(p)
+            continue
+        # Se parece tamanho (1-3 digitos) ou cor/variacao curta (1-3 letras), considerar sufixo
+        if _re.match(r'^\d{1,3}$', p) or (len(p) <= 3 and _re.match(r'^[A-Za-z]+$', p)):
+            # Pode ser sufixo - parar aqui
+            break
+        base.append(p)
+    return '-'.join(base) if base else sku_completo
+
+
 def _buscar_custo_inteligente(sku_xml, dict_custos, chaves_ordenadas):
-    """Busca inteligente de custo: primeiro match exato, depois maior prefixo."""
-    sku_upper = sku_xml.upper()
-    # Match exato
+    """Busca inteligente de custo: SKU principal, match exato, prefixo."""
+    sku_upper = sku_xml.upper().strip()
+    if not sku_upper:
+        return 0.0, False
+
+    # 1. Match exato do SKU completo
     if sku_upper in dict_custos:
         return dict_custos[sku_upper], True
-    # Busca por maior prefixo
+
+    # 2. Extrair SKU principal (sem sufixos de variacao) e tentar match exato
+    sku_base = _extrair_sku_principal(sku_upper)
+    if sku_base != sku_upper and sku_base in dict_custos:
+        return dict_custos[sku_base], True
+
+    # 3. SKU da planilha comeca com o SKU base (planilha tem chave mais longa)
+    for chave in chaves_ordenadas:
+        if chave.startswith(sku_base):
+            return dict_custos[chave], True
+
+    # 4. SKU do XML comeca com chave da planilha (planilha tem chave mais curta)
     for chave in chaves_ordenadas:
         if sku_upper.startswith(chave):
             return dict_custos[chave], True
+
+    # 5. SKU base comeca com chave da planilha
+    if sku_base != sku_upper:
+        for chave in chaves_ordenadas:
+            if sku_base.startswith(chave):
+                return dict_custos[chave], True
+
     return 0.0, False
 
 
@@ -1218,6 +1268,12 @@ def _executar_processamento(user_id):
             todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
 
+            # Verificar quais etiquetas tem/nao tem XML correspondente
+            n_com_xml = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('chave'))
+            n_sem_xml = len(todas_etiquetas) - n_com_xml
+            if n_sem_xml > 0:
+                adicionar_log(estado, f"AVISO: {n_sem_xml} etiquetas sem XML correspondente (de {len(todas_etiquetas)} total)", "warning")
+
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
             etiquetas_beka = proc.processar_beka(pasta_entrada)
             if etiquetas_beka:
@@ -1264,10 +1320,26 @@ def _executar_processamento(user_id):
             if not os.path.exists(pasta_saida):
                 os.makedirs(pasta_saida)
 
+            # Contar etiquetas sem XML/declaracao para aviso
+            etiquetas_sem_nf = []
+
             resultado_lojas = []
             for cnpj, etiquetas_loja in lojas.items():
                 nome_loja = proc.get_nome_loja(cnpj)
                 n_etiquetas = len(etiquetas_loja)
+
+                # Pular lojas sem etiquetas ou "Loja_Desconhecida" vazia
+                if n_etiquetas == 0:
+                    continue
+
+                # Verificar etiquetas sem dados XML/declaracao
+                for etq in etiquetas_loja:
+                    dados = etq.get('dados_xml', {})
+                    if not dados.get('chave') and not dados.get('produtos'):
+                        etiquetas_sem_nf.append({
+                            'nf': etq.get('nf', '?'),
+                            'loja': nome_loja,
+                        })
 
                 adicionar_log(estado, f"Processando: {nome_loja} ({n_etiquetas} etiquetas)...", "info")
 
@@ -1329,6 +1401,16 @@ def _executar_processamento(user_id):
                 resultado_lojas, dict(lojas), caminho_resumo_geral
             )
             adicionar_log(estado, f"Resumo geral: {n_lojas_rg} lojas, {total_un_rg} unidades total", "success")
+
+            # Aviso de etiquetas sem NF/declaracao
+            if etiquetas_sem_nf:
+                adicionar_log(estado, f"AVISO: {len(etiquetas_sem_nf)} etiquetas sem nota fiscal ou declaracao de conteudo!", "warning")
+                lojas_afetadas = set()
+                for e in etiquetas_sem_nf:
+                    lojas_afetadas.add(e['loja'])
+                for loja_a in sorted(lojas_afetadas):
+                    n_sem = sum(1 for e in etiquetas_sem_nf if e['loja'] == loja_a)
+                    adicionar_log(estado, f"  {loja_a}: {n_sem} etiquetas sem NF/declaracao", "warning")
 
             if etiquetas_shein:
                 adicionar_log(estado, "Gerando PDF Shein...", "info")
@@ -1395,6 +1477,14 @@ def _executar_processamento(user_id):
                     except Exception as e_g:
                         adicionar_log(estado, f"  ERRO grupo '{nome_grupo}': {str(e_g)}", "error")
 
+            # Remover pastas vazias (ex: Loja_Desconhecida sem arquivos)
+            if os.path.exists(pasta_saida):
+                for d in os.listdir(pasta_saida):
+                    dp = os.path.join(pasta_saida, d)
+                    if os.path.isdir(dp) and not os.listdir(dp):
+                        os.rmdir(dp)
+                        adicionar_log(estado, f"  Pasta vazia removida: {d}", "info")
+
             duracao = round(time.time() - inicio, 1)
 
             resultado = {
@@ -1402,8 +1492,9 @@ def _executar_processamento(user_id):
                 "duracao_s": duracao,
                 "total_xmls": total_xmls,
                 "total_etiquetas": len(todas_etiquetas),
-                "total_lojas": len(lojas),
+                "total_lojas": len(resultado_lojas),
                 "lojas": resultado_lojas,
+                "etiquetas_sem_nf": len(etiquetas_sem_nf) if etiquetas_sem_nf else 0,
                 "resumo_geral": {
                     "arquivo": os.path.basename(caminho_resumo_geral),
                     "total_lojas": n_lojas_rg,
