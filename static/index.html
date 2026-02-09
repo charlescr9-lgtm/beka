@@ -1017,21 +1017,6 @@
         <h3 class="section-title"><i class="fas fa-cog"></i> Configuracoes</h3>
 
         <div class="grid grid-2">
-            <!-- Pastas -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"><i class="fas fa-folder"></i> Pastas</span>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Pasta de Entrada</label>
-                    <input class="form-input" id="cfgPastaEntrada" type="text">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Pasta de Saida</label>
-                    <input class="form-input" id="cfgPastaSaida" type="text">
-                </div>
-            </div>
-
             <!-- Dimensoes -->
             <div class="card">
                 <div class="card-header">
@@ -1438,8 +1423,6 @@ async function atualizarStatus() {
     // Config — so carrega uma vez para nao sobrescrever edicoes do usuario
     if (!configCarregada) {
         const cfg = data.configuracoes;
-        document.getElementById('cfgPastaEntrada').value = cfg.pasta_entrada;
-        document.getElementById('cfgPastaSaida').value = cfg.pasta_saida;
         document.getElementById('cfgLargura').value = cfg.largura_mm;
         document.getElementById('cfgAltura').value = cfg.altura_mm;
         document.getElementById('cfgMargemEsq').value = cfg.margem_esq;
@@ -1674,8 +1657,6 @@ async function processar() {
 
 async function salvarConfig() {
     const cfg = {
-        pasta_entrada: document.getElementById('cfgPastaEntrada').value,
-        pasta_saida: document.getElementById('cfgPastaSaida').value,
         largura_mm: parseInt(document.getElementById('cfgLargura').value),
         altura_mm: parseInt(document.getElementById('cfgAltura').value),
         margem_esq: parseInt(document.getElementById('cfgMargemEsq').value),
@@ -2322,6 +2303,15 @@ function mostrarAjuda(topico) {
 // ================================================================
 // INIT
 // ================================================================
+// Auto-save config com debounce
+let _autoSaveTimer = null;
+function autoSaveConfig() {
+    if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+    _autoSaveTimer = setTimeout(() => {
+        salvarConfig();
+    }, 1000);
+}
+
 async function init() {
     // Verificar se esta logado
     if (!getToken()) {
@@ -2331,6 +2321,20 @@ async function init() {
 
     await atualizarStatus();
     await atualizarLogs();
+
+    // Auto-save: salvar configuracoes automaticamente quando alterar qualquer campo
+    const cfgIds = [
+        'cfgLargura', 'cfgAltura', 'cfgMargemEsq', 'cfgMargemDir',
+        'cfgMargemTopo', 'cfgMargemInf', 'cfgFonteProduto', 'cfgExibicaoProduto',
+        'cfgPercDeclarado', 'cfgTaxaShopee', 'cfgImpostoSimples', 'cfgCustoFixo'
+    ];
+    cfgIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', autoSaveConfig);
+            el.addEventListener('input', autoSaveConfig);
+        }
+    });
 
     // Polling normal
     pollingInterval = setInterval(() => {
