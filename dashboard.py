@@ -58,8 +58,28 @@ jwt = JWTManager(app)
 app.register_blueprint(auth_bp)
 app.register_blueprint(payments_bp)
 
+# Migrar banco existente (adicionar colunas novas em tabelas existentes)
+def _migrate_db():
+    """SQLite nao adiciona colunas automaticamente em tabelas existentes.
+    Esta funcao verifica e adiciona colunas faltantes."""
+    import sqlalchemy
+    inspector = sqlalchemy.inspect(db.engine)
+
+    if 'users' in inspector.get_table_names():
+        colunas = [c['name'] for c in inspector.get_columns('users')]
+        with db.engine.begin() as conn:
+            if 'email_verified' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT 0'))
+            if 'email_code' not in colunas:
+                conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN email_code VARCHAR(6) DEFAULT ''"))
+            if 'email_code_expires' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN email_code_expires DATETIME'))
+            if 'google_id' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN google_id VARCHAR(255)'))
+
 # Criar tabelas
 with app.app_context():
+    _migrate_db()
     db.create_all()
 
 # Emails com acesso vitalicio (plano empresarial permanente)
