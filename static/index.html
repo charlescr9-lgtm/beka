@@ -853,13 +853,16 @@
 <!-- NAV TABS -->
 <nav class="nav-tabs">
     <div class="nav-tab active" data-tab="painel" onclick="trocarTab('painel')">
-        <i class="fas fa-chart-bar"></i> Painel
+        <i class="fas fa-tags"></i> Etiquetas
     </div>
     <div class="nav-tab" data-tab="resultados" onclick="trocarTab('resultados')">
         <i class="fas fa-store"></i> Resultados
     </div>
+    <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')">
+        <i class="fas fa-dollar-sign"></i> Lucro
+    </div>
     <div class="nav-tab" data-tab="config" onclick="trocarTab('config')">
-        <i class="fas fa-cog"></i> Configuracoes
+        <i class="fas fa-cog"></i> Config
     </div>
 </nav>
 
@@ -887,9 +890,9 @@
                  onclick="document.getElementById('fileInput').click()">
                 <i class="fas fa-cloud-upload-alt"></i>
                 <h4>Arraste arquivos aqui ou clique para selecionar</h4>
-                <p>Aceita arquivos PDF (etiquetas), XLSX (empacotamento) e ZIP (para calculadora de lucro)</p>
+                <p>Aceita arquivos PDF (etiquetas) e XLSX (empacotamento Shopee)</p>
             </div>
-            <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip,.xlsx,.xls" onchange="handleUpload(this.files)">
+            <input type="file" id="fileInput" hidden multiple accept=".pdf,.xlsx,.xls" onchange="handleUpload(this.files)">
         </div>
 
         <!-- Botao Processar -->
@@ -910,14 +913,7 @@
                 <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()">
                     <i class="fas fa-play"></i> Iniciar Processamento
                 </button>
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <button class="btn btn-lg" id="btnLucro" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer;">
-                        <i class="fas fa-dollar-sign"></i> Resumo de Lucro
-                    </button>
-                    <button class="btn-help" onclick="mostrarAjuda('lucro')" title="Como funciona o calculo de lucro">
-                        <i class="fas fa-question-circle"></i>
-                    </button>
-                </div>
+                <!-- Botao Lucro movido para aba Lucro -->
                 <button class="btn btn-lg" id="btnNovoLote" onclick="novoLote()" style="background: var(--warning); color: #000; border: none; cursor: pointer; font-weight:600;">
                     <i class="fas fa-broom"></i> Novo Lote
                 </button>
@@ -985,7 +981,6 @@
     <div class="tab-content" id="tab-resultados">
         <!-- Resumo Geral -->
         <div id="resumoGeral" style="margin-bottom:24px;"></div>
-        <div id="resumoLucro" style="margin-bottom:24px;"></div>
 
         <h3 class="section-title"><i class="fas fa-store"></i> Resultados por Loja</h3>
         <div id="resultadosLojas">
@@ -1104,67 +1099,6 @@
             </div>
         </div>
 
-        <!-- Calculadora de Lucro -->
-        <div style="margin-top: 20px;">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"><i class="fas fa-calculator"></i> Calculadora de Lucro</span>
-                    <button class="btn-help" onclick="mostrarAjuda('calculadora')" title="Como funciona a calculadora">
-                        <i class="fas fa-question-circle"></i>
-                    </button>
-                </div>
-                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
-                    Parametros para o calculo de lucro. O match de SKU busca o SKU completo ou o maior prefixo correspondente.
-                </p>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">% Valor Declarado</label>
-                        <input class="form-input" id="cfgPercDeclarado" type="number" min="1" max="100" value="100" style="width:120px;">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Taxa Shopee (%)</label>
-                        <input class="form-input" id="cfgTaxaShopee" type="number" min="0" max="100" step="0.5" value="18" style="width:120px;">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Imposto Simples (%)</label>
-                        <input class="form-input" id="cfgImpostoSimples" type="number" min="0" max="100" step="0.5" value="4" style="width:120px;">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Custo Fixo (R$)</label>
-                        <input class="form-input" id="cfgCustoFixo" type="number" min="0" step="0.50" value="3" style="width:120px;">
-                    </div>
-                </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label class="form-label">Planilha de Custos (.xlsx)</label>
-                    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                        <button class="btn btn-primary btn-sm" onclick="document.getElementById('inputCustos').click()">
-                            <i class="fas fa-upload"></i> Upload Planilha
-                        </button>
-                        <a class="btn btn-secondary btn-sm" href="/api/exemplo-custos" target="_blank">
-                            <i class="fas fa-download"></i> Baixar Exemplo
-                        </a>
-                        <input type="file" id="inputCustos" accept=".xlsx" style="display:none;" onchange="uploadCustos(this)">
-                        <span id="lblPlanilhaCustos" style="font-size:12px; color:var(--text-muted);">Nenhuma planilha carregada</span>
-                    </div>
-                    <span style="font-size:11px; color:var(--text-muted); margin-top:4px; display:block;">Formato: Coluna A = SKU, Coluna B = Custo unitario</span>
-                </div>
-
-                <!-- Config por loja -->
-                <div id="configLucroLojas" style="margin-top:20px; display:none;">
-                    <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">
-                        <i class="fas fa-store"></i> Configuracao Individual por Loja
-                        <span style="font-size:11px; font-weight:400; color:var(--text-muted); margin-left:8px;">Deixe vazio para usar o padrao global</span>
-                    </div>
-                    <div id="tabelaConfigLojas" style="overflow-x:auto;"></div>
-                    <button class="btn btn-primary btn-sm" onclick="salvarConfigLucroLojas()" style="margin-top:12px;">
-                        <i class="fas fa-save"></i> Salvar Config Lojas
-                    </button>
-                </div>
-            </div>
-        </div>
-
         <div style="margin-top: 20px; display: flex; gap: 12px;">
             <button class="btn btn-primary" onclick="salvarConfig()">
                 <i class="fas fa-save"></i> Salvar Configuracoes
@@ -1173,6 +1107,98 @@
                 <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
             </button>
         </div>
+    </div>
+
+    <!-- ==================== ABA LUCRO ==================== -->
+    <div class="tab-content" id="tab-lucro">
+        <h3 class="section-title"><i class="fas fa-dollar-sign"></i> Calculadora de Lucro</h3>
+
+        <!-- Upload de ZIP/XML para lucro -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-file-archive"></i> Arquivos de Notas Fiscais</span>
+            </div>
+            <div class="upload-zone" id="uploadZoneLucro"
+                 ondragover="event.preventDefault(); this.classList.add('dragover')"
+                 ondragleave="this.classList.remove('dragover')"
+                 ondrop="handleDropLucro(event)"
+                 onclick="document.getElementById('fileInputLucro').click()">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <h4>Arraste ZIPs ou XMLs aqui</h4>
+                <p>Aceita arquivos ZIP (notas fiscais XML) e XML avulsos</p>
+            </div>
+            <input type="file" id="fileInputLucro" hidden multiple accept=".zip,.xml" onchange="handleUploadLucro(this.files)">
+            <div id="listaArquivosLucro" style="margin-top:12px;"></div>
+        </div>
+
+        <!-- Parametros de calculo -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-calculator"></i> Parametros de Calculo</span>
+                <button class="btn-help" onclick="mostrarAjuda('calculadora')" title="Como funciona a calculadora">
+                    <i class="fas fa-question-circle"></i>
+                </button>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                Parametros para o calculo de lucro. O match de SKU busca o SKU completo ou o maior prefixo correspondente.
+            </p>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">% Valor Declarado</label>
+                    <input class="form-input" id="cfgPercDeclarado" type="number" min="1" max="100" value="100" style="width:120px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Taxa Shopee (%)</label>
+                    <input class="form-input" id="cfgTaxaShopee" type="number" min="0" max="100" step="0.5" value="18" style="width:120px;">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Imposto Simples (%)</label>
+                    <input class="form-input" id="cfgImpostoSimples" type="number" min="0" max="100" step="0.5" value="4" style="width:120px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Custo Fixo (R$)</label>
+                    <input class="form-input" id="cfgCustoFixo" type="number" min="0" step="0.50" value="3" style="width:120px;">
+                </div>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label class="form-label">Planilha de Custos (.xlsx)</label>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-primary btn-sm" onclick="document.getElementById('inputCustos').click()">
+                        <i class="fas fa-upload"></i> Upload Planilha
+                    </button>
+                    <a class="btn btn-secondary btn-sm" href="/api/exemplo-custos" target="_blank">
+                        <i class="fas fa-download"></i> Baixar Exemplo
+                    </a>
+                    <input type="file" id="inputCustos" accept=".xlsx" style="display:none;" onchange="uploadCustos(this)">
+                    <span id="lblPlanilhaCustos" style="font-size:12px; color:var(--text-muted);">Nenhuma planilha carregada</span>
+                </div>
+                <span style="font-size:11px; color:var(--text-muted); margin-top:4px; display:block;">Formato: Coluna A = SKU, Coluna B = Custo unitario</span>
+            </div>
+
+            <!-- Config por loja -->
+            <div id="configLucroLojas" style="margin-top:20px; display:none;">
+                <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">
+                    <i class="fas fa-store"></i> Configuracao Individual por Loja
+                    <span style="font-size:11px; font-weight:400; color:var(--text-muted); margin-left:8px;">Deixe vazio para usar o padrao global</span>
+                </div>
+                <div id="tabelaConfigLojas" style="overflow-x:auto;"></div>
+                <button class="btn btn-primary btn-sm" onclick="salvarConfigLucroLojas()" style="margin-top:12px;">
+                    <i class="fas fa-save"></i> Salvar Config Lojas
+                </button>
+            </div>
+        </div>
+
+        <!-- Botao gerar lucro -->
+        <div style="margin-bottom:20px;">
+            <button class="btn btn-lg" id="btnLucro" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer; width:100%;">
+                <i class="fas fa-dollar-sign"></i> Gerar Resumo de Lucro
+            </button>
+        </div>
+
+        <!-- Resultado do lucro -->
+        <div id="resumoLucro" style="margin-bottom:24px;"></div>
     </div>
 
 </div>
@@ -1419,6 +1445,7 @@ async function atualizarStatus() {
 
     // Arquivos
     renderArquivos(data.arquivos_entrada);
+    renderArquivosLucro(data.arquivos_lucro);
 
     // Config — so carrega uma vez para nao sobrescrever edicoes do usuario
     if (!configCarregada) {
@@ -1686,7 +1713,7 @@ async function limparSaida() {
 }
 
 async function novoLote() {
-    if (!confirm('Isso vai limpar TODOS os arquivos (entrada e saida) para iniciar um novo lote. A planilha de custos sera mantida. Continuar?')) return;
+    if (!confirm('Isso vai limpar os arquivos de ETIQUETAS (entrada e saida). Os arquivos da aba Lucro serao mantidos. Continuar?')) return;
     const data = await fetchAPI('/api/novo-lote', { method: 'POST' });
     if (data && data.ok) {
         toast('Pronto para novo lote! Adicione os novos arquivos.', 'success');
@@ -1704,7 +1731,6 @@ async function novoLote() {
                 <p>Processe as etiquetas para ver os resultados aqui</p>
             </div>`;
         document.getElementById('resumoGeral').innerHTML = '';
-        document.getElementById('resumoLucro').innerHTML = '';
         const logC = document.getElementById('logContainer');
         if (logC) logC.innerHTML = '<div style="color:var(--text-muted);">Aguardando...</div>';
         logOffset = 0;
@@ -1782,6 +1808,61 @@ async function handleUpload(files) {
         atualizarStatus();
         document.getElementById('fileInput').value = '';
     }
+}
+
+// ================================================================
+// UPLOAD LUCRO (aba separada)
+// ================================================================
+function handleDropLucro(event) {
+    event.preventDefault();
+    event.target.closest('.upload-zone').classList.remove('dragover');
+    handleUploadLucro(event.dataTransfer.files);
+}
+
+async function handleUploadLucro(files) {
+    for (const file of files) {
+        const formData = new FormData();
+        formData.append('arquivo', file);
+        const res = await fetchAPI('/api/upload-lucro', { method: 'POST', body: formData });
+        if (res && res.mensagem) {
+            toast(res.mensagem, 'success');
+        } else if (res && res.erro) {
+            toast(res.erro, 'error');
+        }
+    }
+    atualizarStatus();
+    document.getElementById('fileInputLucro').value = '';
+}
+
+async function removerArquivoLucro(nome) {
+    if (!confirm(`Remover ${nome}?`)) return;
+    await fetchAPI('/api/remover-arquivo-lucro', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nome }),
+    });
+    toast(`${nome} removido`, 'warning');
+    atualizarStatus();
+}
+
+function renderArquivosLucro(arquivos) {
+    const el = document.getElementById('listaArquivosLucro');
+    if (!el) return;
+    if (!arquivos || arquivos.length === 0) {
+        el.innerHTML = '<p style="color:var(--text-muted); font-size:12px;">Nenhum arquivo de lucro carregado</p>';
+        return;
+    }
+    el.innerHTML = arquivos.map(a => `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:var(--bg-dark); border-radius:6px; margin-bottom:4px;">
+            <span style="font-size:13px;">
+                <i class="fas ${a.tipo === 'ZIP' ? 'fa-file-archive' : 'fa-file-code'}" style="color:var(--primary); margin-right:6px;"></i>
+                ${a.nome} <span style="color:var(--text-muted); font-size:11px;">(${a.tamanho_fmt})</span>
+            </span>
+            <button onclick="removerArquivoLucro('${a.nome}')" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:14px;" title="Remover">
+                <i class="fas fa-trash-alt"></i>
+            </button>
+        </div>
+    `).join('');
 }
 
 // ================================================================

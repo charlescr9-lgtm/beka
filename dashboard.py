@@ -116,6 +116,7 @@ def _get_estado(user_id):
             "configuracoes": {
                 "pasta_entrada": user.get_pasta_entrada(),
                 "pasta_saida": user.get_pasta_saida(),
+                "pasta_lucro": user.get_pasta_lucro(),
                 "largura_mm": 150,
                 "altura_mm": 230,
                 "margem_esq": 8,
@@ -293,19 +294,47 @@ def api_status():
     if not estado:
         return jsonify({"erro": "Usuario nao encontrado"}), 404
 
+    # Arquivos de etiquetas (pasta_entrada)
     pasta = estado["configuracoes"]["pasta_entrada"]
     arquivos = []
     if os.path.exists(pasta):
         for f in os.listdir(pasta):
             if f.startswith('_'):
-                continue  # Ignorar arquivos internos
+                continue
             fp = os.path.join(pasta, f)
             if os.path.isfile(fp):
                 ext = os.path.splitext(f)[1].lower()
-                if ext in ('.pdf', '.zip', '.xlsx', '.xls'):
-                    tipo_arq = "PDF" if ext == '.pdf' else ("ZIP" if ext == '.zip' else "XLSX")
+                if ext in ('.pdf', '.xlsx', '.xls'):
+                    tipo_arq = "PDF" if ext == '.pdf' else "XLSX"
                     tamanho = os.path.getsize(fp)
                     arquivos.append({
+                        "nome": f,
+                        "tipo": tipo_arq,
+                        "tamanho": tamanho,
+                        "tamanho_fmt": _formatar_tamanho(tamanho),
+                    })
+
+    # Arquivos de lucro (pasta_lucro) - separados
+    pasta_lucro = estado["configuracoes"].get("pasta_lucro", "")
+    arquivos_lucro = []
+    if pasta_lucro and os.path.exists(pasta_lucro):
+        for f in os.listdir(pasta_lucro):
+            if f.startswith('_'):
+                continue
+            fp = os.path.join(pasta_lucro, f)
+            if os.path.isfile(fp):
+                ext = os.path.splitext(f)[1].lower()
+                if ext in ('.zip', '.xml', '.xlsx', '.xls'):
+                    if f == 'planilha_custos.xlsx':
+                        tipo_arq = "CUSTOS"
+                    elif ext == '.zip':
+                        tipo_arq = "ZIP"
+                    elif ext == '.xml':
+                        tipo_arq = "XML"
+                    else:
+                        tipo_arq = "XLSX"
+                    tamanho = os.path.getsize(fp)
+                    arquivos_lucro.append({
                         "nome": f,
                         "tipo": tipo_arq,
                         "tamanho": tamanho,
@@ -331,6 +360,7 @@ def api_status():
     return jsonify({
         "processando": estado["processando"],
         "arquivos_entrada": arquivos,
+        "arquivos_lucro": arquivos_lucro,
         "saidas": saidas,
         "ultimo_resultado": estado["ultimo_resultado"],
         "configuracoes": estado["configuracoes"],
@@ -462,8 +492,8 @@ def api_upload():
         return jsonify({"erro": "Nome de arquivo vazio"}), 400
 
     ext = os.path.splitext(arquivo.filename)[1].lower()
-    if ext not in ('.pdf', '.zip', '.xlsx', '.xls'):
-        return jsonify({"erro": "Tipo de arquivo nao suportado. Use PDF, ZIP, XLSX ou XLS."}), 400
+    if ext not in ('.pdf', '.xlsx', '.xls'):
+        return jsonify({"erro": "Tipo de arquivo nao suportado. Use PDF, XLSX ou XLS."}), 400
 
     pasta = estado["configuracoes"]["pasta_entrada"]
     caminho = os.path.join(pasta, arquivo.filename)
@@ -487,6 +517,60 @@ def api_remover_arquivo():
     if os.path.exists(caminho):
         os.remove(caminho)
         adicionar_log(estado, f"Arquivo removido: {nome}", "warning")
+        return jsonify({"ok": True})
+    return jsonify({"erro": "Arquivo nao encontrado"}), 404
+
+
+@app.route('/api/upload-lucro', methods=['POST'])
+@jwt_required()
+def api_upload_lucro():
+    """Upload de arquivos para calculadora de lucro (ZIP/XML)."""
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+
+    if 'arquivo' not in request.files:
+        return jsonify({"erro": "Nenhum arquivo enviado"}), 400
+
+    arquivo = request.files['arquivo']
+    if arquivo.filename == '':
+        return jsonify({"erro": "Nome de arquivo vazio"}), 400
+
+    ext = os.path.splitext(arquivo.filename)[1].lower()
+    if ext not in ('.zip', '.xml'):
+        return jsonify({"erro": "Tipo nao suportado. Use ZIP ou XML."}), 400
+
+    pasta_lucro = estado["configuracoes"].get("pasta_lucro", "")
+    if not pasta_lucro:
+        return jsonify({"erro": "Pasta de lucro nao configurada"}), 500
+    os.makedirs(pasta_lucro, exist_ok=True)
+
+    caminho = os.path.join(pasta_lucro, arquivo.filename)
+    arquivo.save(caminho)
+    adicionar_log(estado, f"Arquivo lucro recebido: {arquivo.filename}", "success")
+    return jsonify({"mensagem": f"Arquivo {arquivo.filename} salvo com sucesso"})
+
+
+@app.route('/api/remover-arquivo-lucro', methods=['POST'])
+@jwt_required()
+def api_remover_arquivo_lucro():
+    """Remove arquivo da pasta de lucro."""
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+    dados = request.get_json()
+    nome = dados.get('nome', '')
+    if not nome:
+        return jsonify({"erro": "Nome nao informado"}), 400
+    pasta_lucro = estado["configuracoes"].get("pasta_lucro", "")
+    if not pasta_lucro:
+        return jsonify({"erro": "Pasta de lucro nao configurada"}), 500
+    caminho = os.path.join(pasta_lucro, nome)
+    if os.path.exists(caminho):
+        os.remove(caminho)
+        adicionar_log(estado, f"Arquivo lucro removido: {nome}", "warning")
         return jsonify({"ok": True})
     return jsonify({"erro": "Arquivo nao encontrado"}), 404
 
@@ -523,15 +607,12 @@ def api_novo_lote():
     pasta_entrada = estado["configuracoes"]["pasta_entrada"]
     pasta_saida = estado["configuracoes"]["pasta_saida"]
 
-    # Limpar pasta de entrada (exceto _config.json e planilha de custos)
-    custos_path = estado["configuracoes"].get("planilha_custos", "")
-    custos_filename = os.path.basename(custos_path) if custos_path else ""
+    # Limpar pasta de entrada de etiquetas (exceto _config.json)
+    # Pasta de lucro NAO e limpa (independente)
     if os.path.exists(pasta_entrada):
         for f in os.listdir(pasta_entrada):
             if f.startswith('_'):
                 continue  # Preservar _config.json etc
-            if custos_filename and f == custos_filename:
-                continue  # Preservar planilha de custos
             fp = os.path.join(pasta_entrada, f)
             if os.path.isfile(fp):
                 os.remove(fp)
@@ -692,8 +773,11 @@ def api_upload_custos():
     if ext != '.xlsx':
         return jsonify({"erro": "Envie um arquivo .xlsx"}), 400
 
-    pasta = estado["configuracoes"]["pasta_entrada"]
-    caminho = os.path.join(pasta, "planilha_custos.xlsx")
+    pasta_lucro = estado["configuracoes"].get("pasta_lucro", "")
+    if not pasta_lucro:
+        return jsonify({"erro": "Pasta de lucro nao configurada"}), 500
+    os.makedirs(pasta_lucro, exist_ok=True)
+    caminho = os.path.join(pasta_lucro, "planilha_custos.xlsx")
     arquivo.save(caminho)
     estado["configuracoes"]["planilha_custos"] = caminho
     _salvar_config_usuario(user_id)
@@ -858,7 +942,7 @@ def api_gerar_lucro():
         return jsonify({"erro": "Usuario nao encontrado"}), 404
 
     cfg = estado["configuracoes"]
-    pasta_entrada = cfg["pasta_entrada"]
+    pasta_lucro = cfg.get("pasta_lucro", "")
     pasta_saida = cfg["pasta_saida"]
     caminho_custos = cfg.get("planilha_custos", "")
 
@@ -898,9 +982,9 @@ def api_gerar_lucro():
             loja_dados[nome_loja]["itens"].extend(itens)
             loja_dados[nome_loja]["linhas_sem_custo"].extend([i + offset for i in sem_custo])
 
-        zips = [f for f in os.listdir(pasta_entrada) if f.lower().endswith('.zip')]
+        zips = [f for f in os.listdir(pasta_lucro) if f.lower().endswith('.zip')] if pasta_lucro and os.path.exists(pasta_lucro) else []
         for z in zips:
-            caminho_zip = os.path.join(pasta_entrada, z)
+            caminho_zip = os.path.join(pasta_lucro, z)
             try:
                 with zipfile.ZipFile(caminho_zip, 'r') as zf:
                     for nome_xml in zf.namelist():
@@ -915,9 +999,9 @@ def api_gerar_lucro():
             except Exception as e:
                 adicionar_log(estado, f"Erro ao ler ZIP {z}: {e}", "warning")
 
-        xmls_avulsos = [f for f in os.listdir(pasta_entrada) if f.lower().endswith('.xml')]
+        xmls_avulsos = [f for f in os.listdir(pasta_lucro) if f.lower().endswith('.xml')] if pasta_lucro and os.path.exists(pasta_lucro) else []
         for arq in xmls_avulsos:
-            caminho_xml = os.path.join(pasta_entrada, arq)
+            caminho_xml = os.path.join(pasta_lucro, arq)
             try:
                 with open(caminho_xml, "r", encoding="utf-8") as f:
                     doc = xmltodict.parse(f.read())
@@ -1522,7 +1606,7 @@ def _executar_processamento(user_id):
             resultado = {
                 "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
                 "duracao_s": duracao,
-                "total_xmls": total_xmls,
+                "total_xlsx": len(proc.dados_xlsx_global),
                 "total_etiquetas": len(todas_etiquetas),
                 "total_lojas": len(resultado_lojas),
                 "lojas": resultado_lojas,

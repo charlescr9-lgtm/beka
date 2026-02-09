@@ -87,6 +87,17 @@ class User(db.Model):
         os.makedirs(pasta, exist_ok=True)
         return pasta
 
+    def get_pasta_lucro(self):
+        """Pasta separada para arquivos da calculadora de lucros (ZIP/XML + custos)."""
+        volume = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "")
+        if volume:
+            base = os.path.join(volume, "users")
+        else:
+            base = os.environ.get("USERS_DATA_DIR", "/tmp/users")
+        pasta = os.path.join(base, str(self.id), "lucro_entrada")
+        os.makedirs(pasta, exist_ok=True)
+        return pasta
+
     def criar_sessao(self, ip):
         """Cria sessao com IP. BLOQUEIA se ja atingiu o limite de IPs do plano."""
         max_ips = self.get_plano_info()["max_ips"]
