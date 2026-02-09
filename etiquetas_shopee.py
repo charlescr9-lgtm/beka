@@ -326,10 +326,17 @@ class ProcessadorEtiquetasShopee:
           - 2 etiquetas (2 linhas, largura total) - formato alternativo
           - 1 etiqueta (pagina inteira) - fallback
         Deteccao baseada em marcadores de etiqueta (Pedido:, REMETENTE, DANFE), nao apenas NFs.
+        Paginas pequenas (<= 420pt largura) sao sempre 1 etiqueta (tamanho de 1 quadrante A4).
         """
         rect = pagina.rect
         larg = rect.width
         alt = rect.height
+
+        # Pagina pequena = 1 etiqueta (ex: 297x419, tamanho de 1 quadrante A4)
+        # A4 = 595x842, metade = ~297x421. Se largura <= 420, e uma etiqueta individual.
+        if larg <= 420:
+            return [fitz.Rect(0, 0, larg, alt)]
+
         meio_x = larg / 2
         meio_y = alt / 2
 
