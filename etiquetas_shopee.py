@@ -299,13 +299,29 @@ class ProcessadorEtiquetasShopee:
                 unicas.append(etq)
         return unicas, duplicadas
 
+    def _contar_etiquetas_regiao(self, pagina, clip):
+        """Verifica se uma regiao contem uma etiqueta Shopee.
+        Detecta por marcadores: 'Pedido:' ou 'REMETENTE' ou NF numerica.
+        """
+        texto = pagina.get_text(clip=clip).strip()
+        if len(texto) < 10:
+            return False
+        # Marcadores de etiqueta Shopee
+        tem_pedido = 'Pedido:' in texto or 'Pedido\n' in texto
+        tem_remetente = 'REMETENTE' in texto
+        tem_danfe = 'DANFE' in texto
+        tem_nf = self._extrair_nf_quadrante(pagina, clip) is not None
+        # Basta ter 1 marcador forte ou NF
+        return tem_nf or tem_pedido or (tem_remetente and tem_danfe)
+
     def _detectar_layout_pagina(self, pagina):
         """Detecta quantas etiquetas ha na pagina analisando o conteudo.
         Retorna lista de clips (regioes) para recortar.
         Layouts possiveis:
-          - 4 etiquetas (grid 2x2) - padrao Shopee para pedidos simples
-          - 2 etiquetas (2 linhas, largura total) - pedidos multi-produto
-          - 1 etiqueta (pagina inteira) - pedidos especiais
+          - 4 etiquetas (grid 2x2) - padrao Shopee para pedidos simples e multi-produto
+          - 2 etiquetas (2 linhas, largura total) - formato alternativo
+          - 1 etiqueta (pagina inteira) - fallback
+        Deteccao baseada em marcadores de etiqueta (Pedido:, REMETENTE, DANFE), nao apenas NFs.
         """
         rect = pagina.rect
         larg = rect.width
@@ -313,7 +329,7 @@ class ProcessadorEtiquetasShopee:
         meio_x = larg / 2
         meio_y = alt / 2
 
-        # Testar grid 2x2 primeiro (padrao)
+        # Testar grid 2x2 primeiro (padrao Shopee)
         quadrantes_2x2 = [
             fitz.Rect(0, 0, meio_x, meio_y),
             fitz.Rect(meio_x, 0, larg, meio_y),
@@ -321,15 +337,10 @@ class ProcessadorEtiquetasShopee:
             fitz.Rect(meio_x, meio_y, larg, alt),
         ]
 
-        # Contar quantos quadrantes 2x2 tem NF
-        nfs_2x2 = 0
-        for clip in quadrantes_2x2:
-            nf = self._extrair_nf_quadrante(pagina, clip)
-            if nf is not None:
-                nfs_2x2 += 1
+        etiquetas_2x2 = sum(1 for clip in quadrantes_2x2 if self._contar_etiquetas_regiao(pagina, clip))
 
-        # Se encontrou 2+ NFs no grid 2x2, usar este layout
-        if nfs_2x2 >= 2:
+        # Se encontrou 2+ etiquetas no grid 2x2, usar este layout
+        if etiquetas_2x2 >= 2:
             return quadrantes_2x2
 
         # Testar layout 2 etiquetas (metade superior + metade inferior, largura total)
@@ -338,18 +349,18 @@ class ProcessadorEtiquetasShopee:
             fitz.Rect(0, meio_y, larg, alt),
         ]
 
-        nfs_2x1 = 0
-        for clip in quadrantes_2x1:
-            nf = self._extrair_nf_quadrante(pagina, clip)
-            if nf is not None:
-                nfs_2x1 += 1
+        etiquetas_2x1 = sum(1 for clip in quadrantes_2x1 if self._contar_etiquetas_regiao(pagina, clip))
 
-        if nfs_2x1 >= 1:
+        if etiquetas_2x1 >= 2:
             return quadrantes_2x1
 
-        # Se nenhum layout funcionou mas grid 2x2 achou pelo menos 1 NF, usar 2x2
-        if nfs_2x2 >= 1:
+        # Se grid 2x2 achou pelo menos 1, usar 2x2 (pode ter quadrantes vazios)
+        if etiquetas_2x2 >= 1:
             return quadrantes_2x2
+
+        # Se 2x1 achou pelo menos 1, usar 2x1
+        if etiquetas_2x1 >= 1:
+            return quadrantes_2x1
 
         # Fallback: pagina inteira
         return [fitz.Rect(0, 0, larg, alt)]
