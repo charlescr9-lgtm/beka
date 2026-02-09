@@ -45,6 +45,8 @@ class ProcessadorEtiquetasShopee:
         self.cnpj_loja = {}      # cnpj -> nome da loja Shopee (extraido do REMETENTE)
         self.fonte_produto = 7   # tamanho da fonte para tabela de produtos (configuravel)
         self.exibicao_produto = 'sku'  # 'sku', 'titulo' ou 'ambos'
+        self.dados_xlsx_global = {}    # order_sn -> {produtos, total_itens, total_qtd}
+        self.dados_xlsx_tracking = {}  # tracking_number -> order_sn
 
     # ----------------------------------------------------------------
     # LEITURA DOS XMLs
@@ -388,6 +390,24 @@ class ProcessadorEtiquetasShopee:
             else:
                 dados_nf = self.dados_xml.get(nf, {})
 
+            # FALLBACK XLSX: se nao achou produtos no XML, tentar XLSX
+            if not dados_nf.get('produtos') and self.dados_xlsx_global:
+                dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto_quad)
+                if dados_xlsx:
+                    dados_nf = {
+                        'nf': nf,
+                        'serie': '',
+                        'data_emissao': '',
+                        'chave': dados_nf.get('chave', ''),
+                        'cnpj_emitente': dados_nf.get('cnpj_emitente', ''),
+                        'nome_emitente': dados_nf.get('nome_emitente', ''),
+                        'produtos': dados_xlsx['produtos'],
+                        'total_itens': dados_xlsx['total_itens'],
+                        'total_qtd': dados_xlsx['total_qtd'],
+                        'fonte_dados': 'xlsx',
+                    }
+                    print(f"    Pag {pagina.number} Q{idx}: Usando dados XLSX (order_sn={order_sn_xlsx})")
+
             sku = ''
             num_produtos = 1
             cnpj = dados_nf.get('cnpj_emitente', '')
@@ -524,11 +544,13 @@ class ProcessadorEtiquetasShopee:
             # Calcular espaco necessario para tabela de produtos
             num_prods = len(dados.get('produtos', []))
             tem_chave = bool(dados.get('chave'))
-            if tem_chave and num_prods > 0:
-                # Espaco necessario: barcode(37) + cabecalho(20) + linhas(12 cada) + margem(15)
+            tem_dados_produto = num_prods > 0
+            if tem_dados_produto:
+                # Espaco necessario: barcode(37 se tem chave) + cabecalho(20) + linhas(12 cada) + margem(15)
                 fs_dest = int(round(self.fonte_produto * 1.5))
                 line_h = fs_dest + 2
-                espaco_tabela = 37 + 20 + (min(num_prods, 10) * line_h) + 15
+                espaco_barcode = 37 if tem_chave else 0
+                espaco_tabela = espaco_barcode + 20 + (min(num_prods, 10) * line_h) + 15
                 # Limitar altura da etiqueta para garantir espaco
                 alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
                 if alt_etiqueta > alt_max:
@@ -543,7 +565,7 @@ class ProcessadorEtiquetasShopee:
 
             nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
 
-            if tem_chave:
+            if tem_dados_produto:
                 y_inicio = self.MARGEM_TOPO + alt_etiqueta + 2
                 self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
                 com_xml += 1
@@ -822,6 +844,116 @@ class ProcessadorEtiquetasShopee:
         print(f"  XLSX: {len(dados_pedidos)} pedidos carregados")
         return dados_pedidos
 
+    def _parsear_product_info(self, product_info):
+        """Parseia o campo product_info do XLSX da Shopee.
+        Retorna lista de produtos: [{codigo, descricao, variacao, qtd}, ...]
+        """
+        produtos = []
+        blocos = re.split(r'\[\d+\]\s*', product_info)
+        for bloco in blocos:
+            if not bloco.strip():
+                continue
+
+            m_sku = re.search(r'Parent SKU Reference No\.:\s*([^;]+)', bloco)
+            codigo = m_sku.group(1).strip() if m_sku else ''
+            if not codigo:
+                m_sku2 = re.search(r'SKU Reference No\.:\s*([^;]+)', bloco)
+                codigo = m_sku2.group(1).strip() if m_sku2 else ''
+
+            m_qtd = re.search(r'Quantity:\s*(\d+)', bloco)
+            qtd = m_qtd.group(1) if m_qtd else '1'
+
+            m_nome = re.search(r'Product Name:\s*([^;]+)', bloco)
+            descricao = m_nome.group(1).strip() if m_nome else ''
+
+            m_var = re.search(r'Variation Name:\s*([^;]+)', bloco)
+            variacao = m_var.group(1).strip() if m_var else ''
+
+            if codigo or descricao or variacao:
+                produtos.append({
+                    'codigo': codigo,
+                    'descricao': descricao,
+                    'variacao': variacao,
+                    'qtd': qtd,
+                })
+
+        return produtos
+
+    def carregar_todos_xlsx(self, pasta):
+        """Carrega dados de TODOS os XLSX da pasta para fallback quando XML nao existe.
+        Popula self.dados_xlsx_global (order_sn -> dados) e
+        self.dados_xlsx_tracking (tracking -> order_sn).
+        """
+        import openpyxl as xl
+
+        xlsx_files = [f for f in os.listdir(pasta)
+                      if f.lower().endswith(('.xlsx', '.xls'))
+                      and not f.startswith('_')
+                      and not f.startswith('~')
+                      and f != 'planilha_custos.xlsx']
+
+        if not xlsx_files:
+            return
+
+        for xlsx_nome in sorted(xlsx_files):
+            caminho = os.path.join(pasta, xlsx_nome)
+            try:
+                wb = xl.load_workbook(caminho, read_only=False)
+                ws = wb.active
+
+                # Descobrir indices das colunas pelo cabecalho
+                cabecalho = {}
+                for idx, cell in enumerate(ws[1]):
+                    if cell.value:
+                        cabecalho[str(cell.value).strip().lower()] = idx
+
+                idx_tracking = cabecalho.get('tracking_number', -1)
+                idx_order = cabecalho.get('order_sn', -1)
+                idx_product = cabecalho.get('product_info', -1)
+
+                if idx_order == -1 or idx_product == -1:
+                    wb.close()
+                    continue  # XLSX sem colunas relevantes
+
+                count = 0
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if row is None:
+                        continue
+                    order_sn = str(row[idx_order] or '').strip() if len(row) > idx_order else ''
+                    tracking = str(row[idx_tracking] or '').strip() if idx_tracking >= 0 and len(row) > idx_tracking else ''
+                    product_info = str(row[idx_product] or '').strip() if len(row) > idx_product else ''
+
+                    if not order_sn or not product_info:
+                        continue
+
+                    produtos = self._parsear_product_info(product_info)
+
+                    if order_sn not in self.dados_xlsx_global:
+                        self.dados_xlsx_global[order_sn] = {
+                            'produtos': produtos,
+                            'total_itens': len(produtos),
+                            'total_qtd': sum(int(float(p.get('qtd', 1))) for p in produtos),
+                        }
+                    else:
+                        self.dados_xlsx_global[order_sn]['produtos'].extend(produtos)
+                        self.dados_xlsx_global[order_sn]['total_itens'] = len(self.dados_xlsx_global[order_sn]['produtos'])
+                        self.dados_xlsx_global[order_sn]['total_qtd'] = sum(
+                            int(float(p.get('qtd', 1))) for p in self.dados_xlsx_global[order_sn]['produtos'])
+
+                    if tracking:
+                        self.dados_xlsx_tracking[tracking] = order_sn
+
+                    count += 1
+
+                wb.close()
+                if count > 0:
+                    print(f"    {xlsx_nome}: {count} pedidos")
+
+            except Exception as e:
+                print(f"    XLSX erro: {xlsx_nome} - {e}")
+
+        print(f"  Total XLSX: {len(self.dados_xlsx_global)} pedidos, {len(self.dados_xlsx_tracking)} trackings")
+
     def _extrair_pedido_texto(self, texto):
         """Extrai o numero do pedido (order_sn) do texto da etiqueta."""
         # Padrao Shopee: algo como 2602061BMTVXW0 (alfanumerico ~15 chars)
@@ -833,6 +965,32 @@ class ProcessadorEtiquetasShopee:
         if m:
             return m.group(1).strip()
         return None
+
+    def _extrair_tracking_quadrante(self, texto):
+        """Extrai o tracking number (BR...) do texto de um quadrante."""
+        m = re.search(r'(BR\w{10,20})', texto)
+        return m.group(1) if m else None
+
+    def _buscar_dados_xlsx(self, texto_quadrante):
+        """Busca dados do XLSX usando order_sn ou tracking extraidos do texto.
+        Retorna (dados_pedido, order_sn) ou (None, None).
+        """
+        if not self.dados_xlsx_global:
+            return None, None
+
+        # Tentar por order_sn
+        order_sn = self._extrair_pedido_texto(texto_quadrante)
+        if order_sn and order_sn in self.dados_xlsx_global:
+            return self.dados_xlsx_global[order_sn], order_sn
+
+        # Tentar por tracking -> order_sn
+        tracking = self._extrair_tracking_quadrante(texto_quadrante)
+        if tracking and tracking in self.dados_xlsx_tracking:
+            order_sn_via_tracking = self.dados_xlsx_tracking[tracking]
+            if order_sn_via_tracking in self.dados_xlsx_global:
+                return self.dados_xlsx_global[order_sn_via_tracking], order_sn_via_tracking
+
+        return None, None
 
     def carregar_pdf_pagina_inteira(self, caminho_pdf, tipo, dados_xlsx=None):
         """Carrega etiquetas de PDF com 1 etiqueta por pagina (pagina inteira).
@@ -888,6 +1046,24 @@ class ProcessadorEtiquetasShopee:
                     print(f"    Pag {num_pag}: NF nao encontrada, gerando com ID sintetico")
                 else:
                     dados_nf = self.dados_xml.get(nf, {})
+
+                # FALLBACK XLSX: se nao achou produtos no XML, tentar XLSX
+                if not dados_nf.get('produtos') and self.dados_xlsx_global:
+                    dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto)
+                    if dados_xlsx:
+                        dados_nf = {
+                            'nf': nf,
+                            'serie': '',
+                            'data_emissao': '',
+                            'chave': dados_nf.get('chave', ''),
+                            'cnpj_emitente': dados_nf.get('cnpj_emitente', ''),
+                            'nome_emitente': dados_nf.get('nome_emitente', ''),
+                            'produtos': dados_xlsx['produtos'],
+                            'total_itens': dados_xlsx['total_itens'],
+                            'total_qtd': dados_xlsx['total_qtd'],
+                            'fonte_dados': 'xlsx',
+                        }
+                        print(f"    Pag {num_pag}: Retirada usando dados XLSX (order_sn={order_sn_xlsx})")
 
                 sku = ''
                 num_produtos = 1
@@ -1913,6 +2089,11 @@ def main():
     print(f"  Lojas encontradas nos XMLs:")
     for cnpj, nome in sorted(proc.cnpj_nome.items(), key=lambda x: x[1]):
         print(f"    [{cnpj}] {nome}")
+
+    # 1b. Carregar TODOS os XLSX (fallback para quando nao tem XML)
+    print(f"\n{'='*40}")
+    print("CARREGANDO XLSX (fallback)...")
+    proc.carregar_todos_xlsx(pasta_entrada)
 
     # 2. Carregar e recortar TODOS os PDFs
     print(f"\n{'='*40}")

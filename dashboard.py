@@ -1302,6 +1302,12 @@ def _executar_processamento(user_id):
             for cnpj, nome in sorted(proc.cnpj_nome.items(), key=lambda x: x[1]):
                 adicionar_log(estado, f"  {nome} [{cnpj}]", "info")
 
+            # Carregar XLSX como fallback para quando nao tem XML
+            adicionar_log(estado, "Carregando XLSX (fallback para XML)...", "info")
+            proc.carregar_todos_xlsx(pasta_entrada)
+            if proc.dados_xlsx_global:
+                adicionar_log(estado, f"XLSX: {len(proc.dados_xlsx_global)} pedidos, {len(proc.dados_xlsx_tracking)} trackings", "success")
+
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
             todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
