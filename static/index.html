@@ -1072,6 +1072,15 @@
                     <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:120px;">
                     <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Padrao: 7pt</span>
                 </div>
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label">Exibição na tabela de produtos</label>
+                    <select class="form-input" id="cfgExibicaoProduto" style="width:220px;">
+                        <option value="sku">Somente SKU</option>
+                        <option value="titulo">Somente Título</option>
+                        <option value="ambos">SKU + Título</option>
+                    </select>
+                    <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">O que mostrar na coluna de produto</span>
+                </div>
             </div>
         </div>
 
@@ -1366,8 +1375,10 @@ async function atualizarStatus() {
         dot.classList.remove('processing');
         txt.textContent = 'Pronto';
         bar.classList.remove('active');
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+        if (!uploadEmAndamento) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+        }
     }
 
     // Stats
@@ -1436,6 +1447,7 @@ async function atualizarStatus() {
         document.getElementById('cfgMargemTopo').value = cfg.margem_topo;
         document.getElementById('cfgMargemInf').value = cfg.margem_inf;
         document.getElementById('cfgFonteProduto').value = cfg.fonte_produto || 7;
+        document.getElementById('cfgExibicaoProduto').value = cfg.exibicao_produto || 'sku';
         document.getElementById('cfgPercDeclarado').value = cfg.perc_declarado || 100;
         document.getElementById('cfgTaxaShopee').value = cfg.taxa_shopee || 18;
         document.getElementById('cfgImpostoSimples').value = cfg.imposto_simples || 4;
@@ -1671,6 +1683,7 @@ async function salvarConfig() {
         margem_topo: parseInt(document.getElementById('cfgMargemTopo').value),
         margem_inf: parseInt(document.getElementById('cfgMargemInf').value),
         fonte_produto: parseInt(document.getElementById('cfgFonteProduto').value) || 7,
+        exibicao_produto: document.getElementById('cfgExibicaoProduto').value || 'sku',
         perc_declarado: parseFloat(document.getElementById('cfgPercDeclarado').value) || 100,
         taxa_shopee: parseFloat(document.getElementById('cfgTaxaShopee').value) || 18,
         imposto_simples: parseFloat(document.getElementById('cfgImpostoSimples').value) || 4,
@@ -1762,19 +1775,32 @@ function handleDrop(event) {
     handleUpload(event.dataTransfer.files);
 }
 
+let uploadEmAndamento = false;
+
 async function handleUpload(files) {
-    for (const file of files) {
-        const formData = new FormData();
-        formData.append('arquivo', file);
-        const res = await fetchAPI('/api/upload', { method: 'POST', body: formData });
-        if (res && res.mensagem) {
-            toast(res.mensagem, 'success');
-        } else if (res && res.erro) {
-            toast(res.erro, 'error');
+    const btn = document.getElementById('btnProcessar');
+    uploadEmAndamento = true;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Enviando arquivos...';
+
+    try {
+        for (const file of files) {
+            const formData = new FormData();
+            formData.append('arquivo', file);
+            const res = await fetchAPI('/api/upload', { method: 'POST', body: formData });
+            if (res && res.mensagem) {
+                toast(res.mensagem, 'success');
+            } else if (res && res.erro) {
+                toast(res.erro, 'error');
+            }
         }
+    } finally {
+        uploadEmAndamento = false;
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> Iniciar Processamento';
+        atualizarStatus();
+        document.getElementById('fileInput').value = '';
     }
-    atualizarStatus();
-    document.getElementById('fileInput').value = '';
 }
 
 // ================================================================

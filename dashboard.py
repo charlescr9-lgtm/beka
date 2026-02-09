@@ -123,6 +123,7 @@ def _get_estado(user_id):
                 "margem_topo": 5,
                 "margem_inf": 5,
                 "fonte_produto": 7,
+                "exibicao_produto": "sku",
                 "perc_declarado": 100,
                 "taxa_shopee": 18,
                 "imposto_simples": 4,
@@ -1187,6 +1188,7 @@ def api_agrupar():
         proc.MARGEM_TOPO = cfg.get("margem_topo", proc.MARGEM_TOPO)
         proc.MARGEM_INFERIOR = cfg.get("margem_inferior", proc.MARGEM_INFERIOR)
         proc.fonte_produto = cfg.get("fonte_produto", proc.fonte_produto)
+        proc.exibicao_produto = cfg.get("exibicao_produto", getattr(proc, 'exibicao_produto', 'sku'))
         proc.cnpj_loja = cfg.get("cnpj_loja", {})
         proc.cnpj_nome = cfg.get("cnpj_nome", {})
 
@@ -1284,6 +1286,7 @@ def _executar_processamento(user_id):
             proc.MARGEM_TOPO = estado["configuracoes"]["margem_topo"]
             proc.MARGEM_INFERIOR = estado["configuracoes"]["margem_inf"]
             proc.fonte_produto = estado["configuracoes"].get("fonte_produto", 7)
+            proc.exibicao_produto = estado["configuracoes"].get("exibicao_produto", "sku")
 
             adicionar_log(estado, "Carregando XMLs dos arquivos ZIP...", "info")
             zips = [f for f in os.listdir(pasta_entrada) if f.lower().endswith('.zip')]

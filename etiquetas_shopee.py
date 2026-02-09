@@ -44,6 +44,7 @@ class ProcessadorEtiquetasShopee:
         self.cnpj_nome = {}      # cnpj -> nome do emitente (nome limpo)
         self.cnpj_loja = {}      # cnpj -> nome da loja Shopee (extraido do REMETENTE)
         self.fonte_produto = 7   # tamanho da fonte para tabela de produtos (configuravel)
+        self.exibicao_produto = 'sku'  # 'sku', 'titulo' ou 'ambos'
 
     # ----------------------------------------------------------------
     # LEITURA DOS XMLs
@@ -613,9 +614,18 @@ class ProcessadorEtiquetasShopee:
         )
         y += line_h
 
-        # Cabecalho
+        # Cabecalho - depende do modo de exibicao
+        modo = getattr(self, 'exibicao_produto', 'sku')
+
+        if modo == 'titulo':
+            header_col1 = "PRODUTO"
+        elif modo == 'ambos':
+            header_col1 = "CODIGO"
+        else:
+            header_col1 = "CODIGO"
+
         pagina.insert_text(
-            (col_codigo, y), "CODIGO",
+            (col_codigo, y), header_col1,
             fontsize=fs, fontname=fonte_bold, color=preto
         )
 
@@ -643,19 +653,48 @@ class ProcessadorEtiquetasShopee:
         # Linhas de produtos
         for i_prod, prod in enumerate(produtos[:10]):
             codigo = prod.get('codigo', '')
+            descricao = prod.get('descricao', '')
             qtd = str(int(float(prod.get('qtd', '1'))))
 
             if y + line_h > y_limite:
                 break
 
-            pagina.insert_text(
-                (col_codigo, y), codigo,
-                fontsize=fs_destaque, fontname=fonte_bold, color=preto
-            )
-            pagina.insert_text(
-                (col_prod, y), "-",
-                fontsize=fs, fontname=fonte, color=preto
-            )
+            if modo == 'titulo':
+                # Coluna principal: titulo/descricao
+                texto_principal = descricao or codigo
+                # Truncar se muito longo
+                max_chars = 40
+                if len(texto_principal) > max_chars:
+                    texto_principal = texto_principal[:max_chars - 2] + '..'
+                pagina.insert_text(
+                    (col_codigo, y), texto_principal,
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                )
+            elif modo == 'ambos':
+                # Coluna 1: codigo, Coluna 2: descricao
+                pagina.insert_text(
+                    (col_codigo, y), codigo,
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                )
+                desc_trunc = descricao
+                max_desc = 30
+                if len(desc_trunc) > max_desc:
+                    desc_trunc = desc_trunc[:max_desc - 2] + '..'
+                pagina.insert_text(
+                    (col_prod, y), desc_trunc,
+                    fontsize=fs, fontname=fonte, color=preto
+                )
+            else:
+                # Modo SKU (padrao): codigo na coluna principal
+                pagina.insert_text(
+                    (col_codigo, y), codigo,
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                )
+                pagina.insert_text(
+                    (col_prod, y), "-",
+                    fontsize=fs, fontname=fonte, color=preto
+                )
+
             pagina.insert_text(
                 (col_qtd, y), qtd,
                 fontsize=fs_destaque, fontname=fonte_bold, color=preto
@@ -1035,7 +1074,10 @@ class ProcessadorEtiquetasShopee:
         )
         y += 2
 
-        # Colunas: SKU | VARIACAO | Quant
+        # Modo de exibicao
+        modo = getattr(self, 'exibicao_produto', 'sku')
+
+        # Colunas: depende do modo
         col_sku = margem_esq + 2
         col_var = margem_esq + 50
         col_qtd = larg_pagina - margem_dir - 35
@@ -1047,13 +1089,20 @@ class ProcessadorEtiquetasShopee:
         )
         y += line_h
 
-        # Cabecalho tabela
+        # Cabecalho tabela - depende do modo
+        if modo == 'titulo':
+            header1, header2 = "PRODUTO", "VARIAÇÃO"
+        elif modo == 'ambos':
+            header1, header2 = "SKU", "PRODUTO"
+        else:
+            header1, header2 = "SKU", "VARIAÇÃO"
+
         pagina.insert_text(
-            (col_sku, y), "SKU",
+            (col_sku, y), header1,
             fontsize=fs, fontname=fonte_bold, color=preto
         )
         pagina.insert_text(
-            (col_var, y), "VARIAÇÃO",
+            (col_var, y), header2,
             fontsize=fs, fontname=fonte_bold, color=preto
         )
         pagina.insert_text(
@@ -1075,23 +1124,47 @@ class ProcessadorEtiquetasShopee:
                 break
 
             codigo = prod.get('codigo', '')
+            descricao = prod.get('descricao', '')
             variacao = prod.get('variacao', '')
             qtd = str(int(float(prod.get('qtd', '1'))))
 
-            # Truncar textos longos para caber na coluna
-            max_sku = 10
-            if len(codigo) > max_sku:
-                codigo = codigo[:max_sku - 2] + '..'
-            max_var = 45
-            if len(variacao) > max_var:
-                variacao = variacao[:max_var - 2] + '..'
+            if modo == 'titulo':
+                # Col1: descricao/titulo, Col2: variacao
+                texto1 = descricao or codigo
+                max_t1 = 10
+                if len(texto1) > max_t1:
+                    texto1 = texto1[:max_t1 - 2] + '..'
+                texto2 = variacao
+                max_t2 = 45
+                if len(texto2) > max_t2:
+                    texto2 = texto2[:max_t2 - 2] + '..'
+            elif modo == 'ambos':
+                # Col1: SKU, Col2: descricao/titulo
+                texto1 = codigo
+                max_t1 = 10
+                if len(texto1) > max_t1:
+                    texto1 = texto1[:max_t1 - 2] + '..'
+                texto2 = descricao or variacao
+                max_t2 = 45
+                if len(texto2) > max_t2:
+                    texto2 = texto2[:max_t2 - 2] + '..'
+            else:
+                # Modo SKU (padrao): Col1: SKU, Col2: variacao
+                texto1 = codigo
+                max_t1 = 10
+                if len(texto1) > max_t1:
+                    texto1 = texto1[:max_t1 - 2] + '..'
+                texto2 = variacao
+                max_t2 = 45
+                if len(texto2) > max_t2:
+                    texto2 = texto2[:max_t2 - 2] + '..'
 
             pagina.insert_text(
-                (col_sku, y), codigo if codigo else "-",
+                (col_sku, y), texto1 if texto1 else "-",
                 fontsize=fs_destaque, fontname=fonte_bold, color=preto
             )
             pagina.insert_text(
-                (col_var, y), variacao.upper() if variacao else "-",
+                (col_var, y), texto2.upper() if texto2 else "-",
                 fontsize=fs, fontname=fonte, color=preto
             )
             pagina.insert_text(
