@@ -510,8 +510,21 @@ class ProcessadorEtiquetasShopee:
             quad_larg = clip.width
             quad_alt = clip.height
             escala = area_util_larg / quad_larg
-
             alt_etiqueta = quad_alt * escala
+
+            # Calcular espaco necessario para tabela de produtos
+            num_prods = len(dados.get('produtos', []))
+            tem_chave = bool(dados.get('chave'))
+            if tem_chave and num_prods > 0:
+                # Espaco necessario: barcode(37) + cabecalho(20) + linhas(12 cada) + margem(15)
+                fs_dest = int(round(self.fonte_produto * 1.5))
+                line_h = fs_dest + 2
+                espaco_tabela = 37 + 20 + (min(num_prods, 10) * line_h) + 15
+                # Limitar altura da etiqueta para garantir espaco
+                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
+                if alt_etiqueta > alt_max:
+                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.45)  # minimo 45% da pagina
+
             dest_rect = fitz.Rect(
                 self.MARGEM_ESQUERDA,
                 self.MARGEM_TOPO,
@@ -521,7 +534,7 @@ class ProcessadorEtiquetasShopee:
 
             nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
 
-            if dados.get('chave'):
+            if tem_chave:
                 y_inicio = self.MARGEM_TOPO + alt_etiqueta + 2
                 self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
                 com_xml += 1
