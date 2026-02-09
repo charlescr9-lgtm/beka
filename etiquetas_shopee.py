@@ -992,7 +992,13 @@ class ProcessadorEtiquetasShopee:
         """Processa etiquetas CPF (lanim*.pdf) usando dados de XLSX de declaracao.
         Detecta automaticamente qualquer XLSX com coluna order_sn + product_info.
         Processa todos os PDFs com nome iniciando em 'lanim' (lanim.pdf, lanim 2.pdf, etc.)
-        Retorna lista de etiquetas com loja fixa 'CPF'.
+
+        Todas as etiquetas em lanim*.pdf sao CPF.
+        Paginas com grid (2x2/2x1) sao recortadas individualmente.
+        Paginas com 1 etiqueta sao processadas como pagina inteira.
+        Cada etiqueta recebe dados do XLSX pelo order_sn.
+
+        Retorna lista de etiquetas CPF.
         """
         # Detectar todos os PDFs lanim*.pdf
         pdfs_cpf = []
@@ -1034,10 +1040,103 @@ class ProcessadorEtiquetasShopee:
         etiquetas = []
         for pdf_cpf in sorted(pdfs_cpf):
             caminho_pdf = os.path.join(pasta_entrada, pdf_cpf)
-            etqs = self.carregar_pdf_pagina_inteira(caminho_pdf, 'cpf', dados_xlsx)
+            etqs = self._carregar_pdf_cpf_smart(caminho_pdf, dados_xlsx)
             etiquetas.extend(etqs)
             if len(pdfs_cpf) > 1:
                 print(f"  {pdf_cpf}: {len(etqs)} etiquetas CPF")
+        return etiquetas
+
+    def _carregar_pdf_cpf_smart(self, caminho_pdf, dados_xlsx=None):
+        """Carrega etiquetas CPF de um PDF, detectando layout de cada pagina.
+        Paginas com grid (2x2/2x1) sao recortadas por quadrante.
+        Paginas com 1 etiqueta sao processadas inteiras (com auto-crop).
+        Todas sao marcadas como tipo_especial='cpf' e recebem dados do XLSX.
+        """
+        print(f"  Carregando (cpf): {os.path.basename(caminho_pdf)}")
+        doc = fitz.open(caminho_pdf)
+        etiquetas = []
+
+        for num_pag in range(len(doc)):
+            pagina = doc[num_pag]
+
+            # Detectar layout da pagina
+            # Apenas paginas grandes (A4 ~595x842) podem ter grid 2x2/2x1
+            # Paginas pequenas (~297x419) sao sempre 1 etiqueta por pagina
+            rect = pagina.rect
+            eh_pagina_grande = rect.width > 400 and rect.height > 600
+
+            if eh_pagina_grande:
+                quadrantes = self._detectar_layout_pagina(pagina)
+            else:
+                quadrantes = [pagina.rect]  # pagina inteira = 1 etiqueta
+
+            for idx, clip in enumerate(quadrantes):
+                texto_quad = pagina.get_text(clip=clip).strip()
+                if len(texto_quad) < 10:
+                    continue  # Quadrante vazio
+
+                # Extrair order_sn do texto deste quadrante
+                order_sn = self._extrair_pedido_texto(texto_quad)
+
+                dados_pedido = {}
+                if order_sn and dados_xlsx:
+                    dados_pedido = dados_xlsx.get(order_sn, {})
+
+                # Extrair nome da loja do REMETENTE
+                nome_loja_cpf = self._extrair_nome_loja_remetente(texto_quad)
+                cpf_cnpj = self.LANIM_CNPJ
+                cpf_nome = self.LANIM_NOME
+
+                if nome_loja_cpf:
+                    cnpj_encontrado = None
+                    for cnpj_real, nome_real in self.cnpj_loja.items():
+                        if nome_real.lower().strip() == nome_loja_cpf.lower().strip():
+                            cnpj_encontrado = cnpj_real
+                            break
+                    if cnpj_encontrado:
+                        cpf_cnpj = cnpj_encontrado
+                        cpf_nome = nome_loja_cpf
+                    else:
+                        cpf_cnpj = f"CPF_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja_cpf)}"
+                        cpf_nome = nome_loja_cpf
+                        self.cnpj_loja[cpf_cnpj] = nome_loja_cpf
+                        self.cnpj_nome[cpf_cnpj] = nome_loja_cpf
+
+                if cpf_cnpj == self.LANIM_CNPJ and self.LANIM_CNPJ not in self.cnpj_nome:
+                    self.cnpj_nome[self.LANIM_CNPJ] = self.LANIM_NOME
+
+                produtos = dados_pedido.get('produtos', [])
+                sku = produtos[0].get('codigo', '') if produtos else ''
+                num_produtos = len(produtos) if produtos else 1
+
+                nf_id = order_sn or f'CPF_pag{num_pag}_q{idx}'
+
+                dados_ficticio = {
+                    'nf': nf_id,
+                    'serie': '',
+                    'data_emissao': '',
+                    'chave': '',
+                    'cnpj_emitente': cpf_cnpj,
+                    'nome_emitente': cpf_nome,
+                    'produtos': produtos,
+                    'total_itens': dados_pedido.get('total_itens', len(produtos)),
+                    'total_qtd': dados_pedido.get('total_qtd', 0),
+                }
+
+                etiquetas.append({
+                    'nf': nf_id,
+                    'sku': sku,
+                    'num_produtos': num_produtos,
+                    'cnpj': cpf_cnpj,
+                    'clip': clip,
+                    'pagina_idx': num_pag,
+                    'caminho_pdf': caminho_pdf,
+                    'dados_xml': dados_ficticio,
+                    'tipo_especial': 'cpf',
+                })
+
+        doc.close()
+        print(f"    {len(etiquetas)} etiquetas (cpf)")
         return etiquetas
 
     # ----------------------------------------------------------------
