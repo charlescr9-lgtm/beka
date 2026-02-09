@@ -681,12 +681,20 @@ class ProcessadorEtiquetasShopee:
                         'qtd': qtd,
                     })
 
-            total_qtd = sum(int(float(p.get('qtd', 1))) for p in produtos)
-            dados_pedidos[order_sn] = {
-                'produtos': produtos,
-                'total_itens': len(produtos),
-                'total_qtd': total_qtd,
-            }
+            # Acumular produtos se o mesmo order_sn aparecer em multiplas linhas
+            if order_sn in dados_pedidos:
+                dados_pedidos[order_sn]['produtos'].extend(produtos)
+                dados_pedidos[order_sn]['total_itens'] = len(dados_pedidos[order_sn]['produtos'])
+                dados_pedidos[order_sn]['total_qtd'] = sum(
+                    int(float(p.get('qtd', 1))) for p in dados_pedidos[order_sn]['produtos']
+                )
+            else:
+                total_qtd = sum(int(float(p.get('qtd', 1))) for p in produtos)
+                dados_pedidos[order_sn] = {
+                    'produtos': produtos,
+                    'total_itens': len(produtos),
+                    'total_qtd': total_qtd,
+                }
 
         wb.close()
         print(f"  XLSX: {len(dados_pedidos)} pedidos carregados")

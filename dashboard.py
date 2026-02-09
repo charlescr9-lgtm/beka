@@ -461,8 +461,8 @@ def api_upload():
         return jsonify({"erro": "Nome de arquivo vazio"}), 400
 
     ext = os.path.splitext(arquivo.filename)[1].lower()
-    if ext not in ('.pdf', '.zip', '.xlsx'):
-        return jsonify({"erro": "Tipo de arquivo nao suportado. Use PDF, ZIP ou XLSX."}), 400
+    if ext not in ('.pdf', '.zip', '.xlsx', '.xls'):
+        return jsonify({"erro": "Tipo de arquivo nao suportado. Use PDF, ZIP, XLSX ou XLS."}), 400
 
     pasta = estado["configuracoes"]["pasta_entrada"]
     caminho = os.path.join(pasta, arquivo.filename)
