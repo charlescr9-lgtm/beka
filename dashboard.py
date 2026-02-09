@@ -1520,58 +1520,65 @@ def _executar_processamento(user_id):
                             'loja': nome_loja,
                         })
 
-                adicionar_log(estado, f"Processando: {nome_loja} ({n_etiquetas} etiquetas)...", "info")
+                try:
+                    adicionar_log(estado, f"Processando: {nome_loja} ({n_etiquetas} etiquetas)...", "info")
 
-                pasta_loja = os.path.join(pasta_saida, nome_loja)
-                if not os.path.exists(pasta_loja):
-                    os.makedirs(pasta_loja)
+                    pasta_loja = os.path.join(pasta_saida, nome_loja)
+                    if not os.path.exists(pasta_loja):
+                        os.makedirs(pasta_loja)
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-                etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') != 'cpf']
-                etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
+                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') != 'cpf']
+                    etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
 
-                total_pags = 0
-                n_simples = n_multi = com_xml = sem_xml = 0
-                pdf_nome = ''
+                    total_pags = 0
+                    n_simples = n_multi = com_xml = sem_xml = 0
+                    pdf_nome = ''
 
-                if etiq_regular:
-                    caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-                    t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
-                    total_pags += t
-                    n_simples, n_multi, com_xml, sem_xml = ns, nm, cx, sx
-                    pdf_nome = os.path.basename(caminho_pdf)
+                    if etiq_regular:
+                        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+                        t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
+                        total_pags += t
+                        n_simples, n_multi, com_xml, sem_xml = ns, nm, cx, sx
+                        pdf_nome = os.path.basename(caminho_pdf)
 
-                if etiq_cpf:
-                    caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
-                    total_cpf = proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf_pdf)
-                    total_pags += total_cpf
-                    if not pdf_nome:
-                        pdf_nome = os.path.basename(caminho_cpf_pdf)
-                    adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
+                    if etiq_cpf:
+                        caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
+                        total_cpf = proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf_pdf)
+                        total_pags += total_cpf
+                        if not pdf_nome:
+                            pdf_nome = os.path.basename(caminho_cpf_pdf)
+                        adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
 
-                caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
-                n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
+                    caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
+                    n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
 
-                info_loja = {
-                    "nome": nome_loja,
-                    "cnpj": cnpj,
-                    "etiquetas": n_etiquetas,
-                    "paginas": total_pags,
-                    "simples": n_simples,
-                    "multi_produto": n_multi,
-                    "com_xml": com_xml,
-                    "sem_xml": sem_xml,
-                    "skus": n_skus,
-                    "total_qtd": total_qtd,
-                    "pdf": pdf_nome,
-                    "xlsx": os.path.basename(caminho_xlsx),
-                }
-                resultado_lojas.append(info_loja)
+                    info_loja = {
+                        "nome": nome_loja,
+                        "cnpj": cnpj,
+                        "etiquetas": n_etiquetas,
+                        "paginas": total_pags,
+                        "simples": n_simples,
+                        "multi_produto": n_multi,
+                        "com_xml": com_xml,
+                        "sem_xml": sem_xml,
+                        "skus": n_skus,
+                        "total_qtd": total_qtd,
+                        "pdf": pdf_nome,
+                        "xlsx": os.path.basename(caminho_xlsx),
+                    }
+                    resultado_lojas.append(info_loja)
 
-                adicionar_log(estado, f"  {nome_loja}: {total_pags} pags, {n_skus} SKUs, {total_qtd} un.", "success")
-                if sem_xml > 0:
-                    adicionar_log(estado, f"  AVISO: {sem_xml} etiquetas sem XML", "warning")
+                    adicionar_log(estado, f"  {nome_loja}: {total_pags} pags, {n_skus} SKUs, {total_qtd} un.", "success")
+                    if sem_xml > 0:
+                        adicionar_log(estado, f"  AVISO: {sem_xml} etiquetas sem XML", "warning")
+
+                except Exception as e_loja:
+                    adicionar_log(estado, f"ERRO ao processar loja {nome_loja}: {str(e_loja)}", "error")
+                    import traceback
+                    adicionar_log(estado, traceback.format_exc(), "error")
+                    continue
 
             adicionar_log(estado, "Gerando resumo geral...", "info")
             timestamp_geral = datetime.now().strftime("%Y%m%d_%H%M%S")

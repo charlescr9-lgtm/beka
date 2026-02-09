@@ -861,9 +861,6 @@
     <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')">
         <i class="fas fa-dollar-sign"></i> Lucro
     </div>
-    <div class="nav-tab" data-tab="config" onclick="trocarTab('config')">
-        <i class="fas fa-cog"></i> Config
-    </div>
 </nav>
 
 <!-- TOAST CONTAINER -->
@@ -977,6 +974,109 @@
                 <div style="color:var(--text-muted);">Aguardando...</div>
             </div>
         </div>
+
+        <!-- Configuracoes (colapsavel) -->
+        <div style="margin-top: 24px;">
+            <div style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:14px 18px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-sm);" onclick="toggleConfig()">
+                <span style="font-weight:600; font-size:14px; color:var(--text-primary);"><i class="fas fa-cog" style="margin-right:8px; color:var(--primary);"></i> Configuracoes</span>
+                <i class="fas fa-chevron-down" id="configToggleIcon" style="color:var(--text-muted); transition:transform 0.2s;"></i>
+            </div>
+            <div id="configContent" style="display:none; margin-top:1px;">
+                <div class="grid grid-2">
+                    <!-- Dimensoes -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title"><i class="fas fa-ruler"></i> Dimensoes da Pagina</span>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Largura (mm)</label>
+                                <input class="form-input" id="cfgLargura" type="number" min="50" max="300">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Altura (mm)</label>
+                                <input class="form-input" id="cfgAltura" type="number" min="50" max="400">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Margem Esquerda (pt)</label>
+                                <input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Margem Direita (pt)</label>
+                                <input class="form-input" id="cfgMargemDir" type="number" min="0" max="50">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">Margem Topo (pt)</label>
+                                <input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Margem Inferior (pt)</label>
+                                <input class="form-input" id="cfgMargemInf" type="number" min="0" max="50">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-top:12px;">
+                            <label class="form-label">Fonte Base - Tabela de Produtos (pt)</label>
+                            <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:120px;">
+                            <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Padrao: 7pt | SKU e Qtd usam 50% maior</span>
+                        </div>
+                        <div class="form-group" style="margin-top:12px;">
+                            <label class="form-label">Exibicao na tabela de produtos</label>
+                            <select class="form-input" id="cfgExibicaoProduto" style="width:220px;">
+                                <option value="sku">Somente SKU</option>
+                                <option value="titulo">Somente Titulo</option>
+                                <option value="ambos">SKU + Titulo</option>
+                            </select>
+                            <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">O que mostrar na coluna de produto</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agrupamento de Lojas -->
+                <div style="margin-top: 20px;">
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-title"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
+                        </div>
+                        <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                            Configure grupos de lojas para gerar PDFs agrupados automaticamente apos cada processamento.
+                        </p>
+
+                        <!-- Lista de grupos existentes -->
+                        <div id="listaGrupos" style="margin-bottom:16px;"></div>
+
+                        <!-- Adicionar novo grupo -->
+                        <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px;">
+                            <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">Novo Grupo</div>
+                            <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+                                <div class="form-group" style="margin-bottom:0; flex:none;">
+                                    <label class="form-label">Nome do Grupo</label>
+                                    <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:180px;">
+                                </div>
+                                <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px;">
+                                    <label class="form-label">Lojas (selecione 2+)</label>
+                                    <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:38px;">
+                                        <span style="font-size:11px; color:var(--text-muted);">Processe etiquetas primeiro para ver lojas disponiveis</span>
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0;">
+                                    <i class="fas fa-plus"></i> Adicionar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; display: flex; gap: 12px;">
+                    <button class="btn btn-danger" onclick="limparSaida()">
+                        <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- ==================== RESULTADOS ==================== -->
@@ -1005,108 +1105,6 @@
             <input class="form-input" id="nomeAgrupamento" type="text" placeholder="Nome do grupo (opcional)" style="width:200px; flex:none;">
             <button class="btn btn-primary" onclick="gerarAgrupado()">
                 <i class="fas fa-layer-group"></i> Gerar Agrupado
-            </button>
-        </div>
-    </div>
-
-    <!-- ==================== CONFIGURACOES ==================== -->
-    <div class="tab-content" id="tab-config">
-        <h3 class="section-title"><i class="fas fa-cog"></i> Configuracoes</h3>
-
-        <div class="grid grid-2">
-            <!-- Dimensoes -->
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"><i class="fas fa-ruler"></i> Dimensoes da Pagina</span>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Largura (mm)</label>
-                        <input class="form-input" id="cfgLargura" type="number" min="50" max="300">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Altura (mm)</label>
-                        <input class="form-input" id="cfgAltura" type="number" min="50" max="400">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Margem Esquerda (pt)</label>
-                        <input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Margem Direita (pt)</label>
-                        <input class="form-input" id="cfgMargemDir" type="number" min="0" max="50">
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Margem Topo (pt)</label>
-                        <input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Margem Inferior (pt)</label>
-                        <input class="form-input" id="cfgMargemInf" type="number" min="0" max="50">
-                    </div>
-                </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label class="form-label">Fonte Produtos - SKU/Quantidade (pt)</label>
-                    <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:120px;">
-                    <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Padrao: 7pt</span>
-                </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label class="form-label">Exibição na tabela de produtos</label>
-                    <select class="form-input" id="cfgExibicaoProduto" style="width:220px;">
-                        <option value="sku">Somente SKU</option>
-                        <option value="titulo">Somente Título</option>
-                        <option value="ambos">SKU + Título</option>
-                    </select>
-                    <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">O que mostrar na coluna de produto</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- Agrupamento de Lojas -->
-        <div style="margin-top: 20px;">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
-                </div>
-                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
-                    Configure grupos de lojas para gerar PDFs agrupados automaticamente apos cada processamento.
-                </p>
-
-                <!-- Lista de grupos existentes -->
-                <div id="listaGrupos" style="margin-bottom:16px;"></div>
-
-                <!-- Adicionar novo grupo -->
-                <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px;">
-                    <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">Novo Grupo</div>
-                    <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
-                        <div class="form-group" style="margin-bottom:0; flex:none;">
-                            <label class="form-label">Nome do Grupo</label>
-                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:180px;">
-                        </div>
-                        <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px;">
-                            <label class="form-label">Lojas (selecione 2+)</label>
-                            <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:38px;">
-                                <span style="font-size:11px; color:var(--text-muted);">Processe etiquetas primeiro para ver lojas disponiveis</span>
-                            </div>
-                        </div>
-                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0;">
-                            <i class="fas fa-plus"></i> Adicionar
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div style="margin-top: 20px; display: flex; gap: 12px;">
-            <button class="btn btn-primary" onclick="salvarConfig()">
-                <i class="fas fa-save"></i> Salvar Configuracoes
-            </button>
-            <button class="btn btn-danger" onclick="limparSaida()">
-                <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
             </button>
         </div>
     </div>
@@ -1313,6 +1311,18 @@ function trocarTab(tab) {
     if (tabEl) tabEl.classList.add('active');
     // Carregar lojas do Lucro independentemente (via XMLs da pasta_lucro)
     if (tab === 'lucro') carregarLojasLucro();
+}
+
+function toggleConfig() {
+    const content = document.getElementById('configContent');
+    const icon = document.getElementById('configToggleIcon');
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.style.transform = 'rotate(180deg)';
+    } else {
+        content.style.display = 'none';
+        icon.style.transform = 'rotate(0deg)';
+    }
 }
 
 async function carregarLojasLucro() {
@@ -1545,7 +1555,7 @@ function renderUltimoResultado(res) {
                     <span class="badge badge-success" style="margin-left:8px;">${res.duracao_s}s</span>
                 </div>
                 <div style="display:flex; gap:16px; font-size:13px;">
-                    <span><strong>${res.total_xmls}</strong> XMLs</span>
+                    <span><strong>${res.total_xlsx || 0}</strong> XLSXs</span>
                     <span><strong>${res.total_etiquetas}</strong> etiquetas</span>
                     <span><strong>${res.total_lojas}</strong> lojas</span>
                 </div>

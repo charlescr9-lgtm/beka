@@ -742,7 +742,7 @@ class ProcessadorEtiquetasShopee:
                     var_trunc = variacao[:30] + '..' if len(variacao) > 30 else variacao
                     pagina.insert_text(
                         (col_prod, y), var_trunc,
-                        fontsize=fs, fontname=fonte, color=preto
+                        fontsize=fs_destaque, fontname=fonte_bold, color=preto
                     )
             elif modo == 'ambos':
                 # Coluna 1: codigo, Coluna 2: descricao + variacao
@@ -756,7 +756,7 @@ class ProcessadorEtiquetasShopee:
                     texto2 = texto2[:max_desc - 2] + '..'
                 pagina.insert_text(
                     (col_prod, y), texto2,
-                    fontsize=fs, fontname=fonte, color=preto
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
                 )
             else:
                 # Modo SKU (padrao): codigo + variacao
@@ -769,7 +769,7 @@ class ProcessadorEtiquetasShopee:
                     texto2 = texto2[:28] + '..'
                 pagina.insert_text(
                     (col_prod, y), texto2,
-                    fontsize=fs, fontname=fonte, color=preto
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
                 )
 
             pagina.insert_text(
