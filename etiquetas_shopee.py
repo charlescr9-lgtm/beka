@@ -382,9 +382,10 @@ class ProcessadorEtiquetasShopee:
 
             nf = self._extrair_nf_quadrante(pagina, clip)
 
-            # Gerar etiqueta MESMO sem NF - usar identificador sintetico
+            # Gerar etiqueta MESMO sem NF - usar identificador sintetico (incluir nome PDF para unicidade)
             if nf is None:
-                nf = f"SEM_NF_p{pagina.number}_q{idx}"
+                pdf_id = os.path.splitext(os.path.basename(caminho_pdf))[0].replace(' ', '_')
+                nf = f"SEM_NF_{pdf_id}_p{pagina.number}_q{idx}"
                 dados_nf = {}
                 print(f"    Pag {pagina.number} Q{idx}: NF nao encontrada, gerando com ID sintetico")
             else:
@@ -1051,7 +1052,8 @@ class ProcessadorEtiquetasShopee:
                             nf = m.group(1)
 
                 if nf is None:
-                    nf = f"SEM_NF_ret_p{num_pag}"
+                    pdf_id = os.path.splitext(os.path.basename(caminho_pdf))[0].replace(' ', '_')
+                    nf = f"SEM_NF_ret_{pdf_id}_p{num_pag}"
                     dados_nf = {}
                     print(f"    Pag {num_pag}: NF nao encontrada, gerando com ID sintetico")
                 else:
