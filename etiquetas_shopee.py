@@ -315,12 +315,22 @@ class ProcessadorEtiquetasShopee:
         ]
 
         etiquetas = []
-        for clip in quadrantes:
-            nf = self._extrair_nf_quadrante(pagina, clip)
-            if nf is None:
-                continue
+        for idx, clip in enumerate(quadrantes):
+            # Verificar se o quadrante tem conteudo (nao esta vazio)
+            texto_quad = pagina.get_text(clip=clip).strip()
+            if len(texto_quad) < 10:
+                continue  # Quadrante vazio, pular
 
-            dados_nf = self.dados_xml.get(nf, {})
+            nf = self._extrair_nf_quadrante(pagina, clip)
+
+            # Gerar etiqueta MESMO sem NF - usar identificador sintetico
+            if nf is None:
+                nf = f"SEM_NF_p{pagina.number}_q{idx}"
+                dados_nf = {}
+                print(f"    Pag {pagina.number} Q{idx}: NF nao encontrada, gerando com ID sintetico")
+            else:
+                dados_nf = self.dados_xml.get(nf, {})
+
             sku = ''
             num_produtos = 1
             cnpj = dados_nf.get('cnpj_emitente', '')
@@ -329,8 +339,17 @@ class ProcessadorEtiquetasShopee:
                 num_produtos = len(dados_nf['produtos'])
 
             # Extrair nome da loja do REMETENTE (tentar em todas as etiquetas ate achar)
-            if cnpj and cnpj not in self.cnpj_loja:
-                texto_quad = pagina.get_text(clip=clip)
+            if not cnpj:
+                # Sem CNPJ do XML, tentar extrair nome da loja do texto da etiqueta
+                nome_loja = self._extrair_nome_loja_remetente(texto_quad)
+                if nome_loja:
+                    # Criar CNPJ sintetico baseado no nome da loja
+                    cnpj_sintetico = f"SEM_XML_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    cnpj = cnpj_sintetico
+                    if cnpj not in self.cnpj_loja:
+                        self.cnpj_loja[cnpj] = nome_loja
+                        self.cnpj_nome[cnpj] = nome_loja
+            elif cnpj not in self.cnpj_loja:
                 nome_loja = self._extrair_nome_loja_remetente(texto_quad)
                 if nome_loja:
                     self.cnpj_loja[cnpj] = nome_loja
@@ -734,10 +753,12 @@ class ProcessadorEtiquetasShopee:
                             nf = m.group(1)
 
                 if nf is None:
-                    print(f"    Pag {num_pag}: NF nao encontrada, ignorando")
-                    continue
+                    nf = f"SEM_NF_ret_p{num_pag}"
+                    dados_nf = {}
+                    print(f"    Pag {num_pag}: NF nao encontrada, gerando com ID sintetico")
+                else:
+                    dados_nf = self.dados_xml.get(nf, {})
 
-                dados_nf = self.dados_xml.get(nf, {})
                 sku = ''
                 num_produtos = 1
                 cnpj = dados_nf.get('cnpj_emitente', '')
@@ -838,22 +859,42 @@ class ProcessadorEtiquetasShopee:
         return etiquetas
 
     def processar_cpf(self, pasta_entrada):
-        """Processa etiquetas CPF (lanim.pdf) usando dados do lanim2.xlsx.
+        """Processa etiquetas CPF (lanim.pdf) usando dados de XLSX de declaracao.
+        Detecta automaticamente qualquer XLSX com coluna order_sn + product_info.
         Retorna lista de etiquetas com loja fixa 'CPF'.
         """
         caminho_pdf = os.path.join(pasta_entrada, 'lanim.pdf')
-        caminho_xlsx = os.path.join(pasta_entrada, 'lanim2.xlsx')
 
         if not os.path.exists(caminho_pdf):
             return []
 
         print(f"\n  Processando etiquetas CPF...")
 
+        # Buscar XLSX de declaracao: primeiro lanim2.xlsx, depois qualquer XLSX com order_sn
         dados_xlsx = {}
-        if os.path.exists(caminho_xlsx):
-            dados_xlsx = self.carregar_xlsx_pedidos(caminho_xlsx)
+        caminho_xlsx_especifico = os.path.join(pasta_entrada, 'lanim2.xlsx')
+        if os.path.exists(caminho_xlsx_especifico):
+            dados_xlsx = self.carregar_xlsx_pedidos(caminho_xlsx_especifico)
+            print(f"  Usando lanim2.xlsx")
         else:
-            print(f"  AVISO: lanim2.xlsx nao encontrado, etiquetas CPF sem dados de produto")
+            # Buscar qualquer XLSX que nao seja planilha de custos ou config
+            xlsx_encontrados = []
+            for f in os.listdir(pasta_entrada):
+                if f.lower().endswith(('.xlsx', '.xls')) and not f.startswith('_') and f != 'planilha_custos.xlsx':
+                    xlsx_encontrados.append(f)
+
+            for xlsx_nome in xlsx_encontrados:
+                caminho_xlsx = os.path.join(pasta_entrada, xlsx_nome)
+                try:
+                    dados_temp = self.carregar_xlsx_pedidos(caminho_xlsx)
+                    if dados_temp:
+                        dados_xlsx.update(dados_temp)
+                        print(f"  Declaracao encontrada: {xlsx_nome} ({len(dados_temp)} pedidos)")
+                except Exception as e:
+                    print(f"  Erro ao ler {xlsx_nome}: {e}")
+
+            if not dados_xlsx and not xlsx_encontrados:
+                print(f"  AVISO: Nenhum XLSX de declaracao encontrado, etiquetas CPF sem dados de produto")
 
         etiquetas = self.carregar_pdf_pagina_inteira(caminho_pdf, 'cpf', dados_xlsx)
         return etiquetas

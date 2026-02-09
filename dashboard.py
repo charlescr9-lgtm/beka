@@ -723,30 +723,40 @@ def _extrair_loja_nfe(nfe, cnpj_loja_map=None):
 
 def _extrair_sku_principal(sku_completo):
     """Extrai o SKU principal (base) de um SKU completo.
-    Ex: 'TEN-BO-BR-38' -> 'TEN-BO-BR', 'ABC123-P-PRETO' -> 'ABC123'
-    Estrategia: pegar a parte antes de sufixos de tamanho/cor (numeros soltos, cores, etc.)
+    Estrategia: remover do FINAL APENAS a ultima parte se for claramente variacao.
+    Variacao = tamanho roupa (P/M/G/GG/XG/PP/XL) OU numero de 2 digitos (34-50 = tamanho).
+    Ex: 'TEN-BO-BR-38' -> 'TEN-BO-BR' (38 e tamanho roupa)
+        'PROD-AZUL-M'  -> 'PROD-AZUL' (M e tamanho)
+        'SKU-01-42'    -> 'SKU-01'    (42 e tamanho)
+        'TEN-BO-BR'    -> 'TEN-BO-BR' (BR nao e tamanho, mantem)
     """
     if not sku_completo:
         return sku_completo
-    # Remover sufixos que parecem ser variacao (tamanho, cor)
-    # Padrao: tudo ate o ultimo grupo que nao parece tamanho/cor
-    # Primeiro tentar separar por '-'
     partes = sku_completo.split('-')
     if len(partes) <= 1:
         return sku_completo
-    # Remover ultimas partes que parecem tamanho (numeros puros 1-3 digitos) ou cor (2-3 letras)
-    base = []
-    for i, parte in enumerate(partes):
-        p = parte.strip()
-        # Se e a primeira parte, sempre manter
-        if i == 0:
-            base.append(p)
+
+    # Tamanhos de roupa conhecidos
+    tamanhos_letra = {'P', 'M', 'G', 'PP', 'GG', 'XG', 'XS', 'XL', 'XXL', 'XXG', 'EG', 'EGG'}
+
+    # Remover do final apenas partes que sao claramente variacao
+    i = len(partes) - 1
+    while i > 0:
+        p = partes[i].strip().upper()
+        # Tamanho letra (P, M, G, GG, etc.)
+        if p in tamanhos_letra:
+            i -= 1
             continue
-        # Se parece tamanho (1-3 digitos) ou cor/variacao curta (1-3 letras), considerar sufixo
-        if _re.match(r'^\d{1,3}$', p) or (len(p) <= 3 and _re.match(r'^[A-Za-z]+$', p)):
-            # Pode ser sufixo - parar aqui
-            break
-        base.append(p)
+        # Numero 2 digitos no range tipico de tamanho (24-56)
+        if _re.match(r'^\d{2}$', p) and 24 <= int(p) <= 56:
+            i -= 1
+            continue
+        # Numero 1 digito solto (1-9) - pode ser variacao de quantidade
+        if _re.match(r'^\d$', p):
+            i -= 1
+            continue
+        break
+    base = partes[:i + 1]
     return '-'.join(base) if base else sku_completo
 
 
@@ -916,6 +926,31 @@ def api_gerar_lucro():
 
         if not loja_dados:
             return jsonify({"erro": "Nenhum produto encontrado nos XMLs"}), 400
+
+        # LOG DE SKUs PRINCIPAIS para conferencia do usuario
+        adicionar_log(estado, "--- SKUs Principais extraidos (conferencia) ---", "info")
+        skus_log = {}  # sku_principal -> set(sku_completos_originais)
+        for nome_loja_l, dados_l in loja_dados.items():
+            for item in dados_l["itens"]:
+                sku_usado = item.get("SKU", "")
+                if sku_usado:
+                    sku_base = _extrair_sku_principal(sku_usado)
+                    if sku_base not in skus_log:
+                        skus_log[sku_base] = set()
+                    skus_log[sku_base].add(sku_usado)
+        for sku_base in sorted(skus_log.keys()):
+            originais = sorted(skus_log[sku_base])
+            if len(originais) == 1 and originais[0] == sku_base:
+                adicionar_log(estado, f"  SKU: {sku_base}", "info")
+            else:
+                adicionar_log(estado, f"  SKU base: {sku_base} (de: {', '.join(originais)})", "info")
+        # Mostrar chaves da planilha de custos para comparacao
+        adicionar_log(estado, f"--- Planilha de custos: {len(dict_custos)} SKUs ---", "info")
+        for sku_planilha in sorted(dict_custos.keys())[:20]:
+            custo = dict_custos[sku_planilha]
+            adicionar_log(estado, f"  Planilha: {sku_planilha} = R${custo:.2f}", "info")
+        if len(dict_custos) > 20:
+            adicionar_log(estado, f"  ... e mais {len(dict_custos) - 20} SKUs", "info")
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         os.makedirs(pasta_saida, exist_ok=True)

@@ -887,9 +887,9 @@
                  onclick="document.getElementById('fileInput').click()">
                 <i class="fas fa-cloud-upload-alt"></i>
                 <h4>Arraste arquivos aqui ou clique para selecionar</h4>
-                <p>Aceita arquivos PDF (etiquetas) e ZIP (notas fiscais XML)</p>
+                <p>Aceita arquivos PDF (etiquetas), ZIP (notas fiscais XML) e XLSX (declaracao de conteudo)</p>
             </div>
-            <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip" onchange="handleUpload(this.files)">
+            <input type="file" id="fileInput" hidden multiple accept=".pdf,.zip,.xlsx,.xls" onchange="handleUpload(this.files)">
         </div>
 
         <!-- Botao Processar -->
@@ -1472,11 +1472,16 @@ function renderUltimoResultado(res) {
     `).join('');
 
     const avisoSemNf = (res.etiquetas_sem_nf && res.etiquetas_sem_nf > 0)
-        ? `<div style="margin-bottom:12px; padding:10px 14px; background:var(--warning-bg); border:1px solid rgba(245,158,11,0.3); border-radius:var(--radius-sm); font-size:12px; color:var(--warning);">
-            <i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>
-            <strong>${res.etiquetas_sem_nf}</strong> etiquetas sem nota fiscal ou declaracao de conteudo encontrada.
-            Verifique se todos os ZIPs de XMLs e XLSX de declaracoes foram incluidos.
-           </div>`
+        ? `<div style="margin-bottom:14px; padding:14px 18px; background:linear-gradient(135deg, #ff4444 0%, #cc0000 100%); border:2px solid #ff6666; border-radius:var(--radius-sm); font-size:14px; color:#fff; animation: pulsaAviso 2s ease-in-out infinite;">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <i class="fas fa-exclamation-circle" style="font-size:24px; flex-shrink:0;"></i>
+                <div>
+                    <div style="font-weight:700; font-size:15px; margin-bottom:4px;">⚠️ ${res.etiquetas_sem_nf} etiqueta(s) sem Nota Fiscal ou Declaração de Conteúdo!</div>
+                    <div style="font-size:12px; opacity:0.9;">As etiquetas foram geradas mesmo assim, mas sem dados de NF/declaração. Verifique se todos os ZIPs de XMLs e XLSX de declarações foram incluídos no upload.</div>
+                </div>
+            </div>
+           </div>
+           <style>@keyframes pulsaAviso { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.85;transform:scale(1.01)} }</style>`
         : '';
 
     el.innerHTML = `
