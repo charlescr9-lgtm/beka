@@ -989,6 +989,59 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
     return nome_loja, itens, sem_custo
 
 
+def _construir_mapa_cnpj_lojas(pasta_lucro):
+    """Varre XMLs da pasta_lucro e retorna {cnpj_completo: 'XX.XXX.XXX nome_limpo'}.
+
+    Usado por /api/lojas-lucro (config) e api_gerar_lucro (processamento)
+    para garantir nomes de loja consistentes.
+    """
+    import zipfile
+    lojas_dict = {}  # {cnpj: nome_limpo}
+
+    def _extrair_emit(conteudo):
+        try:
+            doc = xmltodict.parse(conteudo)
+            if "nfeProc" in doc:
+                nfe = doc["nfeProc"]["NFe"]["infNFe"]
+            elif "NFe" in doc:
+                nfe = doc["NFe"]["infNFe"]
+            else:
+                return
+            emit = nfe.get("emit", {})
+            if isinstance(emit, str):
+                return
+            cnpj = str(emit.get("CNPJ", "")).strip()
+            nome_raw = str(emit.get("xNome", "")).strip()
+            nome = _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
+            if cnpj:
+                lojas_dict[cnpj] = nome
+        except Exception:
+            pass
+
+    if not pasta_lucro or not os.path.exists(pasta_lucro):
+        return {}
+
+    for f in os.listdir(pasta_lucro):
+        fp = os.path.join(pasta_lucro, f)
+        if f.lower().endswith('.zip') and zipfile.is_zipfile(fp):
+            try:
+                with zipfile.ZipFile(fp) as zf:
+                    for nome_arq in zf.namelist():
+                        if nome_arq.lower().endswith('.xml'):
+                            conteudo = zf.read(nome_arq).decode('utf-8', errors='ignore')
+                            _extrair_emit(conteudo)
+            except Exception:
+                pass
+        elif f.lower().endswith('.xml'):
+            try:
+                with open(fp, 'r', encoding='utf-8', errors='ignore') as xf:
+                    _extrair_emit(xf.read())
+            except Exception:
+                pass
+
+    return {c: f"{_formatar_cnpj_curto(c)} {n}" for c, n in lojas_dict.items()}
+
+
 @app.route('/api/lojas-lucro')
 @jwt_required()
 def api_lojas_lucro():
@@ -1000,51 +1053,9 @@ def api_lojas_lucro():
 
     cfg = estado["configuracoes"]
     pasta_lucro = cfg.get("pasta_lucro", "")
-    lojas = []
 
-    if pasta_lucro and os.path.exists(pasta_lucro):
-        import zipfile
-        lojas_dict = {}  # {cnpj: nome_limpo}
-
-        def _extrair_emit_xml(conteudo):
-            try:
-                doc = xmltodict.parse(conteudo)
-                if "nfeProc" in doc:
-                    nfe = doc["nfeProc"]["NFe"]["infNFe"]
-                elif "NFe" in doc:
-                    nfe = doc["NFe"]["infNFe"]
-                else:
-                    return
-                emit = nfe.get("emit", {})
-                if isinstance(emit, str):
-                    return
-                cnpj = str(emit.get("CNPJ", "")).strip()
-                nome_raw = str(emit.get("xNome", "")).strip()
-                nome = _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
-                if cnpj:
-                    lojas_dict[cnpj] = nome
-            except Exception:
-                pass
-
-        for f in os.listdir(pasta_lucro):
-            fp = os.path.join(pasta_lucro, f)
-            if f.lower().endswith('.zip') and zipfile.is_zipfile(fp):
-                try:
-                    with zipfile.ZipFile(fp) as zf:
-                        for nome_arq in zf.namelist():
-                            if nome_arq.lower().endswith('.xml'):
-                                conteudo = zf.read(nome_arq).decode('utf-8', errors='ignore')
-                                _extrair_emit_xml(conteudo)
-                except Exception:
-                    pass
-            elif f.lower().endswith('.xml'):
-                try:
-                    with open(fp, 'r', encoding='utf-8', errors='ignore') as xf:
-                        _extrair_emit_xml(xf.read())
-                except Exception:
-                    pass
-
-        lojas = [{"cnpj": c, "nome": f"{_formatar_cnpj_curto(c)} {n}"} for c, n in sorted(lojas_dict.items(), key=lambda x: x[1])]
+    mapa = _construir_mapa_cnpj_lojas(pasta_lucro)
+    lojas = [{"cnpj": c, "nome": n} for c, n in sorted(mapa.items(), key=lambda x: x[1])]
 
     return jsonify({"lojas": lojas})
 
@@ -1080,8 +1091,8 @@ def api_gerar_lucro():
 
         cfg_por_loja = cfg.get("lucro_por_loja", {})
 
-        # Usar mapeamento CNPJ->loja do processamento principal (nomes da loja Shopee)
-        _cnpj_loja_map = estado.get("_proc_config", {}).get("cnpj_loja", {})
+        # Construir mapa CNPJ->nome diretamente dos XMLs (mesmo que /api/lojas-lucro)
+        _cnpj_loja_map = _construir_mapa_cnpj_lojas(pasta_lucro)
 
         import zipfile
         loja_dados = defaultdict(lambda: {"itens": [], "linhas_sem_custo": []})
