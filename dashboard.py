@@ -1148,11 +1148,14 @@ def api_gerar_lucro():
             caminho_loja_xlsx = os.path.join(pasta_loja, f"lucro_{nome_loja}_{timestamp}.xlsx")
 
             df_loja = pd.DataFrame(itens_l)
+            df_loja = df_loja.sort_values('SKU', na_position='last').reset_index(drop=False)
+            sem_custo_l_sorted = [i for i, orig in enumerate(df_loja['index']) if orig in sem_custo_l]
+            df_loja = df_loja.drop(columns=['index'])
             totais_l = df_loja.sum(numeric_only=True)
             totais_l["SKU"] = "TOTAIS"
             df_loja = pd.concat([df_loja, pd.DataFrame([totais_l])], ignore_index=True)
             df_loja.to_excel(caminho_loja_xlsx, index=False)
-            _formatar_excel_lucro(caminho_loja_xlsx, sem_custo_l)
+            _formatar_excel_lucro(caminho_loja_xlsx, sem_custo_l_sorted)
 
             lucro_l = round(float(totais_l.get("LUCRO", 0)), 2)
             receita_l = round(float(totais_l.get("V. Real", 0)), 2)
@@ -1172,18 +1175,20 @@ def api_gerar_lucro():
 
             offset_g = len(lista_global)
             for item in itens_l:
-                lista_global.append({"Loja": nome_loja, **item})
+                lista_global.append(item)
             linhas_sem_custo_global.extend([i + offset_g for i in sem_custo_l])
 
         df_global = pd.DataFrame(lista_global)
+        df_global = df_global.sort_values('SKU', na_position='last').reset_index(drop=False)
+        sem_custo_global_sorted = [i for i, orig in enumerate(df_global['index']) if orig in linhas_sem_custo_global]
+        df_global = df_global.drop(columns=['index'])
         totais_g = df_global.sum(numeric_only=True)
         totais_g["SKU"] = "TOTAIS"
-        totais_g["Loja"] = ""
         df_global = pd.concat([df_global, pd.DataFrame([totais_g])], ignore_index=True)
 
         caminho_xlsx = os.path.join(pasta_saida, f"relatorio_lucro_{timestamp}.xlsx")
         df_global.to_excel(caminho_xlsx, index=False)
-        _formatar_excel_lucro(caminho_xlsx, linhas_sem_custo_global)
+        _formatar_excel_lucro(caminho_xlsx, sem_custo_global_sorted)
 
         lucro_total = round(float(totais_g.get("LUCRO", 0)), 2)
         receita_total = round(float(totais_g.get("V. Real", 0)), 2)
