@@ -1809,11 +1809,14 @@ class ProcessadorEtiquetasShopee:
         O PDF tem paginas alternadas: par=etiqueta Shein, impar=DANFE.
         Retorna lista de dicts com dados pareados.
         """
-        # Tentar ambos os nomes
-        caminho = os.path.join(pasta_entrada, 'shein crua.pdf')
-        if not os.path.exists(caminho):
-            caminho = os.path.join(pasta_entrada, 'shein.pdf')
-        if not os.path.exists(caminho):
+        # Buscar arquivo shein (case-insensitive para funcionar no Linux/Railway)
+        caminho = None
+        nomes_shein = ['shein crua.pdf', 'shein.pdf']
+        for f in os.listdir(pasta_entrada):
+            if f.lower() in nomes_shein:
+                caminho = os.path.join(pasta_entrada, f)
+                break
+        if not caminho:
             return []
 
         print(f"\n  Processando etiquetas SHEIN...")
