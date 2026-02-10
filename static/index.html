@@ -237,11 +237,10 @@
         .stat-mini {
             display: flex;
             align-items: center;
-            gap: 12px;
-            padding: 12px 16px;
+            gap: 8px;
+            padding: 6px 10px;
             background: var(--bg-input);
-            border-radius: var(--radius-sm);
-            margin-top: 8px;
+            border-radius: var(--radius-xs);
         }
 
         .stat-mini-icon {
@@ -842,96 +841,30 @@
     <!-- ==================== PAINEL ==================== -->
     <div class="tab-content active" id="tab-painel">
 
-        <!-- Linha superior: Upload + Processar + Config + Avancado -->
-        <div class="grid grid-4" style="margin-bottom:12px;">
-            <!-- Card Upload -->
-            <div class="card" style="cursor:pointer; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:16px; border-style:dashed;"
-                 id="uploadZone"
-                 ondragover="event.preventDefault(); this.classList.add('dragover')"
-                 ondragleave="this.classList.remove('dragover')"
-                 ondrop="handleDrop(event)"
-                 onclick="document.getElementById('fileInput').click()">
-                <div class="card-header" style="margin-bottom:8px;">
-                    <span class="card-title">UPLOAD</span>
-                    <div class="card-icon orange"><i class="fas fa-cloud-upload-alt"></i></div>
-                </div>
-                <div style="font-size:12px; color:var(--text-secondary);">Arraste PDFs e XLSX</div>
-                <div style="font-size:11px; color:var(--text-muted);">ou clique para selecionar</div>
+        <!-- Upload + Processar (1 card horizontal) -->
+        <div class="card" style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:12px;"
+             id="uploadZone"
+             ondragover="event.preventDefault(); this.classList.add('dragover')"
+             ondragleave="this.classList.remove('dragover')"
+             ondrop="handleDrop(event)">
+            <div onclick="document.getElementById('fileInput').click()" style="cursor:pointer; display:flex; align-items:center; gap:6px; padding:6px 12px; border:1px dashed var(--border); border-radius:var(--radius-xs); color:var(--text-secondary); font-size:12px; flex-shrink:0; transition:var(--transition);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+                <i class="fas fa-cloud-upload-alt" style="color:var(--accent);"></i> Upload
             </div>
             <input type="file" id="fileInput" hidden multiple accept=".pdf,.xlsx,.xls" onchange="handleUpload(this.files)">
-
-            <!-- Card Processar -->
-            <div class="card" style="display:flex; flex-direction:column; justify-content:space-between; padding:16px;">
-                <div class="card-header" style="margin-bottom:8px;">
-                    <span class="card-title">PROCESSAR</span>
-                    <div class="card-icon green"><i class="fas fa-rocket"></i></div>
-                </div>
-                <div class="progress-bar" id="progressBar" style="margin-bottom:8px;">
-                    <div class="progress-bar-fill"></div>
-                </div>
-                <div style="display:flex; gap:6px;">
-                    <button class="btn btn-primary btn-sm" id="btnProcessar" onclick="processar()" disabled style="flex:1; font-size:11px; padding:6px 8px;">
-                        <i class="fas fa-play"></i> Processar
-                    </button>
-                    <button class="btn btn-sm" id="btnNovoLote" onclick="novoLote()" style="background:var(--warning); color:#000; border:none; cursor:pointer; font-weight:600; font-size:11px; padding:6px 8px;">
-                        <i class="fas fa-broom"></i> Novo
-                    </button>
-                </div>
+            <div class="progress-bar" id="progressBar" style="flex:1;">
+                <div class="progress-bar-fill"></div>
             </div>
-
-            <!-- Card Config -->
-            <div class="card" style="padding:12px; display:flex; flex-direction:column; gap:5px;">
-                <div class="card-header" style="margin-bottom:2px;">
-                    <span class="card-title">CONFIG</span>
-                    <div class="card-icon blue"><i class="fas fa-cog"></i></div>
-                </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px; font-size:10px;">
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary);">Larg
-                        <input class="form-input" id="cfgLargura" type="number" min="50" max="300" style="width:100%; padding:2px 3px; font-size:10px;">
-                    </label>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary);">Alt
-                        <input class="form-input" id="cfgAltura" type="number" min="50" max="400" style="width:100%; padding:2px 3px; font-size:10px;">
-                    </label>
-                </div>
-                <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:3px; font-size:10px;">
-                    <label style="color:var(--text-muted);">E<input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50" style="width:100%; padding:2px; font-size:10px;"></label>
-                    <label style="color:var(--text-muted);">D<input class="form-input" id="cfgMargemDir" type="number" min="0" max="50" style="width:100%; padding:2px; font-size:10px;"></label>
-                    <label style="color:var(--text-muted);">T<input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50" style="width:100%; padding:2px; font-size:10px;"></label>
-                    <label style="color:var(--text-muted);">I<input class="form-input" id="cfgMargemInf" type="number" min="0" max="50" style="width:100%; padding:2px; font-size:10px;"></label>
-                </div>
-                <div style="display:flex; gap:4px; font-size:10px;">
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary); flex:none;">Fonte
-                        <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:32px; padding:2px; font-size:10px;">
-                    </label>
-                    <select class="form-input" id="cfgExibicaoProduto" style="padding:2px; font-size:10px; flex:1;">
-                        <option value="sku">SKU</option>
-                        <option value="titulo">Titulo</option>
-                        <option value="ambos">SKU+Tit</option>
-                    </select>
-                </div>
-            </div>
-
-            <!-- Card Avancado -->
-            <div class="card" style="padding:16px; display:flex; flex-direction:column; justify-content:space-between;">
-                <div class="card-header" style="margin-bottom:8px;">
-                    <span class="card-title">AVANCADO</span>
-                    <div class="card-icon yellow"><i class="fas fa-tools"></i></div>
-                </div>
-                <div style="display:flex; flex-direction:column; gap:6px;">
-                    <button class="btn btn-sm" onclick="toggleConfig()" style="font-size:11px; padding:6px 8px; width:100%; background:var(--bg-input); border:1px solid var(--border); color:var(--text-secondary); cursor:pointer; border-radius:var(--radius-xs);">
-                        <i class="fas fa-layer-group"></i> Agrupamento
-                    </button>
-                    <button class="btn btn-danger btn-sm" onclick="limparSaida()" style="font-size:11px; padding:6px 8px; width:100%;">
-                        <i class="fas fa-trash-alt"></i> Limpar Saida
-                    </button>
-                </div>
-            </div>
+            <button class="btn btn-primary btn-sm" id="btnProcessar" onclick="processar()" disabled style="font-size:11px; padding:6px 12px; flex-shrink:0;">
+                <i class="fas fa-play"></i> Processar
+            </button>
+            <button class="btn btn-sm" id="btnNovoLote" onclick="novoLote()" style="background:var(--warning); color:#000; border:none; cursor:pointer; font-weight:600; font-size:11px; padding:6px 12px; flex-shrink:0;">
+                <i class="fas fa-broom"></i> Novo Lote
+            </button>
         </div>
-
         <div id="avisoUpload" style="display:none; margin-bottom:8px; padding:6px 12px; border-radius:6px; font-size:12px;"></div>
 
         <!-- Stats Cards -->
-        <div class="grid grid-4" id="statsCards">
+        <div class="grid grid-4" id="statsCards" style="margin-bottom:16px;">
             <div class="card">
                 <div class="card-header">
                     <span class="card-title">PDFs</span>
@@ -966,54 +899,83 @@
             </div>
         </div>
 
-        <!-- Ultimo Resultado -->
-        <div style="margin-top: 24px;">
-            <h3 class="section-title"><i class="fas fa-clock"></i> Ultimo Processamento</h3>
-            <div id="ultimoResultado">
-                <div class="empty-state">
-                    <i class="fas fa-inbox"></i>
-                    <h3>Nenhum processamento realizado</h3>
-                    <p>Clique em "Iniciar Processamento" para comecar</p>
+        <!-- 2 colunas: Resultado compacto | Config + Agrupamento -->
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+
+            <!-- Coluna esquerda: Ultimo Processamento + Log -->
+            <div>
+                <h3 class="section-title" style="font-size:13px; margin-bottom:8px;"><i class="fas fa-clock"></i> Ultimo Processamento</h3>
+                <div id="ultimoResultado">
+                    <div style="padding:16px; text-align:center; color:var(--text-muted); font-size:12px;">
+                        <i class="fas fa-inbox" style="font-size:20px; margin-bottom:6px; display:block; opacity:0.5;"></i>
+                        Nenhum processamento realizado
+                    </div>
+                </div>
+                <h3 class="section-title" style="font-size:13px; margin-top:12px; margin-bottom:6px;"><i class="fas fa-terminal"></i> Log</h3>
+                <div id="logContainer" style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:8px; max-height:120px; overflow-y:auto; font-family:monospace; font-size:10px; line-height:1.5;">
+                    <div style="color:var(--text-muted);">Aguardando...</div>
                 </div>
             </div>
-        </div>
 
-        <!-- Log compacto -->
-        <div style="margin-top: 24px;">
-            <h3 class="section-title"><i class="fas fa-terminal"></i> Log do Sistema</h3>
-            <div id="logContainer" style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px; max-height:180px; overflow-y:auto; font-family:monospace; font-size:11px; line-height:1.6;">
-                <div style="color:var(--text-muted);">Aguardando...</div>
-            </div>
-        </div>
-
-        <!-- Agrupamento (colapsavel, ativado pelo card Avancado) -->
-        <div id="configContent" style="display:none; margin-top:12px;">
-            <div class="card" style="padding:14px;">
-                <div class="card-header" style="margin-bottom:10px;">
-                    <span class="card-title" style="font-size:13px;"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
+            <!-- Coluna direita: Config + Agrupamento (1 card) -->
+            <div class="card" style="padding:14px; display:flex; flex-direction:column; gap:10px;">
+                <div class="card-header" style="margin-bottom:0;">
+                    <span class="card-title"><i class="fas fa-cog"></i> Configuracoes</span>
                 </div>
-                <p style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
-                    Configure grupos para gerar PDFs agrupados automaticamente.
-                </p>
-                <div id="listaGrupos" style="margin-bottom:12px;"></div>
-                <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px;">
-                    <div style="font-size:12px; font-weight:600; margin-bottom:8px; color:var(--text-secondary);">Novo Grupo</div>
-                    <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
-                        <div class="form-group" style="margin-bottom:0; flex:none;">
-                            <label class="form-label" style="font-size:11px;">Nome</label>
-                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:140px; font-size:12px; padding:5px 8px;">
+
+                <!-- Dimensoes e margens -->
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px;">
+                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Larg
+                        <input class="form-input" id="cfgLargura" type="number" min="50" max="300" style="width:48px; padding:3px 4px; font-size:11px;">
+                    </label>
+                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Alt
+                        <input class="form-input" id="cfgAltura" type="number" min="50" max="400" style="width:48px; padding:3px 4px; font-size:11px;">
+                    </label>
+                    <span style="color:var(--border);">|</span>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">E<input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">D<input class="form-input" id="cfgMargemDir" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">T<input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">I<input class="form-input" id="cfgMargemInf" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <span style="color:var(--border);">|</span>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary);">Fonte<input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <select class="form-input" id="cfgExibicaoProduto" style="padding:3px; font-size:11px;">
+                        <option value="sku">SKU</option>
+                        <option value="titulo">Titulo</option>
+                        <option value="ambos">SKU+Tit</option>
+                    </select>
+                </div>
+
+                <!-- Separador -->
+                <div style="border-top:1px solid var(--border);"></div>
+
+                <!-- Agrupamento de Lojas -->
+                <div>
+                    <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px;"><i class="fas fa-layer-group" style="margin-right:4px;"></i> Agrupamento de Lojas</div>
+                    <div id="listaGrupos" style="margin-bottom:8px;"></div>
+                    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
+                        <div style="flex:none;">
+                            <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Nome</label>
+                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Grupo A" style="width:100px; font-size:11px; padding:4px 6px;">
                         </div>
-                        <div class="form-group" style="margin-bottom:0; flex:1; min-width:180px;">
-                            <label class="form-label" style="font-size:11px;">Lojas (2+)</label>
-                            <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:6px; padding:6px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:32px;">
-                                <span style="font-size:10px; color:var(--text-muted);">Processe etiquetas primeiro</span>
+                        <div style="flex:1; min-width:120px;">
+                            <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Lojas (2+)</label>
+                            <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:4px; padding:4px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:28px; font-size:10px;">
+                                <span style="color:var(--text-muted);">Processe primeiro</span>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0; font-size:11px; padding:5px 10px;">
-                            <i class="fas fa-plus"></i> Adicionar
+                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="font-size:10px; padding:4px 8px;">
+                            <i class="fas fa-plus"></i>
                         </button>
                     </div>
                 </div>
+
+                <!-- Separador -->
+                <div style="border-top:1px solid var(--border);"></div>
+
+                <!-- Limpar -->
+                <button class="btn btn-danger btn-sm" onclick="limparSaida()" style="font-size:11px; padding:5px 10px; align-self:flex-start;">
+                    <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
+                </button>
             </div>
         </div>
     </div>
@@ -1252,15 +1214,6 @@ function trocarTab(tab) {
     if (tab === 'lucro') carregarLojasLucro();
 }
 
-function toggleConfig() {
-    const content = document.getElementById('configContent');
-    if (content.style.display === 'none') {
-        content.style.display = 'block';
-    } else {
-        content.style.display = 'none';
-    }
-}
-
 async function carregarLojasLucro() {
     const data = await fetchAPI('/api/lojas-lucro');
     if (data && data.lojas && data.lojas.length > 0) {
@@ -1458,47 +1411,30 @@ async function atualizarStatus() {
 function renderUltimoResultado(res) {
     if (!res) return;
     const el = document.getElementById('ultimoResultado');
-    const lojasHtml = res.lojas.map(l => `
-        <div class="stat-mini">
-            <span class="stat-mini-icon"><i class="fas fa-store"></i></span>
-            <div style="flex:1">
-                <div class="stat-mini-value">${l.nome}</div>
-                <div class="stat-mini-text">${l.etiquetas} etiquetas | ${l.skus} SKUs | ${l.total_qtd} unidades</div>
+    const lojasHtml = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:4px;">' +
+        res.lojas.map(l => `
+            <div class="stat-mini">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:700; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${l.nome}</div>
+                    <div style="font-size:10px; color:var(--text-secondary);">${l.etiquetas} etiq | ${l.skus} SKU | ${l.total_qtd} un</div>
+                </div>
+                <span class="badge badge-success" style="font-size:10px; padding:2px 6px;">${l.paginas}p</span>
             </div>
-            <span class="badge badge-success">${l.paginas} pags</span>
-        </div>
-    `).join('');
+        `).join('') + '</div>';
 
     const avisoSemNf = (res.etiquetas_sem_nf && res.etiquetas_sem_nf > 0)
-        ? `<div style="margin-bottom:14px; padding:14px 18px; background:linear-gradient(135deg, #ff4444 0%, #cc0000 100%); border:2px solid #ff6666; border-radius:var(--radius-sm); font-size:14px; color:#fff; animation: pulsaAviso 2s ease-in-out infinite;">
-            <div style="display:flex; align-items:center; gap:10px;">
-                <i class="fas fa-exclamation-circle" style="font-size:24px; flex-shrink:0;"></i>
-                <div>
-                    <div style="font-weight:700; font-size:15px; margin-bottom:4px;">⚠️ ${res.etiquetas_sem_nf} etiqueta(s) sem Nota Fiscal ou Declaração de Conteúdo!</div>
-                    <div style="font-size:12px; opacity:0.9;">As etiquetas foram geradas mesmo assim, mas sem dados de NF/declaração. Verifique se todos os ZIPs de XMLs e XLSX de declarações foram incluídos no upload.</div>
-                </div>
-            </div>
-           </div>
-           <style>@keyframes pulsaAviso { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.85;transform:scale(1.01)} }</style>`
+        ? `<div style="margin-bottom:6px; padding:6px 10px; background:#cc0000; border-radius:var(--radius-xs); font-size:11px; color:#fff;">
+                <i class="fas fa-exclamation-circle"></i> ${res.etiquetas_sem_nf} etiqueta(s) sem NF/Declaracao
+           </div>`
         : '';
 
     el.innerHTML = `
-        <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <div>
-                    <span style="font-size:13px; color:var(--text-muted);">Processado em</span>
-                    <strong style="margin-left:8px;">${res.timestamp}</strong>
-                    <span class="badge badge-success" style="margin-left:8px;">${res.duracao_s}s</span>
-                </div>
-                <div style="display:flex; gap:16px; font-size:13px;">
-                    <span><strong>${res.total_xlsx || 0}</strong> XLSXs</span>
-                    <span><strong>${res.total_etiquetas}</strong> etiquetas</span>
-                    <span><strong>${res.total_lojas}</strong> lojas</span>
-                </div>
-            </div>
-            ${avisoSemNf}
-            ${lojasHtml}
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:11px; color:var(--text-muted);">
+            <span>${res.timestamp} <span class="badge badge-success" style="font-size:10px;">${res.duracao_s}s</span></span>
+            <span><strong>${res.total_etiquetas}</strong> etiq | <strong>${res.total_lojas}</strong> lojas</span>
         </div>
+        ${avisoSemNf}
+        ${lojasHtml}
     `;
 }
 
