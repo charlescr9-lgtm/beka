@@ -976,20 +976,19 @@
                     <div id="avisoGrupoNaoSalvo" style="display:none; padding:6px 10px; margin-bottom:8px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:var(--radius-xs); font-size:11px; color:var(--warning); align-items:center; gap:6px;">
                         <i class="fas fa-exclamation-triangle"></i> <span>Lojas selecionadas sem grupo salvo. Adicione o grupo ou desmarque as lojas antes de processar.</span>
                     </div>
-                    <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
-                        <div style="flex:none;">
-                            <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Nome</label>
-                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Grupo A" style="width:100px; font-size:11px; padding:4px 6px;">
-                        </div>
+                    <div style="display:flex; flex-direction:column; gap:8px;">
                         <div style="flex:1; min-width:120px;">
                             <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Lojas (2+)</label>
                             <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:4px; padding:4px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:28px; font-size:10px;">
                                 <span style="color:var(--text-muted);">Envie PDFs e clique em Sincronizar</span>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="font-size:10px; padding:4px 8px;" title="Salvar grupo com as lojas selecionadas">
-                            <i class="fas fa-plus"></i>
-                        </button>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Nome do grupo" style="flex:1; font-size:11px; padding:4px 6px;">
+                            <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="font-size:10px; padding:4px 10px; white-space:nowrap;" title="Salvar grupo com as lojas selecionadas">
+                                <i class="fas fa-save" style="margin-right:4px;"></i> Salvar Grupo
+                            </button>
+                        </div>
                     </div>
                 </div>
 
