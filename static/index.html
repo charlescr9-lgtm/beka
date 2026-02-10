@@ -1018,6 +1018,9 @@
         <div class="card" style="margin-bottom:20px;">
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-file-archive"></i> Arquivos de Notas Fiscais</span>
+                <button class="btn btn-secondary btn-sm" onclick="limparUploadsLucro()" id="btnLimparLucro" style="display:none; font-size:11px;">
+                    <i class="fas fa-trash-alt"></i> Limpar
+                </button>
             </div>
             <div class="upload-zone" id="uploadZoneLucro"
                  ondragover="event.preventDefault(); this.classList.add('dragover')"
@@ -1759,22 +1762,75 @@ async function removerArquivoLucro(nome) {
 
 function renderArquivosLucro(arquivos) {
     const el = document.getElementById('listaArquivosLucro');
+    const btnLimpar = document.getElementById('btnLimparLucro');
     if (!el) return;
     if (!arquivos || arquivos.length === 0) {
         el.innerHTML = '<p style="color:var(--text-muted); font-size:12px;">Nenhum arquivo de lucro carregado</p>';
+        if (btnLimpar) btnLimpar.style.display = 'none';
         return;
     }
-    el.innerHTML = arquivos.map(a => `
-        <div style="display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:var(--bg-dark); border-radius:6px; margin-bottom:4px;">
-            <span style="font-size:13px;">
-                <i class="fas ${a.tipo === 'ZIP' ? 'fa-file-archive' : 'fa-file-code'}" style="color:var(--primary); margin-right:6px;"></i>
-                ${a.nome} <span style="color:var(--text-muted); font-size:11px;">(${a.tamanho_fmt})</span>
+    if (btnLimpar) btnLimpar.style.display = '';
+
+    // Contar por tipo
+    const zips = arquivos.filter(a => a.tipo === 'ZIP');
+    const xmls = arquivos.filter(a => a.tipo === 'XML');
+    const custos = arquivos.filter(a => a.tipo === 'CUSTOS');
+    const outros = arquivos.filter(a => !['ZIP','XML','CUSTOS'].includes(a.tipo));
+    const tamanhoTotal = arquivos.reduce((s, a) => s + (a.tamanho || 0), 0);
+    const tamanhoFmt = tamanhoTotal > 1048576 ? (tamanhoTotal/1048576).toFixed(1) + ' MB' : (tamanhoTotal/1024).toFixed(0) + ' KB';
+
+    // Resumo compacto
+    const partes = [];
+    if (zips.length > 0) partes.push(`<i class="fas fa-file-archive" style="color:var(--primary);"></i> ${zips.length} ZIP`);
+    if (xmls.length > 0) partes.push(`<i class="fas fa-file-code" style="color:var(--primary);"></i> ${xmls.length} XML`);
+    if (custos.length > 0) partes.push(`<i class="fas fa-file-excel" style="color:var(--success);"></i> Custos`);
+    if (outros.length > 0) partes.push(`${outros.length} outro(s)`);
+
+    el.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--bg-dark); border-radius:6px;">
+            <span style="font-size:12px; display:flex; align-items:center; gap:12px;">
+                <strong>${arquivos.length}</strong> arquivo(s) &middot; ${partes.join(' &middot; ')} &middot; <span style="color:var(--text-muted);">${tamanhoFmt}</span>
             </span>
-            <button onclick="removerArquivoLucro('${a.nome}')" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:14px;" title="Remover">
-                <i class="fas fa-trash-alt"></i>
+            <button onclick="toggleListaLucro()" style="background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:12px;" title="Ver detalhes">
+                <i class="fas fa-chevron-down" id="iconListaLucro"></i>
             </button>
         </div>
-    `).join('');
+        <div id="detalhesArquivosLucro" style="display:none; max-height:200px; overflow-y:auto; margin-top:4px;">
+            ${arquivos.map(a => `
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:4px 10px; background:var(--bg-dark); border-radius:4px; margin-bottom:2px; font-size:12px;">
+                    <span>
+                        <i class="fas ${a.tipo === 'ZIP' ? 'fa-file-archive' : a.tipo === 'CUSTOS' ? 'fa-file-excel' : 'fa-file-code'}" style="color:var(--primary); margin-right:6px;"></i>
+                        ${a.nome} <span style="color:var(--text-muted); font-size:10px;">(${a.tamanho_fmt})</span>
+                    </span>
+                    <button onclick="removerArquivoLucro('${a.nome}')" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:12px;" title="Remover">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function toggleListaLucro() {
+    const det = document.getElementById('detalhesArquivosLucro');
+    const icon = document.getElementById('iconListaLucro');
+    if (!det) return;
+    const aberto = det.style.display !== 'none';
+    det.style.display = aberto ? 'none' : 'block';
+    if (icon) icon.className = aberto ? 'fas fa-chevron-down' : 'fas fa-chevron-up';
+}
+
+async function limparUploadsLucro() {
+    if (!confirm('Remover todos os arquivos de lucro (ZIPs, XMLs e planilha de custos)?')) return;
+    const res = await fetchAPI('/api/limpar-lucro', { method: 'POST' });
+    if (res && res.ok) {
+        toast('Arquivos de lucro removidos', 'success');
+        const el = document.getElementById('resumoLucro');
+        if (el) el.innerHTML = '';
+        atualizarStatus();
+    } else {
+        toast(res?.erro || 'Erro ao limpar', 'error');
+    }
 }
 
 // ================================================================

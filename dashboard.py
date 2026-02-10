@@ -595,6 +595,30 @@ def api_remover_arquivo_lucro():
     return jsonify({"erro": "Arquivo nao encontrado"}), 404
 
 
+@app.route('/api/limpar-lucro', methods=['POST'])
+@jwt_required()
+def api_limpar_lucro():
+    """Remove todos os arquivos da pasta de lucro."""
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+    pasta_lucro = estado["configuracoes"].get("pasta_lucro", "")
+    if not pasta_lucro or not os.path.exists(pasta_lucro):
+        return jsonify({"ok": True})
+    removidos = 0
+    for f in os.listdir(pasta_lucro):
+        if f.startswith('_'):
+            continue
+        fp = os.path.join(pasta_lucro, f)
+        if os.path.isfile(fp):
+            os.remove(fp)
+            removidos += 1
+    estado["ultimo_lucro"] = None
+    adicionar_log(estado, f"Pasta de lucro limpa ({removidos} arquivos removidos)", "warning")
+    return jsonify({"ok": True, "removidos": removidos})
+
+
 @app.route('/api/limpar-saida', methods=['POST'])
 @jwt_required()
 def api_limpar_saida():
