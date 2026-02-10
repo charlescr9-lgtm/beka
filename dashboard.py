@@ -1779,7 +1779,12 @@ def _executar_processamento(user_id):
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     caminho_shein = os.path.join(pasta_loja_s, f"shein_{nome_loja_s}_{timestamp}.pdf")
                     total_shein = proc.gerar_pdf_shein(etqs_s, caminho_shein)
-                    adicionar_log(estado, f"  Shein {nome_loja_s}: {total_shein} paginas", "success")
+
+                    # Gerar resumo XLSX Shein
+                    caminho_xlsx_shein = os.path.join(pasta_loja_s, f"resumo_shein_{nome_loja_s}_{timestamp}.xlsx")
+                    n_skus_s, total_qtd_s = proc.gerar_resumo_xlsx_shein(etqs_s, caminho_xlsx_shein, nome_loja_s)
+
+                    adicionar_log(estado, f"  Shein {nome_loja_s}: {total_shein} paginas, {n_skus_s} itens, {total_qtd_s} unidades", "success")
 
             if estado["agrupamentos"] and resultado_lojas:
                 adicionar_log(estado, "Gerando agrupamentos pre-configurados...", "info")

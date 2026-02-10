@@ -2279,6 +2279,76 @@ class ProcessadorEtiquetasShopee:
         wb.save(caminho_saida)
         return len(sku_var_qtd), sum(sku_var_qtd.values())
 
+    def gerar_resumo_xlsx_shein(self, etiquetas_shein, caminho_saida, nome_loja='Shein'):
+        """Gera resumo XLSX de etiquetas Shein com Modelo, Cor, Tamanho, Quantidade."""
+        # Agrupar por (modelo, cor, tamanho)
+        modelo_cor_tam_qtd = defaultdict(int)
+        for etq in etiquetas_shein:
+            dados_danfe = etq.get('dados_danfe', {})
+            for prod in dados_danfe.get('produtos_shein', []):
+                atrib = prod.get('atributos', '')
+                qtd = int(float(prod.get('qtd', '1')))
+                modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
+                chave = (modelo or prod.get('descricao', '-'), cor, tamanho)
+                modelo_cor_tam_qtd[chave] += qtd
+
+        if not modelo_cor_tam_qtd:
+            return 0, 0
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"Resumo Shein {len(etiquetas_shein)} etiq"
+
+        header_font = Font(bold=True, size=11)
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        ws['A1'] = 'Modelo'
+        ws['B1'] = 'Cor'
+        ws['C1'] = 'Tamanho'
+        ws['D1'] = 'Soma Quant.'
+        for cell in [ws['A1'], ws['B1'], ws['C1'], ws['D1']]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = border
+            cell.alignment = Alignment(horizontal='left')
+
+        # Ordenar: Modelo > Cor > Tamanho (numerico)
+        def _sort_key(chave):
+            modelo, cor, tamanho = chave
+            m = re.search(r'(\d+)', tamanho)
+            num_val = int(m.group(1)) if m else 99999
+            return (modelo, cor, num_val, tamanho)
+
+        row = 2
+        for (modelo, cor, tamanho) in sorted(modelo_cor_tam_qtd.keys(), key=_sort_key):
+            ws.cell(row=row, column=1, value=modelo).border = border
+            ws.cell(row=row, column=2, value=cor).border = border
+            ws.cell(row=row, column=3, value=tamanho).border = border
+            ws.cell(row=row, column=4, value=modelo_cor_tam_qtd[(modelo, cor, tamanho)]).border = border
+            row += 1
+
+        # Total
+        ws.cell(row=row, column=1, value='TOTAL').font = Font(bold=True)
+        ws.cell(row=row, column=1).border = border
+        ws.cell(row=row, column=2, value='').border = border
+        ws.cell(row=row, column=3, value='').border = border
+        ws.cell(row=row, column=4, value=sum(modelo_cor_tam_qtd.values())).font = Font(bold=True)
+        ws.cell(row=row, column=4).border = border
+
+        ws.column_dimensions['A'].width = 20
+        ws.column_dimensions['B'].width = 25
+        ws.column_dimensions['C'].width = 15
+        ws.column_dimensions['D'].width = 15
+
+        wb.save(caminho_saida)
+        return len(modelo_cor_tam_qtd), sum(modelo_cor_tam_qtd.values())
+
     def gerar_resumo_geral_xlsx(self, lojas_info, etiquetas_por_cnpj, caminho_saida):
         """Gera resumo geral XLSX com totais de todas as lojas.
         lojas_info: list of dicts com nome, cnpj, etiquetas, skus, total_qtd
