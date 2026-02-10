@@ -1091,13 +1091,12 @@ def api_gerar_lucro():
 
         cfg_por_loja = cfg.get("lucro_por_loja", {})
 
-        # Construir mapa CNPJ->nome diretamente dos XMLs (mesmo que /api/lojas-lucro)
-        _cnpj_loja_map = _construir_mapa_cnpj_lojas(pasta_lucro)
-
         import zipfile
         loja_dados = defaultdict(lambda: {"itens": [], "linhas_sem_custo": []})
         chaves_processadas = set()
         total_xmls_lidos = 0
+        # Construir mapa CNPJ->nome inline durante processamento (evita ler XMLs 2x)
+        _cnpj_loja_map = {}
 
         def _processar_doc(doc):
             nonlocal total_xmls_lidos
@@ -1109,11 +1108,19 @@ def api_gerar_lucro():
                 return
             total_xmls_lidos += 1
 
+            # Construir mapa CNPJ->nome enquanto processa (mesma logica de _construir_mapa_cnpj_lojas)
+            emit = nfe.get("emit", {})
+            if isinstance(emit, dict):
+                cnpj_emit = str(emit.get("CNPJ", "")).strip()
+                if cnpj_emit and cnpj_emit not in _cnpj_loja_map:
+                    nome_raw = str(emit.get("xNome", "")).strip()
+                    nome = _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
+                    _cnpj_loja_map[cnpj_emit] = f"{_formatar_cnpj_curto(cnpj_emit)} {nome}"
+
             # Deduplicar por chave NFe (evita contar mesma NF 2x)
             chave_nfe = str(nfe.get("@Id", "")).strip()
             if not chave_nfe:
                 # Fallback: CNPJ + nNF
-                emit = nfe.get("emit", {})
                 cnpj_e = str(emit.get("CNPJ", "")).strip() if isinstance(emit, dict) else ""
                 nf_num = str(nfe.get("ide", {}).get("nNF", "")).strip()
                 chave_nfe = f"{cnpj_e}_{nf_num}" if cnpj_e and nf_num else ""
