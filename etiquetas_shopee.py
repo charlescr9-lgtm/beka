@@ -163,7 +163,11 @@ class ProcessadorEtiquetasShopee:
     # RECORTE DAS ETIQUETAS DO PDF DA SHOPEE
     # ----------------------------------------------------------------
     def carregar_todos_pdfs(self, pasta):
-        """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais)."""
+        """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais).
+        Retorna (etiquetas_normais, etiquetas_cpf_detectadas).
+        Etiquetas CPF detectadas automaticamente (sem NF real) sao separadas
+        para processamento especial.
+        """
         especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
         pdfs = [f for f in os.listdir(pasta)
                 if f.lower().endswith('.pdf')
@@ -171,12 +175,19 @@ class ProcessadorEtiquetasShopee:
                 and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
         todas_etiquetas = []
+        etiquetas_cpf_auto = []
         for pdf_name in pdfs:
             caminho = os.path.join(pasta, pdf_name)
             etqs = self._carregar_pdf(caminho)
-            todas_etiquetas.extend(etqs)
-        print(f"  Total: {len(todas_etiquetas)} etiquetas de {len(pdfs)} PDF(s)")
-        return todas_etiquetas
+            for etq in etqs:
+                if etq.get('tipo_especial') == 'cpf':
+                    etiquetas_cpf_auto.append(etq)
+                else:
+                    todas_etiquetas.append(etq)
+        if etiquetas_cpf_auto:
+            print(f"  CPF detectadas automaticamente: {len(etiquetas_cpf_auto)} etiquetas")
+        print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs)} PDF(s)")
+        return todas_etiquetas, etiquetas_cpf_auto
 
     def _carregar_pdf(self, caminho_pdf):
         """Carrega e recorta etiquetas de um PDF."""
@@ -386,15 +397,26 @@ class ProcessadorEtiquetasShopee:
         # Fallback: pagina inteira
         return [fitz.Rect(0, 0, larg, alt)]
 
-    def _detectar_tipo_etiqueta(self, texto):
+    def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
         Retorna: 'retirada', 'cnpj' ou 'cpf'
+
+        Criterios:
+        - 'retirada': contem "RETIRADA PELO COMPRADOR"
+        - 'cnpj': tem DANFE SIMPLIFICADO E tem NF numerica real
+        - 'cpf': tem DANFE SIMPLIFICADO mas SEM NF numerica (loja CPF/pessoa fisica)
+                  OU nao tem DANFE SIMPLIFICADO (declaracao de conteudo)
         """
         texto_upper = texto.upper()
         if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
             return 'retirada'
         if 'DANFE SIMPLIFICADO' in texto_upper:
-            return 'cnpj'
+            # Tem DANFE SIMPLIFICADO, mas tem NF real?
+            # Se nf_encontrada e um numero real (nao sintetico), e CNPJ
+            if nf_encontrada and nf_encontrada.isdigit():
+                return 'cnpj'
+            # Sem NF real = loja CPF (pessoa fisica)
+            return 'cpf'
         return 'cpf'
 
     def _recortar_pagina(self, pagina, caminho_pdf):
@@ -408,19 +430,27 @@ class ProcessadorEtiquetasShopee:
             if len(texto_quad) < 10:
                 continue  # Quadrante vazio, pular
 
-            # Detectar tipo de etiqueta
-            tipo_etiqueta = self._detectar_tipo_etiqueta(texto_quad)
-
+            # Extrair NF primeiro (necessario para detectar tipo)
             nf = self._extrair_nf_quadrante(pagina, clip)
+
+            # Detectar tipo de etiqueta (passa nf para distinguir CNPJ vs CPF)
+            tipo_etiqueta = self._detectar_tipo_etiqueta(texto_quad, nf_encontrada=nf)
 
             # Gerar etiqueta MESMO sem NF - usar identificador sintetico (incluir nome PDF para unicidade)
             if nf is None:
                 pdf_id = os.path.splitext(os.path.basename(caminho_pdf))[0].replace(' ', '_')
                 nf = f"SEM_NF_{pdf_id}_p{pagina.number}_q{idx}"
                 dados_nf = {}
-                print(f"    Pag {pagina.number} Q{idx}: NF nao encontrada, gerando com ID sintetico")
+                print(f"    Pag {pagina.number} Q{idx}: NF nao encontrada (tipo={tipo_etiqueta})")
             else:
                 dados_nf = {}
+
+            # Extrair order_sn para usar como NF em etiquetas CPF
+            order_sn_txt = self._extrair_pedido_texto(texto_quad)
+
+            # Para etiquetas CPF, usar order_sn como identificador (nao tem NF real)
+            if tipo_etiqueta == 'cpf' and order_sn_txt:
+                nf = order_sn_txt
 
             # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
             if self.dados_xlsx_global:
@@ -440,8 +470,8 @@ class ProcessadorEtiquetasShopee:
                     }
                     print(f"    Pag {pagina.number} Q{idx}: Dados XLSX (order_sn={order_sn_xlsx})")
 
-            # FALLBACK: XML (se XLSX nao encontrou produtos)
-            if not dados_nf.get('produtos') and nf in self.dados_xml:
+            # FALLBACK: XML (se XLSX nao encontrou produtos) - apenas para CNPJ
+            if tipo_etiqueta == 'cnpj' and not dados_nf.get('produtos') and nf in self.dados_xml:
                 dados_nf = self.dados_xml.get(nf, {})
 
             sku = ''
@@ -455,8 +485,11 @@ class ProcessadorEtiquetasShopee:
             nome_loja = self._extrair_nome_loja_remetente(texto_quad)
             if not cnpj:
                 if nome_loja:
-                    # Criar CNPJ sintetico baseado no nome da loja
-                    cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    if tipo_etiqueta == 'cpf':
+                        # Loja CPF: prefixo CPF_ para agrupar separadamente
+                        cnpj_sintetico = f"CPF_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    else:
+                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
                     cnpj = cnpj_sintetico
                     if cnpj not in self.cnpj_loja:
                         self.cnpj_loja[cnpj] = nome_loja
@@ -2234,17 +2267,19 @@ def main():
     # 2. Carregar e recortar TODOS os PDFs
     print(f"\n{'='*40}")
     print("CARREGANDO ETIQUETAS...")
-    todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
+    todas_etiquetas, cpf_auto_detectadas = proc.carregar_todos_pdfs(pasta_entrada)
 
     # 2b. Processar etiquetas especiais (CPF e Shein)
     print(f"\n{'='*40}")
     print("CARREGANDO ETIQUETAS ESPECIAIS...")
     etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
     etiquetas_shein = proc.processar_shein(pasta_entrada)
+    # Juntar CPF do lanim*.pdf com CPF auto-detectadas de PDFs genericos
+    etiquetas_cpf_especial.extend(cpf_auto_detectadas)
     # CPF e Shein serao gerados com PDFs separados, mas ainda entram no resumo XLSX
     todas_etiquetas.extend(etiquetas_cpf_especial)
     if etiquetas_cpf_especial:
-        print(f"  CPF: {len(etiquetas_cpf_especial)} etiquetas")
+        print(f"  CPF: {len(etiquetas_cpf_especial)} etiquetas ({len(cpf_auto_detectadas)} auto-detectadas)")
     if etiquetas_shein:
         print(f"  Shein: {len(etiquetas_shein)} etiquetas")
 
@@ -2289,34 +2324,37 @@ def main():
         if not os.path.exists(pasta_loja):
             os.makedirs(pasta_loja)
 
-        # Gerar PDF
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-        total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
-            etiquetas_loja, caminho_pdf
-        )
-        print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
-        if sem_xml > 0:
-            print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
+        # Separar etiquetas regulares e CPF
+        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf',)]
+        etiq_cpf_loja = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
 
-        # Gerar XLSX
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        total_pags = 0
+        n_simples = n_multi = com_xml = sem_xml = 0
+
+        # Gerar PDF regular (CNPJ/retirada)
+        if etiq_regular:
+            caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+            total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
+                etiq_regular, caminho_pdf
+            )
+            print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
+            if sem_xml > 0:
+                print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
+
+        # Gerar PDF CPF separado (formato 150x225mm)
+        if etiq_cpf_loja:
+            caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
+            total_cpf = proc.gerar_pdf_cpf(etiq_cpf_loja, caminho_cpf_pdf)
+            total_pags += total_cpf
+            print(f"    PDF CPF: {total_cpf} paginas")
+
+        # Gerar XLSX (inclui regular + CPF)
         caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
         n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
         print(f"    XLSX: {n_skus} SKUs, {total_qtd} unidades vendidas")
 
-    # 5b. Gerar PDF CPF separado (formato 150x225mm com Variation Name)
-    if etiquetas_cpf_especial:
-        print(f"\n  --- Gerando PDF CPF ---")
-        nome_cpf = proc.get_nome_loja(proc.LANIM_CNPJ)
-        pasta_cpf = os.path.join(pasta_saida, nome_cpf)
-        if not os.path.exists(pasta_cpf):
-            os.makedirs(pasta_cpf)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        caminho_cpf = os.path.join(pasta_cpf, f"cpf_{nome_cpf}_{timestamp}.pdf")
-        total_cpf = proc.gerar_pdf_cpf(etiquetas_cpf_especial, caminho_cpf)
-        print(f"    PDF CPF: {total_cpf} paginas")
-
-    # 5c. Gerar PDF Shein separado (formato 150x225mm com barcode vertical)
+    # 5b. Gerar PDF Shein separado (formato 150x225mm com barcode vertical)
     if etiquetas_shein:
         print(f"\n  --- Gerando PDF Shein ---")
         # Agrupar shein por CNPJ

@@ -1546,8 +1546,10 @@ def _executar_processamento(user_id):
                 adicionar_log(estado, "Nenhum XLSX de empacotamento encontrado", "warning")
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
-            todas_etiquetas = proc.carregar_todos_pdfs(pasta_entrada)
+            todas_etiquetas, cpf_auto_detectadas = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
+            if cpf_auto_detectadas:
+                adicionar_log(estado, f"CPF auto-detectadas: {len(cpf_auto_detectadas)} etiquetas", "info")
 
             # Verificar quais etiquetas tem/nao tem dados de produto
             n_com_dados = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('produtos'))
@@ -1558,9 +1560,11 @@ def _executar_processamento(user_id):
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
 
             etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
+            # Juntar CPF do lanim*.pdf com CPF auto-detectadas de PDFs genericos
+            etiquetas_cpf_especial.extend(cpf_auto_detectadas)
             if etiquetas_cpf_especial:
                 todas_etiquetas.extend(etiquetas_cpf_especial)
-                adicionar_log(estado, f"CPF: {len(etiquetas_cpf_especial)} etiquetas", "success")
+                adicionar_log(estado, f"CPF: {len(etiquetas_cpf_especial)} etiquetas ({len(cpf_auto_detectadas)} auto-detectadas)", "success")
 
             etiquetas_shein = proc.processar_shein(pasta_entrada)
             if etiquetas_shein:
