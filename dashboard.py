@@ -404,6 +404,68 @@ def api_logs():
     })
 
 
+@app.route('/api/escanear-lojas', methods=['POST'])
+@jwt_required()
+def api_escanear_lojas():
+    """Escaneia PDFs enviados para identificar lojas sem processar tudo.
+
+    Usa o processador real (carregar_todos_pdfs) de forma lightweight para
+    extrair CNPJs e nomes de loja, sem gerar PDFs/XLSX de saida.
+    """
+    user_id = get_jwt_identity()
+    estado = _get_estado(user_id)
+    if not estado:
+        return jsonify({"erro": "Usuario nao encontrado"}), 404
+
+    pasta_entrada = estado["configuracoes"]["pasta_entrada"]
+    if not os.path.exists(pasta_entrada):
+        return jsonify({"erro": "Pasta de entrada nao encontrada"}), 404
+
+    # Verificar se ha PDFs na pasta
+    tem_pdf = any(f.lower().endswith('.pdf') and not f.startswith('_')
+                  for f in os.listdir(pasta_entrada) if os.path.isfile(os.path.join(pasta_entrada, f)))
+    if not tem_pdf:
+        return jsonify({"erro": "Nenhum PDF encontrado na pasta de entrada"}), 400
+
+    try:
+        proc = ProcessadorEtiquetasShopee()
+        proc.carregar_todos_xlsx(pasta_entrada)
+        todas_etiquetas, cpf_auto, pdfs_shein = proc.carregar_todos_pdfs(pasta_entrada)
+
+        # Juntar CPF auto-detectadas
+        etiquetas_cpf = proc.processar_cpf(pasta_entrada)
+        etiquetas_cpf.extend(cpf_auto)
+        if etiquetas_cpf:
+            todas_etiquetas.extend(etiquetas_cpf)
+
+        # Separar por loja
+        lojas_dict = proc.separar_por_loja(todas_etiquetas)
+
+        lojas = []
+        for cnpj, etqs in lojas_dict.items():
+            nome = proc.get_nome_loja(cnpj)
+            lojas.append({"cnpj": cnpj, "nome": nome})
+
+        # Adicionar Shein se houver
+        if pdfs_shein:
+            shein_etqs = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein)
+            if shein_etqs:
+                # Agrupar por cnpj das etiquetas shein
+                for etq in shein_etqs:
+                    cnpj_s = etq.get('cnpj', 'SHEIN')
+                    if not any(l['cnpj'] == cnpj_s for l in lojas):
+                        nome_s = proc.get_nome_loja(cnpj_s)
+                        lojas.append({"cnpj": cnpj_s, "nome": nome_s})
+
+        lojas.sort(key=lambda x: x["nome"])
+        return jsonify({"lojas": lojas})
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"erro": f"Erro ao escanear: {str(e)}"}), 500
+
+
 @app.route('/api/processar', methods=['POST'])
 @jwt_required()
 def api_processar():

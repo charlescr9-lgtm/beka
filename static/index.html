@@ -923,26 +923,38 @@
                     <span class="card-title"><i class="fas fa-cog"></i> Configuracoes</span>
                 </div>
 
+                <!-- Descricao geral -->
+                <div style="font-size:11px; color:var(--text-muted); line-height:1.5; padding:6px 10px; background:var(--bg-input); border-radius:var(--radius-xs); border-left:3px solid var(--accent);">
+                    Ajuste as dimensoes da etiqueta impressa (mm), margens internas (pt), tamanho da fonte dos produtos e como o nome do produto aparece na etiqueta.
+                </div>
+
                 <!-- Dimensoes e margens -->
                 <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; font-size:11px;">
-                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Larg
+                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);" title="Largura da etiqueta em milimetros (padrao: 150mm)">Larg
                         <input class="form-input" id="cfgLargura" type="number" min="50" max="300" style="width:48px; padding:3px 4px; font-size:11px;">
                     </label>
-                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Alt
+                    <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);" title="Altura da etiqueta em milimetros (padrao: 230mm)">Alt
                         <input class="form-input" id="cfgAltura" type="number" min="50" max="400" style="width:48px; padding:3px 4px; font-size:11px;">
                     </label>
                     <span style="color:var(--border);">|</span>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">E<input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">D<input class="form-input" id="cfgMargemDir" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">T<input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);">I<input class="form-input" id="cfgMargemInf" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);" title="Margem esquerda (pt)">E<input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);" title="Margem direita (pt)">D<input class="form-input" id="cfgMargemDir" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);" title="Margem superior (pt)">T<input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-muted);" title="Margem inferior (pt)">I<input class="form-input" id="cfgMargemInf" type="number" min="0" max="50" style="width:34px; padding:3px; font-size:11px;"></label>
                     <span style="color:var(--border);">|</span>
-                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary);">Fonte<input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:34px; padding:3px; font-size:11px;"></label>
-                    <select class="form-input" id="cfgExibicaoProduto" style="padding:3px; font-size:11px;">
+                    <label style="display:flex; align-items:center; gap:2px; color:var(--text-secondary);" title="Tamanho da fonte da tabela de produtos (padrao: 7)">Fonte<input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:34px; padding:3px; font-size:11px;"></label>
+                    <select class="form-input" id="cfgExibicaoProduto" style="padding:3px; font-size:11px;" title="Como exibir o produto na tabela: SKU, Titulo ou ambos">
                         <option value="sku">SKU</option>
                         <option value="titulo">Titulo</option>
                         <option value="ambos">SKU+Tit</option>
                     </select>
+                </div>
+
+                <!-- Legenda dos campos -->
+                <div style="font-size:10px; color:var(--text-muted); line-height:1.6; padding:4px 10px;">
+                    <b>Larg/Alt</b> = tamanho da etiqueta (mm) &nbsp;|&nbsp;
+                    <b>E D T I</b> = margens esquerda, direita, topo, inferior (pt) &nbsp;|&nbsp;
+                    <b>Fonte</b> = tamanho do texto dos produtos
                 </div>
 
                 <!-- Separador -->
@@ -950,8 +962,20 @@
 
                 <!-- Agrupamento de Lojas -->
                 <div>
-                    <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px;"><i class="fas fa-layer-group" style="margin-right:4px;"></i> Agrupamento de Lojas</div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                        <div style="font-size:12px; font-weight:600; color:var(--text-secondary);"><i class="fas fa-layer-group" style="margin-right:4px;"></i> Agrupamento de Lojas</div>
+                        <button class="btn btn-sm" id="btnSincronizarLojas" onclick="sincronizarLojas()" style="font-size:10px; padding:3px 8px; background:var(--info); color:#fff; border:none; cursor:pointer; border-radius:var(--radius-xs);" title="Escaneia os PDFs enviados para identificar as lojas sem precisar processar tudo">
+                            <i class="fas fa-sync-alt"></i> Sincronizar Lojas
+                        </button>
+                    </div>
+                    <div style="font-size:10px; color:var(--text-muted); margin-bottom:8px; line-height:1.4; padding:4px 10px; background:var(--bg-input); border-radius:var(--radius-xs); border-left:3px solid var(--info);">
+                        Agrupe 2 ou mais lojas para gerar um PDF/XLSX unificado. Clique em <b>Sincronizar Lojas</b> para carregar as lojas dos PDFs enviados, ou elas aparecem automaticamente apos processar.
+                    </div>
                     <div id="listaGrupos" style="margin-bottom:8px;"></div>
+                    <!-- Aviso de grupo nao salvo -->
+                    <div id="avisoGrupoNaoSalvo" style="display:none; padding:6px 10px; margin-bottom:8px; background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); border-radius:var(--radius-xs); font-size:11px; color:var(--warning); align-items:center; gap:6px;">
+                        <i class="fas fa-exclamation-triangle"></i> <span>Lojas selecionadas sem grupo salvo. Adicione o grupo ou desmarque as lojas antes de processar.</span>
+                    </div>
                     <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap;">
                         <div style="flex:none;">
                             <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Nome</label>
@@ -960,10 +984,10 @@
                         <div style="flex:1; min-width:120px;">
                             <label style="font-size:10px; color:var(--text-muted); display:block; margin-bottom:2px;">Lojas (2+)</label>
                             <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:4px; padding:4px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:28px; font-size:10px;">
-                                <span style="color:var(--text-muted);">Processe primeiro</span>
+                                <span style="color:var(--text-muted);">Envie PDFs e clique em Sincronizar</span>
                             </div>
                         </div>
-                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="font-size:10px; padding:4px 8px;">
+                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="font-size:10px; padding:4px 8px;" title="Salvar grupo com as lojas selecionadas">
                             <i class="fas fa-plus"></i>
                         </button>
                     </div>
@@ -973,7 +997,7 @@
                 <div style="border-top:1px solid var(--border);"></div>
 
                 <!-- Limpar -->
-                <button class="btn btn-danger btn-sm" onclick="limparSaida()" style="font-size:11px; padding:5px 10px; align-self:flex-start;">
+                <button class="btn btn-danger btn-sm" onclick="limparSaida()" style="font-size:11px; padding:5px 10px; align-self:flex-start;" title="Remove todos os arquivos gerados na pasta de saida">
                     <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
                 </button>
             </div>
@@ -1570,6 +1594,12 @@ function limparLogs() {
 // ACOES
 // ================================================================
 async function processar() {
+    // Verificar se ha grupo incompleto (lojas marcadas sem salvar)
+    if (verificarGrupoIncompleto()) {
+        toast('Grupo nao salvo! Adicione o grupo com o botao + ou desmarque as lojas antes de processar.', 'warning');
+        trocarTab('painel');
+        return;
+    }
     const data = await fetchAPI('/api/processar', { method: 'POST' });
     if (data && data.erro) {
         toast(data.erro, 'warning');
@@ -2025,6 +2055,7 @@ async function adicionarGrupo() {
     document.getElementById('novoGrupoNome').value = '';
     checked.forEach(c => c.checked = false);
     renderGruposSalvos(agrupamentosSalvos);
+    verificarGrupoIncompleto();
 }
 
 async function removerGrupo(idx) {
@@ -2036,7 +2067,58 @@ async function removerGrupo(idx) {
     });
     toast('Grupo removido', 'warning');
     renderGruposSalvos(agrupamentosSalvos);
+    verificarGrupoIncompleto();
 }
+
+// ================================================================
+// SINCRONIZAR LOJAS (escaneia PDFs sem processar)
+// ================================================================
+async function sincronizarLojas() {
+    const btn = document.getElementById('btnSincronizarLojas');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Escaneando...';
+    try {
+        const data = await fetchAPI('/api/escanear-lojas', { method: 'POST' });
+        if (data && data.erro) {
+            toast(data.erro, 'warning');
+            return;
+        }
+        if (data && data.lojas && data.lojas.length > 0) {
+            renderLojasParaGrupo(data.lojas);
+            toast(`${data.lojas.length} loja(s) encontrada(s)`, 'success');
+        } else {
+            toast('Nenhuma loja encontrada. Envie PDFs e XLSX primeiro.', 'warning');
+        }
+    } catch (e) {
+        toast('Erro ao escanear lojas', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sincronizar Lojas';
+    }
+}
+
+// ================================================================
+// VALIDACAO DE GRUPO INCOMPLETO
+// ================================================================
+function verificarGrupoIncompleto() {
+    const checked = document.querySelectorAll('.grupo-loja-check:checked');
+    const aviso = document.getElementById('avisoGrupoNaoSalvo');
+    if (!aviso) return false;
+    if (checked.length > 0) {
+        aviso.style.display = 'flex';
+        return true; // tem grupo incompleto
+    } else {
+        aviso.style.display = 'none';
+        return false;
+    }
+}
+
+// Observar mudancas nos checkboxes de grupo
+document.addEventListener('change', function(e) {
+    if (e.target.classList.contains('grupo-loja-check')) {
+        verificarGrupoIncompleto();
+    }
+});
 
 // ================================================================
 // LUCRO
