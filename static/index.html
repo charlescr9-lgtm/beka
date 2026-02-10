@@ -2132,6 +2132,7 @@ async function gerarLucro() {
         } else {
             toast(`Lucro gerado! Total: R$ ${data.lucro_total.toFixed(2)}`, 'success');
             renderResumoLucro(data);
+            baixarArquivo('/api/download-lucro', 'lucro_consolidado.xlsx');
         }
     } catch (e) {
         toast('Erro ao gerar lucro: ' + e.message, 'error');
