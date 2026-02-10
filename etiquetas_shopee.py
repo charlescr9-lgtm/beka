@@ -162,11 +162,35 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # RECORTE DAS ETIQUETAS DO PDF DA SHOPEE
     # ----------------------------------------------------------------
+    def _eh_pdf_shein(self, caminho_pdf):
+        """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE).
+        Retorna True se o PDF tem estrutura Shein.
+        """
+        try:
+            doc = fitz.open(caminho_pdf)
+            n_pags = len(doc)
+            if n_pags < 2:
+                doc.close()
+                return False
+
+            # Verificar primeiras 2 paginas: par=etiqueta Shein, impar=DANFE
+            texto_p0 = doc[0].get_text()
+            texto_p1 = doc[1].get_text()
+            doc.close()
+
+            p0_shein = self._eh_etiqueta_shein(texto_p0)
+            p1_danfe = 'DANFE' in texto_p1.upper() and 'CHAVE' in texto_p1.upper()
+
+            return p0_shein and p1_danfe
+        except Exception:
+            return False
+
     def carregar_todos_pdfs(self, pasta):
-        """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais).
-        Retorna (etiquetas_normais, etiquetas_cpf_detectadas).
+        """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais e Shein).
+        Retorna (etiquetas_normais, etiquetas_cpf_detectadas, pdfs_shein_detectados).
         Etiquetas CPF detectadas automaticamente (sem NF real) sao separadas
         para processamento especial.
+        PDFs Shein detectados por conteudo sao retornados como lista de caminhos.
         """
         especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
         pdfs = [f for f in os.listdir(pasta)
@@ -174,9 +198,21 @@ class ProcessadorEtiquetasShopee:
                 and not f.startswith('etiquetas_prontas')
                 and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
+
+        # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
+        pdfs_shein_detectados = []
+        pdfs_normais = []
+        for pdf_name in pdfs:
+            caminho = os.path.join(pasta, pdf_name)
+            if self._eh_pdf_shein(caminho):
+                pdfs_shein_detectados.append(caminho)
+                print(f"  Detectado como Shein: {pdf_name}")
+            else:
+                pdfs_normais.append(pdf_name)
+
         todas_etiquetas = []
         etiquetas_cpf_auto = []
-        for pdf_name in pdfs:
+        for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
             etqs = self._carregar_pdf(caminho)
             for etq in etqs:
@@ -186,8 +222,10 @@ class ProcessadorEtiquetasShopee:
                     todas_etiquetas.append(etq)
         if etiquetas_cpf_auto:
             print(f"  CPF detectadas automaticamente: {len(etiquetas_cpf_auto)} etiquetas")
-        print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs)} PDF(s)")
-        return todas_etiquetas, etiquetas_cpf_auto
+        if pdfs_shein_detectados:
+            print(f"  Shein detectados automaticamente: {len(pdfs_shein_detectados)} PDF(s)")
+        print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs_normais)} PDF(s)")
+        return todas_etiquetas, etiquetas_cpf_auto, pdfs_shein_detectados
 
     def _carregar_pdf(self, caminho_pdf):
         """Carrega e recorta etiquetas de um PDF."""
@@ -397,12 +435,28 @@ class ProcessadorEtiquetasShopee:
         # Fallback: pagina inteira
         return [fitz.Rect(0, 0, larg, alt)]
 
+    def _eh_etiqueta_shein(self, texto):
+        """Verifica se o texto pertence a uma etiqueta Shein.
+        Etiquetas Shein tem padroes distintos: PUDO-PGK, Ref.No:GSH, Ref.No:GC,
+        codigos GC seguidos de numeros longos, etc.
+        """
+        # Etiqueta de envio Shein
+        if 'PUDO-PGK' in texto or 'PUDO' in texto:
+            return True
+        if 'Ref.No:GSH' in texto or 'Ref.No:GC' in texto:
+            return True
+        # Codigo GC longo (tracking Shein)
+        if re.search(r'GC\d{15,}', texto):
+            return True
+        return False
+
     def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
-        Retorna: 'retirada', 'cnpj' ou 'cpf'
+        Retorna: 'retirada', 'shein', 'cnpj' ou 'cpf'
 
         Criterios:
         - 'retirada': contem "RETIRADA PELO COMPRADOR"
+        - 'shein': tem marcadores Shein (PUDO-PGK, Ref.No:GSH, etc.)
         - 'cnpj': tem DANFE SIMPLIFICADO E tem NF numerica real
         - 'cpf': tem DANFE SIMPLIFICADO mas SEM NF numerica (loja CPF/pessoa fisica)
                   OU nao tem DANFE SIMPLIFICADO (declaracao de conteudo)
@@ -410,9 +464,11 @@ class ProcessadorEtiquetasShopee:
         texto_upper = texto.upper()
         if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
             return 'retirada'
+        # Detectar Shein antes de CNPJ/CPF
+        if self._eh_etiqueta_shein(texto):
+            return 'shein'
         if 'DANFE SIMPLIFICADO' in texto_upper:
             # Tem DANFE SIMPLIFICADO, mas tem NF real?
-            # Se nf_encontrada e um numero real (nao sintetico), e CNPJ
             if nf_encontrada and nf_encontrada.isdigit():
                 return 'cnpj'
             # Sem NF real = loja CPF (pessoa fisica)
@@ -1804,65 +1860,73 @@ class ProcessadorEtiquetasShopee:
             cor = ''
         return modelo, cor, tamanho
 
-    def processar_shein(self, pasta_entrada):
-        """Processa etiquetas Shein de 'shein crua.pdf' ou 'shein.pdf'.
+    def processar_shein(self, pasta_entrada, pdfs_extras=None):
+        """Processa etiquetas Shein de 'shein crua.pdf', 'shein.pdf' ou PDFs auto-detectados.
         O PDF tem paginas alternadas: par=etiqueta Shein, impar=DANFE.
+        pdfs_extras: lista de caminhos de PDFs Shein auto-detectados.
         Retorna lista de dicts com dados pareados.
         """
-        # Buscar arquivo shein (case-insensitive para funcionar no Linux/Railway)
-        caminho = None
+        caminhos_shein = list(pdfs_extras) if pdfs_extras else []
+
+        # Buscar arquivo shein nomeado (case-insensitive para funcionar no Linux/Railway)
         nomes_shein = ['shein crua.pdf', 'shein.pdf']
         for f in os.listdir(pasta_entrada):
             if f.lower() in nomes_shein:
-                caminho = os.path.join(pasta_entrada, f)
-                break
-        if not caminho:
+                caminho_fixo = os.path.join(pasta_entrada, f)
+                if caminho_fixo not in caminhos_shein:
+                    caminhos_shein.append(caminho_fixo)
+
+        if not caminhos_shein:
             return []
 
-        print(f"\n  Processando etiquetas SHEIN...")
-        doc = fitz.open(caminho)
-        n_pags = len(doc)
+        print(f"\n  Processando etiquetas SHEIN ({len(caminhos_shein)} PDF(s))...")
         etiquetas = []
 
-        # Processar em pares: pag_par (etiqueta) + pag_impar (DANFE)
-        for i in range(0, n_pags - 1, 2):
-            pag_etiqueta = doc[i]
-            pag_danfe = doc[i + 1]
+        for caminho in caminhos_shein:
+            print(f"    Shein: {os.path.basename(caminho)}")
+            doc = fitz.open(caminho)
+            n_pags = len(doc)
 
-            texto_danfe = pag_danfe.get_text()
+            # Processar em pares: pag_par (etiqueta) + pag_impar (DANFE)
+            for i in range(0, n_pags - 1, 2):
+                pag_etiqueta = doc[i]
+                pag_danfe = doc[i + 1]
 
-            # Verificar se realmente e DANFE
-            if 'DANFE' not in texto_danfe and 'CHAVE' not in texto_danfe.upper():
-                print(f"    Par {i}/{i+1}: pagina {i+1} nao parece ser DANFE, pulando")
-                continue
+                texto_danfe = pag_danfe.get_text()
 
-            dados_danfe = self._parse_shein_danfe(texto_danfe)
-            nf = dados_danfe.get('nf', '')
-            cnpj = dados_danfe.get('cnpj_emitente', '')
+                # Verificar se realmente e DANFE
+                if 'DANFE' not in texto_danfe and 'CHAVE' not in texto_danfe.upper():
+                    print(f"      Par {i}/{i+1}: pagina {i+1} nao parece ser DANFE, pulando")
+                    continue
 
-            if not nf:
-                print(f"    Par {i}/{i+1}: NF nao encontrada no DANFE, pulando")
-                continue
+                dados_danfe = self._parse_shein_danfe(texto_danfe)
+                nf = dados_danfe.get('nf', '')
+                cnpj = dados_danfe.get('cnpj_emitente', '')
 
-            # Buscar dados completos do XML se disponivel
-            dados_xml = self.dados_xml.get(nf, {})
-            if dados_xml:
-                cnpj = dados_xml.get('cnpj_emitente', cnpj)
+                if not nf:
+                    print(f"      Par {i}/{i+1}: NF nao encontrada no DANFE, pulando")
+                    continue
 
-            etiquetas.append({
-                'nf': nf,
-                'cnpj': cnpj,
-                'pag_etiqueta_idx': i,
-                'pag_danfe_idx': i + 1,
-                'caminho_pdf': caminho,
-                'clip_etiqueta': pag_etiqueta.rect,
-                'clip_danfe': pag_danfe.rect,
-                'dados_danfe': dados_danfe,
-                'dados_xml': dados_xml,
-                'tipo_especial': 'shein',
-            })
+                # Buscar dados completos do XML se disponivel
+                dados_xml = self.dados_xml.get(nf, {})
+                if dados_xml:
+                    cnpj = dados_xml.get('cnpj_emitente', cnpj)
 
-        doc.close()
+                etiquetas.append({
+                    'nf': nf,
+                    'cnpj': cnpj,
+                    'pag_etiqueta_idx': i,
+                    'pag_danfe_idx': i + 1,
+                    'caminho_pdf': caminho,
+                    'clip_etiqueta': pag_etiqueta.rect,
+                    'clip_danfe': pag_danfe.rect,
+                    'dados_danfe': dados_danfe,
+                    'dados_xml': dados_xml,
+                    'tipo_especial': 'shein',
+                })
+
+            doc.close()
+
         print(f"    {len(etiquetas)} pares etiqueta+DANFE Shein")
         return etiquetas
 
@@ -2270,13 +2334,13 @@ def main():
     # 2. Carregar e recortar TODOS os PDFs
     print(f"\n{'='*40}")
     print("CARREGANDO ETIQUETAS...")
-    todas_etiquetas, cpf_auto_detectadas = proc.carregar_todos_pdfs(pasta_entrada)
+    todas_etiquetas, cpf_auto_detectadas, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
 
     # 2b. Processar etiquetas especiais (CPF e Shein)
     print(f"\n{'='*40}")
     print("CARREGANDO ETIQUETAS ESPECIAIS...")
     etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
-    etiquetas_shein = proc.processar_shein(pasta_entrada)
+    etiquetas_shein = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein_auto)
     # Juntar CPF do lanim*.pdf com CPF auto-detectadas de PDFs genericos
     etiquetas_cpf_especial.extend(cpf_auto_detectadas)
     # CPF e Shein serao gerados com PDFs separados, mas ainda entram no resumo XLSX

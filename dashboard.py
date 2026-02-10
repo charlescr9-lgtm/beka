@@ -1546,10 +1546,12 @@ def _executar_processamento(user_id):
                 adicionar_log(estado, "Nenhum XLSX de empacotamento encontrado", "warning")
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
-            todas_etiquetas, cpf_auto_detectadas = proc.carregar_todos_pdfs(pasta_entrada)
+            todas_etiquetas, cpf_auto_detectadas, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
             if cpf_auto_detectadas:
                 adicionar_log(estado, f"CPF auto-detectadas: {len(cpf_auto_detectadas)} etiquetas", "info")
+            if pdfs_shein_auto:
+                adicionar_log(estado, f"Shein auto-detectados: {len(pdfs_shein_auto)} PDF(s)", "info")
 
             # Verificar quais etiquetas tem/nao tem dados de produto
             n_com_dados = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('produtos'))
@@ -1566,7 +1568,7 @@ def _executar_processamento(user_id):
                 todas_etiquetas.extend(etiquetas_cpf_especial)
                 adicionar_log(estado, f"CPF: {len(etiquetas_cpf_especial)} etiquetas ({len(cpf_auto_detectadas)} auto-detectadas)", "success")
 
-            etiquetas_shein = proc.processar_shein(pasta_entrada)
+            etiquetas_shein = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein_auto)
             if etiquetas_shein:
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
 
