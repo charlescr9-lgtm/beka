@@ -608,6 +608,51 @@ class ProcessadorEtiquetasShopee:
 
         return simples + multiplos, len(simples), len(multiplos)
 
+    @staticmethod
+    def _ordenar_produtos(produtos):
+        """Ordena produtos na tabela: qtd=1 por SKU > Cor > Numero, qtd>1 no final por qtd crescente.
+
+        A variacao costuma vir como "Cor,Tamanho" (ex: "Preto,35") ou "Cor/Tamanho".
+        """
+        def _separar_cor_numero(variacao):
+            """Separa variacao em (cor, numero) para ordenacao."""
+            if not variacao:
+                return ('', '')
+            # Tentar separar por virgula primeiro, depois barra
+            partes = re.split(r'[,/]', variacao, maxsplit=1)
+            if len(partes) == 2:
+                return (partes[0].strip(), partes[1].strip())
+            return (variacao.strip(), '')
+
+        def _numero_sort_key(num_str):
+            """Converte numero/tamanho para valor numerico para ordenacao correta."""
+            # Extrair primeiro numero encontrado (ex: "BR39/40" -> 39, "35" -> 35)
+            m = re.search(r'(\d+)', num_str)
+            if m:
+                return (0, int(m.group(1)))
+            return (1, num_str)  # sem numero vai depois
+
+        unitarios = []
+        multiplos = []
+        for prod in produtos:
+            qtd = int(float(prod.get('qtd', '1')))
+            if qtd > 1:
+                multiplos.append(prod)
+            else:
+                unitarios.append(prod)
+
+        # Unitarios: ordenar por SKU > Cor > Numero
+        unitarios.sort(key=lambda p: (
+            p.get('codigo', ''),
+            _separar_cor_numero(p.get('variacao', ''))[0],
+            _numero_sort_key(_separar_cor_numero(p.get('variacao', ''))[1]),
+        ))
+
+        # Multiplos: ordenar por quantidade crescente (maior qtd mais ao final)
+        multiplos.sort(key=lambda p: int(float(p.get('qtd', '1'))))
+
+        return unitarios + multiplos
+
     # ----------------------------------------------------------------
     # GERACAO DO CODIGO DE BARRAS
     # ----------------------------------------------------------------
@@ -762,7 +807,7 @@ class ProcessadorEtiquetasShopee:
 
         nf = dados.get('nf', '')
         chave = dados.get('chave', '')
-        produtos = dados.get('produtos', [])
+        produtos = self._ordenar_produtos(dados.get('produtos', []))
         total_itens = dados.get('total_itens', len(produtos))
         total_qtd = dados.get('total_qtd', sum(int(float(p.get('qtd', 1))) for p in produtos))
 
@@ -1531,7 +1576,7 @@ class ProcessadorEtiquetasShopee:
         y_limite = (alt_pagina or self.ALTURA_CPF_PT) - self.MARGEM_INFERIOR - 5
 
         order_sn = dados.get('nf', '')
-        produtos = dados.get('produtos', [])
+        produtos = self._ordenar_produtos(dados.get('produtos', []))
         total_itens = dados.get('total_itens', len(produtos))
         total_qtd = dados.get('total_qtd', sum(int(float(p.get('qtd', 1))) for p in produtos))
 
@@ -2172,9 +2217,17 @@ class ProcessadorEtiquetasShopee:
             cell.border = border
             cell.alignment = Alignment(horizontal='left')
 
-        # Dados ordenados por SKU, depois variacao
+        # Dados ordenados por SKU > Cor > Numero
+        def _sort_var(var):
+            partes = re.split(r'[,/]', var or '', maxsplit=1)
+            cor = partes[0].strip() if partes else ''
+            num_str = partes[1].strip() if len(partes) > 1 else ''
+            m = re.search(r'(\d+)', num_str)
+            num_val = int(m.group(1)) if m else 99999
+            return (cor, num_val, num_str)
+
         row = 2
-        for (sku, var) in sorted(sku_var_qtd.keys(), key=lambda x: (x[0] or '', x[1] or '')):
+        for (sku, var) in sorted(sku_var_qtd.keys(), key=lambda x: (x[0] or '', _sort_var(x[1]))):
             ws.cell(row=row, column=1, value=sku).border = border
             ws.cell(row=row, column=2, value=var).border = border
             ws.cell(row=row, column=3, value=sku_var_qtd[(sku, var)]).border = border
