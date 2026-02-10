@@ -1085,14 +1085,32 @@ def api_gerar_lucro():
 
         import zipfile
         loja_dados = defaultdict(lambda: {"itens": [], "linhas_sem_custo": []})
+        chaves_processadas = set()
+        total_xmls_lidos = 0
 
         def _processar_doc(doc):
+            nonlocal total_xmls_lidos
             if "nfeProc" in doc:
                 nfe = doc["nfeProc"]["NFe"]["infNFe"]
             elif "NFe" in doc:
                 nfe = doc["NFe"]["infNFe"]
             else:
                 return
+            total_xmls_lidos += 1
+
+            # Deduplicar por chave NFe (evita contar mesma NF 2x)
+            chave_nfe = str(nfe.get("@Id", "")).strip()
+            if not chave_nfe:
+                # Fallback: CNPJ + nNF
+                emit = nfe.get("emit", {})
+                cnpj_e = str(emit.get("CNPJ", "")).strip() if isinstance(emit, dict) else ""
+                nf_num = str(nfe.get("ide", {}).get("nNF", "")).strip()
+                chave_nfe = f"{cnpj_e}_{nf_num}" if cnpj_e and nf_num else ""
+            if chave_nfe:
+                if chave_nfe in chaves_processadas:
+                    return  # Duplicada — ignorar
+                chaves_processadas.add(chave_nfe)
+
             nome_loja, itens, sem_custo = _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, _chaves_custos_ordenadas, _cnpj_loja_map)
             offset = len(loja_dados[nome_loja]["itens"])
             loja_dados[nome_loja]["itens"].extend(itens)
@@ -1124,6 +1142,12 @@ def api_gerar_lucro():
                 _processar_doc(doc)
             except Exception:
                 continue
+
+        # Log de duplicatas ignoradas
+        duplicados = total_xmls_lidos - len(chaves_processadas)
+        if duplicados > 0:
+            adicionar_log(estado, f"{duplicados} NF(s) duplicada(s) ignorada(s) de {total_xmls_lidos} XMLs", "warning")
+        adicionar_log(estado, f"{len(chaves_processadas)} NFs unicas processadas", "info")
 
         if not loja_dados:
             return jsonify({"erro": "Nenhum produto encontrado nos XMLs"}), 400
