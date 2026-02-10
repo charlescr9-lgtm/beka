@@ -592,19 +592,50 @@ class ProcessadorEtiquetasShopee:
     # ORDENACAO
     # ----------------------------------------------------------------
     def _ordenar_etiquetas(self, etiquetas):
-        """Ordena: simples (1 item, qtd 1) por SKU primeiro, multi-produto/quantidade no final."""
+        """Ordena etiquetas na mesma ordem do resumo XLSX:
+        SKU > Cor > Numero para unitarias (total_qtd=1),
+        etiquetas com total_qtd > 1 vao para o final ordenadas por qtd crescente.
+        """
+        def _chave_etiqueta(etq):
+            """Extrai (sku, cor, numero) do primeiro produto da etiqueta."""
+            dados = etq.get('dados_xml', {})
+            produtos = dados.get('produtos', [])
+            if produtos:
+                sku = produtos[0].get('codigo', '')
+                variacao = produtos[0].get('variacao', '')
+            else:
+                sku = etq.get('sku', '')
+                variacao = ''
+            # Separar variacao em cor e numero
+            partes = re.split(r',', variacao, maxsplit=1)
+            if len(partes) == 2:
+                cor = partes[0].strip()
+                num_str = partes[1].strip()
+            else:
+                cor = variacao.strip()
+                num_str = ''
+            # Extrair valor numerico para ordenacao correta (35 antes de 36)
+            m = re.search(r'(\d+)', num_str)
+            num_val = int(m.group(1)) if m else 99999
+            return (sku, cor, num_val, num_str)
+
         simples = []
         multiplos = []
         for e in etiquetas:
-            num_prods = e.get('num_produtos', 1)
             total_qtd = e.get('dados_xml', {}).get('total_qtd', 1)
-            if num_prods > 1 or total_qtd > 1:
+            if total_qtd > 1:
                 multiplos.append(e)
             else:
                 simples.append(e)
 
-        simples.sort(key=lambda x: (x.get('sku', ''), x.get('nf', '')))
-        multiplos.sort(key=lambda x: (x.get('sku', ''), x.get('nf', '')))
+        # Simples: SKU > Cor > Numero (mesma ordem do resumo XLSX)
+        simples.sort(key=_chave_etiqueta)
+
+        # Multiplos: por quantidade total crescente (maior qtd mais ao final)
+        multiplos.sort(key=lambda e: (
+            e.get('dados_xml', {}).get('total_qtd', 1),
+            _chave_etiqueta(e)
+        ))
 
         return simples + multiplos, len(simples), len(multiplos)
 
