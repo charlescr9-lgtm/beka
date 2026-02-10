@@ -319,20 +319,21 @@
             justify-content: space-between;
             background: linear-gradient(135deg, rgba(240,93,35,0.08), rgba(255,131,66,0.04));
             border: 1px solid rgba(240,93,35,0.2);
-            border-radius: var(--radius);
-            padding: 24px;
-            margin-bottom: 24px;
+            border-radius: var(--radius-sm);
+            padding: 10px 16px;
+            margin-bottom: 8px;
         }
 
         .process-info h3 {
-            font-size: 16px;
+            font-size: 13px;
             font-weight: 700;
-            margin-bottom: 4px;
+            margin-bottom: 0;
         }
 
         .process-info p {
-            font-size: 13px;
+            font-size: 12px;
             color: var(--text-secondary);
+            margin: 0;
         }
 
         /* PROGRESS BAR */
@@ -527,12 +528,16 @@
 
         .upload-zone {
             border: 2px dashed var(--border);
-            border-radius: var(--radius);
-            padding: 40px;
+            border-radius: var(--radius-sm);
+            padding: 14px 20px;
             text-align: center;
             transition: var(--transition);
             cursor: pointer;
             background: var(--bg-card);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
         }
 
         .upload-zone:hover, .upload-zone.dragover {
@@ -541,19 +546,19 @@
         }
 
         .upload-zone i {
-            font-size: 36px;
+            font-size: 20px;
             color: var(--text-muted);
-            margin-bottom: 12px;
         }
 
         .upload-zone h4 {
-            font-size: 14px;
-            margin-bottom: 4px;
+            font-size: 13px;
+            margin: 0;
         }
 
         .upload-zone p {
-            font-size: 12px;
+            font-size: 11px;
             color: var(--text-muted);
+            margin: 0;
         }
 
         /* FILE LIST */
@@ -872,52 +877,37 @@
     <!-- ==================== PAINEL ==================== -->
     <div class="tab-content active" id="tab-painel">
 
-        <!-- Upload Zone (no Painel) -->
-        <div style="margin-bottom: 24px;">
-            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                <h3 class="section-title" style="margin-bottom:0;"><i class="fas fa-upload"></i> Upload de Arquivos</h3>
-                <button class="btn-help" onclick="mostrarAjuda('upload')" title="Como fazer upload">
-                    <i class="fas fa-question-circle"></i>
-                </button>
-            </div>
+        <!-- Upload Zone -->
+        <div style="margin-bottom: 8px;">
             <div class="upload-zone" id="uploadZone"
                  ondragover="event.preventDefault(); this.classList.add('dragover')"
                  ondragleave="this.classList.remove('dragover')"
                  ondrop="handleDrop(event)"
                  onclick="document.getElementById('fileInput').click()">
                 <i class="fas fa-cloud-upload-alt"></i>
-                <h4>Arraste arquivos aqui ou clique para selecionar</h4>
-                <p>Aceita arquivos PDF (etiquetas) e XLSX (empacotamento Shopee)</p>
+                <h4>Arraste PDFs e XLSX aqui ou clique para selecionar</h4>
             </div>
             <input type="file" id="fileInput" hidden multiple accept=".pdf,.xlsx,.xls" onchange="handleUpload(this.files)">
         </div>
 
-        <!-- Botao Processar -->
+        <!-- Processar -->
         <div class="process-section">
-            <div class="process-info">
-                <div style="display:flex; align-items:center; gap:10px;">
-                    <h3 style="margin:0;"><i class="fas fa-rocket"></i> Processar Etiquetas</h3>
-                    <button class="btn-help" onclick="mostrarAjuda('processar')" title="Como processar">
-                        <i class="fas fa-question-circle"></i>
-                    </button>
-                </div>
-                <p>Carregar XMLs, recortar etiquetas dos PDFs e gerar saida por loja</p>
-                <div class="progress-bar" id="progressBar">
+            <div class="process-info" style="flex:1; min-width:0;">
+                <h3 style="margin:0;"><i class="fas fa-rocket"></i> Processar Etiquetas</h3>
+                <div class="progress-bar" id="progressBar" style="margin-top:6px;">
                     <div class="progress-bar-fill"></div>
                 </div>
             </div>
-            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-                <button class="btn btn-primary btn-lg" id="btnProcessar" onclick="processar()" disabled>
-                    <i class="fas fa-play"></i> Iniciar Processamento
+            <div style="display:flex; gap:8px; flex-shrink:0; align-items:center;">
+                <button class="btn btn-primary" id="btnProcessar" onclick="processar()" disabled style="font-size:12px; padding:8px 16px;">
+                    <i class="fas fa-play"></i> Processar
                 </button>
-                <!-- Botao Lucro movido para aba Lucro -->
-                <button class="btn btn-lg" id="btnNovoLote" onclick="novoLote()" style="background: var(--warning); color: #000; border: none; cursor: pointer; font-weight:600;">
+                <button class="btn" id="btnNovoLote" onclick="novoLote()" style="background:var(--warning); color:#000; border:none; cursor:pointer; font-weight:600; font-size:12px; padding:8px 16px;">
                     <i class="fas fa-broom"></i> Novo Lote
                 </button>
             </div>
-            <div id="avisoUpload" style="display:none; margin-top:8px; padding:8px 14px; border-radius:8px; font-size:13px;">
-            </div>
         </div>
+        <div id="avisoUpload" style="display:none; margin-bottom:8px; padding:6px 12px; border-radius:6px; font-size:12px;"></div>
 
         <!-- Stats Cards -->
         <div class="grid grid-4" id="statsCards">
@@ -975,103 +965,73 @@
             </div>
         </div>
 
-        <!-- Configuracoes (colapsavel) -->
-        <div style="margin-top: 24px;">
-            <div style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:14px 18px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-sm);" onclick="toggleConfig()">
-                <span style="font-weight:600; font-size:14px; color:var(--text-primary);"><i class="fas fa-cog" style="margin-right:8px; color:var(--primary);"></i> Configuracoes</span>
-                <i class="fas fa-chevron-down" id="configToggleIcon" style="color:var(--text-muted); transition:transform 0.2s;"></i>
-            </div>
-            <div id="configContent" style="display:none; margin-top:1px;">
-                <div class="grid grid-2">
-                    <!-- Dimensoes -->
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title"><i class="fas fa-ruler"></i> Dimensoes da Pagina</span>
+        <!-- Config inline compacta -->
+        <div class="cfg-inline" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 12px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-sm); margin-bottom:8px; font-size:11px;">
+            <span style="color:var(--text-muted); font-size:13px;" title="Configuracoes"><i class="fas fa-cog"></i></span>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Larg
+                <input class="form-input" id="cfgLargura" type="number" min="50" max="300" style="width:50px; padding:3px 4px; font-size:11px;">
+            </label>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Alt
+                <input class="form-input" id="cfgAltura" type="number" min="50" max="400" style="width:50px; padding:3px 4px; font-size:11px;">
+            </label>
+            <span style="color:var(--border);">|</span>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">M.E
+                <input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50" style="width:38px; padding:3px 4px; font-size:11px;">
+            </label>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">M.D
+                <input class="form-input" id="cfgMargemDir" type="number" min="0" max="50" style="width:38px; padding:3px 4px; font-size:11px;">
+            </label>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">M.T
+                <input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50" style="width:38px; padding:3px 4px; font-size:11px;">
+            </label>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">M.I
+                <input class="form-input" id="cfgMargemInf" type="number" min="0" max="50" style="width:38px; padding:3px 4px; font-size:11px;">
+            </label>
+            <span style="color:var(--border);">|</span>
+            <label style="display:flex; align-items:center; gap:3px; color:var(--text-secondary);">Fonte
+                <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:38px; padding:3px 4px; font-size:11px;">
+            </label>
+            <select class="form-input" id="cfgExibicaoProduto" style="padding:3px 4px; font-size:11px; width:auto;">
+                <option value="sku">SKU</option>
+                <option value="titulo">Titulo</option>
+                <option value="ambos">SKU+Titulo</option>
+            </select>
+            <span style="color:var(--border);">|</span>
+            <span style="cursor:pointer; color:var(--text-muted); font-size:12px;" onclick="toggleConfig()" title="Avancado">
+                <i class="fas fa-ellipsis-h"></i>
+            </span>
+        </div>
+
+        <!-- Avancado (colapsavel) -->
+        <div id="configContent" style="display:none; margin-bottom:8px;">
+            <div class="card" style="padding:14px;">
+                <div class="card-header" style="margin-bottom:10px;">
+                    <span class="card-title" style="font-size:13px;"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
+                </div>
+                <p style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
+                    Configure grupos para gerar PDFs agrupados automaticamente.
+                </p>
+                <div id="listaGrupos" style="margin-bottom:12px;"></div>
+                <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:12px;">
+                    <div style="font-size:12px; font-weight:600; margin-bottom:8px; color:var(--text-secondary);">Novo Grupo</div>
+                    <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+                        <div class="form-group" style="margin-bottom:0; flex:none;">
+                            <label class="form-label" style="font-size:11px;">Nome</label>
+                            <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:140px; font-size:12px; padding:5px 8px;">
                         </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label">Largura (mm)</label>
-                                <input class="form-input" id="cfgLargura" type="number" min="50" max="300">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">Altura (mm)</label>
-                                <input class="form-input" id="cfgAltura" type="number" min="50" max="400">
+                        <div class="form-group" style="margin-bottom:0; flex:1; min-width:180px;">
+                            <label class="form-label" style="font-size:11px;">Lojas (2+)</label>
+                            <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:6px; padding:6px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:32px;">
+                                <span style="font-size:10px; color:var(--text-muted);">Processe etiquetas primeiro</span>
                             </div>
                         </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label">Margem Esquerda (pt)</label>
-                                <input class="form-input" id="cfgMargemEsq" type="number" min="0" max="50">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">Margem Direita (pt)</label>
-                                <input class="form-input" id="cfgMargemDir" type="number" min="0" max="50">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label class="form-label">Margem Topo (pt)</label>
-                                <input class="form-input" id="cfgMargemTopo" type="number" min="0" max="50">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">Margem Inferior (pt)</label>
-                                <input class="form-input" id="cfgMargemInf" type="number" min="0" max="50">
-                            </div>
-                        </div>
-                        <div class="form-group" style="margin-top:12px;">
-                            <label class="form-label">Fonte Base - Tabela de Produtos (pt)</label>
-                            <input class="form-input" id="cfgFonteProduto" type="number" min="5" max="14" value="7" style="width:120px;">
-                            <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">Padrao: 7pt | SKU e Qtd usam 50% maior</span>
-                        </div>
-                        <div class="form-group" style="margin-top:12px;">
-                            <label class="form-label">Exibicao na tabela de produtos</label>
-                            <select class="form-input" id="cfgExibicaoProduto" style="width:220px;">
-                                <option value="sku">Somente SKU</option>
-                                <option value="titulo">Somente Titulo</option>
-                                <option value="ambos">SKU + Titulo</option>
-                            </select>
-                            <span style="font-size:11px; color:var(--text-muted); margin-left:8px;">O que mostrar na coluna de produto</span>
-                        </div>
+                        <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0; font-size:11px; padding:5px 10px;">
+                            <i class="fas fa-plus"></i> Adicionar
+                        </button>
                     </div>
                 </div>
-
-                <!-- Agrupamento de Lojas -->
-                <div style="margin-top: 20px;">
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-title"><i class="fas fa-layer-group"></i> Agrupamento de Lojas</span>
-                        </div>
-                        <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
-                            Configure grupos de lojas para gerar PDFs agrupados automaticamente apos cada processamento.
-                        </p>
-
-                        <!-- Lista de grupos existentes -->
-                        <div id="listaGrupos" style="margin-bottom:16px;"></div>
-
-                        <!-- Adicionar novo grupo -->
-                        <div style="background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); padding:16px;">
-                            <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">Novo Grupo</div>
-                            <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
-                                <div class="form-group" style="margin-bottom:0; flex:none;">
-                                    <label class="form-label">Nome do Grupo</label>
-                                    <input class="form-input" id="novoGrupoNome" type="text" placeholder="Ex: Grupo A" style="width:180px;">
-                                </div>
-                                <div class="form-group" style="margin-bottom:0; flex:1; min-width:200px;">
-                                    <label class="form-label">Lojas (selecione 2+)</label>
-                                    <div id="novoGrupoLojas" style="display:flex; flex-wrap:wrap; gap:8px; padding:8px; background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius-xs); min-height:38px;">
-                                        <span style="font-size:11px; color:var(--text-muted);">Processe etiquetas primeiro para ver lojas disponiveis</span>
-                                    </div>
-                                </div>
-                                <button class="btn btn-primary btn-sm" onclick="adicionarGrupo()" style="margin-bottom:0;">
-                                    <i class="fas fa-plus"></i> Adicionar
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div style="margin-top: 20px; display: flex; gap: 12px;">
-                    <button class="btn btn-danger" onclick="limparSaida()">
+                <div style="margin-top:12px;">
+                    <button class="btn btn-danger btn-sm" onclick="limparSaida()" style="font-size:11px; padding:5px 10px;">
                         <i class="fas fa-trash-alt"></i> Limpar Pasta de Saida
                     </button>
                 </div>
@@ -1315,13 +1275,10 @@ function trocarTab(tab) {
 
 function toggleConfig() {
     const content = document.getElementById('configContent');
-    const icon = document.getElementById('configToggleIcon');
     if (content.style.display === 'none') {
         content.style.display = 'block';
-        icon.style.transform = 'rotate(180deg)';
     } else {
         content.style.display = 'none';
-        icon.style.transform = 'rotate(0deg)';
     }
 }
 
