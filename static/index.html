@@ -2059,20 +2059,31 @@ function renderConfigLucroLojas(lojas) {
 }
 
 function _renderTabelaConfigLojas(lojas) {
-    const d = _lucroLojasDefaults;
+    const d = _lucroLojasDefaults || {};
     const el = document.getElementById('tabelaConfigLojas');
     const rows = lojas.map(l => {
         const o = _lucroLojasOverrides[l.nome] || {};
         return `<tr>
             <td style="padding:6px 8px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(l.nome)}</td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="perc_declarado" type="number" step="1" value="${o.perc_declarado || ''}" placeholder="${d.perc_declarado}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="taxa_shopee" type="number" step="0.5" value="${o.taxa_shopee || ''}" placeholder="${d.taxa_shopee}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="imposto_simples" type="number" step="0.5" value="${o.imposto_simples || ''}" placeholder="${d.imposto_simples}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="custo_fixo" type="number" step="0.5" value="${o.custo_fixo || ''}" placeholder="${d.custo_fixo}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="perc_declarado" type="number" step="1" value="${o.perc_declarado || ''}" placeholder="${d.perc_declarado || ''}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="taxa_shopee" type="number" step="0.5" value="${o.taxa_shopee || ''}" placeholder="${d.taxa_shopee || ''}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="imposto_simples" type="number" step="0.5" value="${o.imposto_simples || ''}" placeholder="${d.imposto_simples || ''}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="custo_fixo" type="number" step="0.5" value="${o.custo_fixo || ''}" placeholder="${d.custo_fixo || ''}" style="width:70px; font-size:11px;"></td>
         </tr>`;
     }).join('');
 
-    el.innerHTML = `<table style="width:100%; border-collapse:collapse; font-size:12px;">
+    el.innerHTML = `
+    <div style="display:flex; gap:6px; align-items:center; margin-bottom:10px; padding:8px 10px; background:var(--bg-input); border-radius:6px; flex-wrap:wrap;">
+        <span style="font-size:11px; font-weight:600; white-space:nowrap;"><i class="fas fa-edit"></i> Aplicar a todas:</span>
+        <input class="form-input" id="massPercDeclarado" type="number" step="1" placeholder="% Decl" style="width:65px; font-size:11px;">
+        <input class="form-input" id="massTaxaShopee" type="number" step="0.5" placeholder="Shopee %" style="width:65px; font-size:11px;">
+        <input class="form-input" id="massImposto" type="number" step="0.5" placeholder="Imposto %" style="width:65px; font-size:11px;">
+        <input class="form-input" id="massCustoFixo" type="number" step="0.5" placeholder="Custo R$" style="width:65px; font-size:11px;">
+        <button class="btn btn-secondary btn-sm" onclick="aplicarMassaLucro()" style="font-size:11px; white-space:nowrap;">
+            <i class="fas fa-copy"></i> Aplicar
+        </button>
+    </div>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">
         <thead><tr style="background:var(--bg-input);">
             <th style="padding:8px; text-align:left;">Loja</th>
             <th style="padding:8px; text-align:center;">% Declarado</th>
@@ -2082,6 +2093,30 @@ function _renderTabelaConfigLojas(lojas) {
         </tr></thead>
         <tbody>${rows}</tbody>
     </table>`;
+}
+
+function aplicarMassaLucro() {
+    const campos = [
+        {id: 'massPercDeclarado', campo: 'perc_declarado'},
+        {id: 'massTaxaShopee', campo: 'taxa_shopee'},
+        {id: 'massImposto', campo: 'imposto_simples'},
+        {id: 'massCustoFixo', campo: 'custo_fixo'},
+    ];
+    let aplicou = false;
+    campos.forEach(({id, campo}) => {
+        const val = document.getElementById(id).value.trim();
+        if (val !== '') {
+            document.querySelectorAll(`.cfg-loja-input[data-campo="${campo}"]`).forEach(inp => {
+                inp.value = val;
+            });
+            aplicou = true;
+        }
+    });
+    if (aplicou) {
+        toast('Valores aplicados a todas as lojas', 'info');
+    } else {
+        toast('Preencha pelo menos um campo para aplicar', 'warning');
+    }
 }
 
 async function salvarConfigLucroLojas() {

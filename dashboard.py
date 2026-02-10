@@ -838,6 +838,14 @@ def _limpar_nome_loja(nome_raw):
     return nome.strip() or 'Loja_Desconhecida'
 
 
+def _formatar_cnpj_curto(cnpj):
+    """Retorna a raiz do CNPJ formatada (8 primeiros digitos: XX.XXX.XXX)."""
+    cnpj = str(cnpj).strip()
+    if len(cnpj) >= 8:
+        return f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}"
+    return cnpj
+
+
 def _extrair_loja_nfe(nfe, cnpj_loja_map=None):
     emit = nfe.get("emit", {})
     if isinstance(emit, str):
@@ -847,7 +855,11 @@ def _extrair_loja_nfe(nfe, cnpj_loja_map=None):
     if cnpj_loja_map and cnpj in cnpj_loja_map:
         return cnpj_loja_map[cnpj]
     nome_raw = str(emit.get("xNome", "")).strip()
-    return _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
+    nome = _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
+    # Incluir CNPJ curto para diferenciar lojas com mesmo nome empresarial
+    if cnpj:
+        return f"{_formatar_cnpj_curto(cnpj)} {nome}"
+    return nome
 
 
 def _extrair_sku_principal(sku_completo):
@@ -980,7 +992,7 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
 @app.route('/api/lojas-lucro')
 @jwt_required()
 def api_lojas_lucro():
-    """Retorna lista de lojas encontradas nos XMLs da pasta_lucro (independente de etiquetas)."""
+    """Retorna lista de lojas encontradas nos XMLs da pasta_lucro, separadas por CNPJ."""
     user_id = get_jwt_identity()
     estado = _get_estado(user_id)
     if not estado:
@@ -992,34 +1004,47 @@ def api_lojas_lucro():
 
     if pasta_lucro and os.path.exists(pasta_lucro):
         import zipfile
-        import re as re_mod
-        nomes_encontrados = set()
+        lojas_dict = {}  # {cnpj: nome_limpo}
 
-        # Ler ZIPs
+        def _extrair_emit_xml(conteudo):
+            try:
+                doc = xmltodict.parse(conteudo)
+                if "nfeProc" in doc:
+                    nfe = doc["nfeProc"]["NFe"]["infNFe"]
+                elif "NFe" in doc:
+                    nfe = doc["NFe"]["infNFe"]
+                else:
+                    return
+                emit = nfe.get("emit", {})
+                if isinstance(emit, str):
+                    return
+                cnpj = str(emit.get("CNPJ", "")).strip()
+                nome_raw = str(emit.get("xNome", "")).strip()
+                nome = _limpar_nome_loja(nome_raw) if nome_raw else "Desconhecida"
+                if cnpj:
+                    lojas_dict[cnpj] = nome
+            except Exception:
+                pass
+
         for f in os.listdir(pasta_lucro):
             fp = os.path.join(pasta_lucro, f)
             if f.lower().endswith('.zip') and zipfile.is_zipfile(fp):
                 try:
                     with zipfile.ZipFile(fp) as zf:
-                        for nome in zf.namelist():
-                            if nome.lower().endswith('.xml'):
-                                conteudo = zf.read(nome).decode('utf-8', errors='ignore')
-                                m = re_mod.search(r'<xNome>([^<]+)</xNome>', conteudo)
-                                if m:
-                                    nomes_encontrados.add(m.group(1).strip())
+                        for nome_arq in zf.namelist():
+                            if nome_arq.lower().endswith('.xml'):
+                                conteudo = zf.read(nome_arq).decode('utf-8', errors='ignore')
+                                _extrair_emit_xml(conteudo)
                 except Exception:
                     pass
             elif f.lower().endswith('.xml'):
                 try:
                     with open(fp, 'r', encoding='utf-8', errors='ignore') as xf:
-                        conteudo = xf.read()
-                    m = re_mod.search(r'<xNome>([^<]+)</xNome>', conteudo)
-                    if m:
-                        nomes_encontrados.add(m.group(1).strip())
+                        _extrair_emit_xml(xf.read())
                 except Exception:
                     pass
 
-        lojas = [{"nome": n} for n in sorted(nomes_encontrados)]
+        lojas = [{"cnpj": c, "nome": f"{_formatar_cnpj_curto(c)} {n}"} for c, n in sorted(lojas_dict.items(), key=lambda x: x[1])]
 
     return jsonify({"lojas": lojas})
 
