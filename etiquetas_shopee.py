@@ -837,7 +837,7 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
 
     # Nomes dos PDFs especiais (nao processados no grid 2x2)
-    PDFS_ESPECIAIS = ['lanim.pdf', 'shein crua.pdf']
+    PDFS_ESPECIAIS = ['lanim.pdf', 'shein crua.pdf', 'shein.pdf']
     # CNPJ e nome fixos para etiquetas CPF (sem XML/DANFE)
     LANIM_CNPJ = 'LANIM_CPF'
     LANIM_NOME = 'CPF'
@@ -1744,12 +1744,42 @@ class ProcessadorEtiquetasShopee:
         limpo = re.sub(r'-+', '', limpo)
         return limpo
 
+    def _parsear_atributos_shein(self, atributos):
+        """Parseia atributos Shein em modelo, cor e tamanho.
+        Ex: 'Rakka/Dourado(金色)-BR39/40' -> ('Rakka', 'Dourado', 'BR39/40')
+        Ex: 'Rakka/Rosa/Rosa(粉色/粉色)-BR39/40' -> ('Rakka', 'Rosa/Rosa', 'BR39/40')
+        """
+        if not atributos:
+            return '', '', ''
+        # Remover texto chines entre parenteses
+        limpo = re.sub(r'\([^)]*\)', '', atributos).strip()
+        # Separar tamanho: -BR39/40
+        m = re.match(r'^(.+?)(?:-BR(\d+/?\d*))$', limpo)
+        if m:
+            modelo_cor = m.group(1)
+            tamanho = 'BR' + m.group(2)
+        else:
+            modelo_cor = limpo
+            tamanho = ''
+        # Separar modelo e cor pelo primeiro /
+        partes = modelo_cor.split('/', 1)
+        if len(partes) >= 2:
+            modelo = partes[0].strip()
+            cor = partes[1].strip()
+        else:
+            modelo = modelo_cor.strip()
+            cor = ''
+        return modelo, cor, tamanho
+
     def processar_shein(self, pasta_entrada):
-        """Processa etiquetas Shein de 'shein crua.pdf'.
+        """Processa etiquetas Shein de 'shein crua.pdf' ou 'shein.pdf'.
         O PDF tem paginas alternadas: par=etiqueta Shein, impar=DANFE.
         Retorna lista de dicts com dados pareados.
         """
+        # Tentar ambos os nomes
         caminho = os.path.join(pasta_entrada, 'shein crua.pdf')
+        if not os.path.exists(caminho):
+            caminho = os.path.join(pasta_entrada, 'shein.pdf')
         if not os.path.exists(caminho):
             return []
 
@@ -1942,22 +1972,29 @@ class ProcessadorEtiquetasShopee:
             y += line_h
 
             # Linhas de produtos
+            fs_destaque = int(round(fs * 1.5))
             for prod in produtos_shein[:5]:
                 atrib = prod.get('atributos', '')
-                codigo = self._gerar_codigo_shein(atrib)
+                modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
                 qtd = str(int(float(prod.get('qtd', '1'))))
 
+                # Coluna 1: Modelo
                 nova_pag.insert_text(
-                    (col_codigo, y), codigo,
-                    fontsize=fs, fontname=fonte_bold, color=preto
+                    (col_codigo, y), modelo,
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
                 )
+                # Coluna 2: Cor, Tamanho
+                cor_tam = f"{cor},{tamanho}" if cor and tamanho else (cor or tamanho or '-')
+                if len(cor_tam) > 30:
+                    cor_tam = cor_tam[:28] + '..'
                 nova_pag.insert_text(
-                    (col_prod, y), "-",
-                    fontsize=fs, fontname=fonte, color=preto
+                    (col_prod, y), cor_tam,
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
                 )
+                # Coluna 3: Quantidade
                 nova_pag.insert_text(
                     (col_qtd, y), qtd,
-                    fontsize=fs, fontname=fonte, color=preto
+                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
                 )
                 y += line_h
 
