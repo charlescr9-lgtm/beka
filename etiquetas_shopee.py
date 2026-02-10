@@ -201,11 +201,21 @@ class ProcessadorEtiquetasShopee:
         if m:
             return m.group(1)
 
+        # Padrao alternativo: "NF: 12345" (comum em etiquetas de retirada do comprador)
+        m = re.search(r'NF:\s*(\d+)', texto)
+        if m:
+            return m.group(1)
+
         m = re.search(r'(\d{4,6})\n\d\n\d{2}-\d{2}-\d{4}', texto)
         if m:
             return m.group(1)
 
         return None
+
+    def _extrair_chave_nfe(self, texto):
+        """Extrai a chave de acesso da NFe (44 digitos) do texto da etiqueta."""
+        m = re.search(r'(\d{44})', texto)
+        return m.group(1) if m else ''
 
     def _extrair_nome_loja_remetente(self, texto):
         """Extrai o nome da loja do campo REMETENTE da etiqueta Shopee.
@@ -376,6 +386,17 @@ class ProcessadorEtiquetasShopee:
         # Fallback: pagina inteira
         return [fitz.Rect(0, 0, larg, alt)]
 
+    def _detectar_tipo_etiqueta(self, texto):
+        """Detecta o tipo de etiqueta pelo conteudo do texto.
+        Retorna: 'retirada', 'cnpj' ou 'cpf'
+        """
+        texto_upper = texto.upper()
+        if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
+            return 'retirada'
+        if 'DANFE SIMPLIFICADO' in texto_upper:
+            return 'cnpj'
+        return 'cpf'
+
     def _recortar_pagina(self, pagina, caminho_pdf):
         """Recorta etiquetas de uma pagina, detectando automaticamente o layout."""
         quadrantes = self._detectar_layout_pagina(pagina)
@@ -387,6 +408,9 @@ class ProcessadorEtiquetasShopee:
             if len(texto_quad) < 10:
                 continue  # Quadrante vazio, pular
 
+            # Detectar tipo de etiqueta
+            tipo_etiqueta = self._detectar_tipo_etiqueta(texto_quad)
+
             nf = self._extrair_nf_quadrante(pagina, clip)
 
             # Gerar etiqueta MESMO sem NF - usar identificador sintetico (incluir nome PDF para unicidade)
@@ -396,25 +420,29 @@ class ProcessadorEtiquetasShopee:
                 dados_nf = {}
                 print(f"    Pag {pagina.number} Q{idx}: NF nao encontrada, gerando com ID sintetico")
             else:
-                dados_nf = self.dados_xml.get(nf, {})
+                dados_nf = {}
 
-            # FALLBACK XLSX: se nao achou produtos no XML, tentar XLSX
-            if not dados_nf.get('produtos') and self.dados_xlsx_global:
+            # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
+            if self.dados_xlsx_global:
                 dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto_quad)
                 if dados_xlsx:
                     dados_nf = {
                         'nf': nf,
                         'serie': '',
                         'data_emissao': '',
-                        'chave': dados_nf.get('chave', ''),
-                        'cnpj_emitente': dados_nf.get('cnpj_emitente', ''),
-                        'nome_emitente': dados_nf.get('nome_emitente', ''),
+                        'chave': self._extrair_chave_nfe(texto_quad),
+                        'cnpj_emitente': '',
+                        'nome_emitente': '',
                         'produtos': dados_xlsx['produtos'],
                         'total_itens': dados_xlsx['total_itens'],
                         'total_qtd': dados_xlsx['total_qtd'],
                         'fonte_dados': 'xlsx',
                     }
-                    print(f"    Pag {pagina.number} Q{idx}: Usando dados XLSX (order_sn={order_sn_xlsx})")
+                    print(f"    Pag {pagina.number} Q{idx}: Dados XLSX (order_sn={order_sn_xlsx})")
+
+            # FALLBACK: XML (se XLSX nao encontrou produtos)
+            if not dados_nf.get('produtos') and nf in self.dados_xml:
+                dados_nf = self.dados_xml.get(nf, {})
 
             sku = ''
             num_produtos = 1
@@ -423,19 +451,17 @@ class ProcessadorEtiquetasShopee:
                 sku = dados_nf['produtos'][0].get('codigo', '')
                 num_produtos = len(dados_nf['produtos'])
 
-            # Extrair nome da loja do REMETENTE (tentar em todas as etiquetas ate achar)
+            # Extrair nome da loja do REMETENTE do texto da etiqueta
+            nome_loja = self._extrair_nome_loja_remetente(texto_quad)
             if not cnpj:
-                # Sem CNPJ do XML, tentar extrair nome da loja do texto da etiqueta
-                nome_loja = self._extrair_nome_loja_remetente(texto_quad)
                 if nome_loja:
                     # Criar CNPJ sintetico baseado no nome da loja
-                    cnpj_sintetico = f"SEM_XML_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
                     cnpj = cnpj_sintetico
                     if cnpj not in self.cnpj_loja:
                         self.cnpj_loja[cnpj] = nome_loja
                         self.cnpj_nome[cnpj] = nome_loja
             elif cnpj not in self.cnpj_loja:
-                nome_loja = self._extrair_nome_loja_remetente(texto_quad)
                 if nome_loja:
                     self.cnpj_loja[cnpj] = nome_loja
 
@@ -448,6 +474,7 @@ class ProcessadorEtiquetasShopee:
                 'pagina_idx': pagina.number,
                 'caminho_pdf': caminho_pdf,
                 'dados_xml': dados_nf,
+                'tipo_especial': tipo_etiqueta if tipo_etiqueta != 'cnpj' else None,
             })
 
         return etiquetas
@@ -1018,8 +1045,10 @@ class ProcessadorEtiquetasShopee:
         m = re.search(r'Pedido[:\s]*\n?([A-Z0-9]{12,20})', texto, re.IGNORECASE)
         if m:
             return m.group(1).strip()
-        # Padrao alternativo: procurar sequencia alfanumerica apos campo de pedido
-        m = re.search(r'(\d{5,7}[A-Z0-9]{5,15})', texto)
+        # Padrao order_sn Shopee: YYMMDD + alfanumerico (ex: 260210A88XUUY8)
+        # Aparece em linha propria, 12-16 chars, comeca com 6 digitos (data)
+        # Nao confundir com chave NFe (44 digitos puros) nem tracking (BR...)
+        m = re.search(r'\n(\d{6}[A-Z0-9]{6,10})\n', texto)
         if m:
             return m.group(1).strip()
         return None
@@ -1043,10 +1072,19 @@ class ProcessadorEtiquetasShopee:
 
         # Tentar por tracking -> order_sn
         tracking = self._extrair_tracking_quadrante(texto_quadrante)
-        if tracking and tracking in self.dados_xlsx_tracking:
-            order_sn_via_tracking = self.dados_xlsx_tracking[tracking]
-            if order_sn_via_tracking in self.dados_xlsx_global:
-                return self.dados_xlsx_global[order_sn_via_tracking], order_sn_via_tracking
+        if tracking:
+            # Match exato primeiro
+            if tracking in self.dados_xlsx_tracking:
+                order_sn_via_tracking = self.dados_xlsx_tracking[tracking]
+                if order_sn_via_tracking in self.dados_xlsx_global:
+                    return self.dados_xlsx_global[order_sn_via_tracking], order_sn_via_tracking
+
+            # Match parcial: XLSX pode ter sufixo extra no tracking
+            # (ex: etiqueta=BR2699130341698, XLSX=BR2699130341698SPXLM13556762)
+            for tracking_xlsx, osn in self.dados_xlsx_tracking.items():
+                if tracking_xlsx.startswith(tracking) or tracking.startswith(tracking_xlsx):
+                    if osn in self.dados_xlsx_global:
+                        return self.dados_xlsx_global[osn], osn
 
         return None, None
 
@@ -1084,7 +1122,7 @@ class ProcessadorEtiquetasShopee:
                 clip = pagina.rect  # pagina inteira
 
             if tipo == 'retirada':
-                # Extrair NF do texto (mesmo padrao existente)
+                # Extrair NF do texto
                 nf = None
                 m = re.search(r'Emiss.o:\n(\d+)\n', texto)
                 if m:
@@ -1104,22 +1142,22 @@ class ProcessadorEtiquetasShopee:
                     dados_nf = {}
                     print(f"    Pag {num_pag}: NF nao encontrada, gerando com ID sintetico")
                 else:
-                    dados_nf = self.dados_xml.get(nf, {})
+                    dados_nf = {}
 
-                # FALLBACK XLSX: se nao achou produtos no XML, tentar XLSX
-                if not dados_nf.get('produtos') and self.dados_xlsx_global:
-                    dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto)
-                    if dados_xlsx:
+                # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
+                if self.dados_xlsx_global:
+                    dados_xlsx_ret, order_sn_xlsx = self._buscar_dados_xlsx(texto)
+                    if dados_xlsx_ret:
                         dados_nf = {
                             'nf': nf,
                             'serie': '',
                             'data_emissao': '',
-                            'chave': dados_nf.get('chave', ''),
-                            'cnpj_emitente': dados_nf.get('cnpj_emitente', ''),
-                            'nome_emitente': dados_nf.get('nome_emitente', ''),
-                            'produtos': dados_xlsx['produtos'],
-                            'total_itens': dados_xlsx['total_itens'],
-                            'total_qtd': dados_xlsx['total_qtd'],
+                            'chave': self._extrair_chave_nfe(texto),
+                            'cnpj_emitente': '',
+                            'nome_emitente': '',
+                            'produtos': dados_xlsx_ret['produtos'],
+                            'total_itens': dados_xlsx_ret['total_itens'],
+                            'total_qtd': dados_xlsx_ret['total_qtd'],
                             'fonte_dados': 'xlsx',
                         }
                         print(f"    Pag {num_pag}: Retirada usando dados XLSX (order_sn={order_sn_xlsx})")
@@ -1130,6 +1168,16 @@ class ProcessadorEtiquetasShopee:
                 if dados_nf.get('produtos'):
                     sku = dados_nf['produtos'][0].get('codigo', '')
                     num_produtos = len(dados_nf['produtos'])
+
+                # Extrair nome da loja do REMETENTE
+                if not cnpj:
+                    nome_loja = self._extrair_nome_loja_remetente(texto)
+                    if nome_loja:
+                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                        cnpj = cnpj_sintetico
+                        if cnpj not in self.cnpj_loja:
+                            self.cnpj_loja[cnpj] = nome_loja
+                            self.cnpj_nome[cnpj] = nome_loja
 
                 etiquetas.append({
                     'nf': nf,
