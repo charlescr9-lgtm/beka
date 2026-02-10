@@ -1353,15 +1353,17 @@ def _formatar_excel_lucro(caminho_arquivo, linhas_sem_custo):
         cell.alignment = Alignment(horizontal="center")
 
     max_row = ws.max_row
-    for row in ws.iter_rows(min_row=2, max_row=max_row, min_col=1, max_col=ws.max_column):
+    max_col = ws.max_column
+    sem_custo_set = set(linhas_sem_custo)  # Converter para set para O(1) lookup
+    for row in ws.iter_rows(min_row=2, max_row=max_row, min_col=1, max_col=max_col):
         for cell in row:
             cell.border = thin_border
             if cell.col_idx >= 3:
                 cell.number_format = 'R$ #,##0.00'
             idx_dados = cell.row - 2
-            if idx_dados in linhas_sem_custo:
+            if idx_dados in sem_custo_set:
                 cell.fill = alert_fill
-            if cell.col_idx == ws.max_column:
+            if cell.col_idx == max_col:
                 if isinstance(cell.value, (int, float)) and cell.value >= 0:
                     cell.font = lucro_positivo
                 elif isinstance(cell.value, (int, float)):
