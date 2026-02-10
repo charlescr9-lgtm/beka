@@ -608,7 +608,7 @@ def api_limpar_lucro():
         return jsonify({"ok": True})
     removidos = 0
     for f in os.listdir(pasta_lucro):
-        if f.startswith('_'):
+        if f.startswith('_') or f == 'planilha_custos.xlsx':
             continue
         fp = os.path.join(pasta_lucro, f)
         if os.path.isfile(fp):

@@ -2162,7 +2162,9 @@ async function gerarLucro() {
 
     try {
         const data = await fetchAPI('/api/gerar-lucro', { method: 'POST' });
-        if (data.erro) {
+        if (!data) {
+            toast('Erro de conexao com o servidor', 'error');
+        } else if (data.erro) {
             toast(data.erro, 'error');
         } else {
             toast(`Lucro gerado! Total: R$ ${data.lucro_total.toFixed(2)}`, 'success');
