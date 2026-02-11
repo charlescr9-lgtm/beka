@@ -830,6 +830,9 @@
     <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')">
         <i class="fas fa-dollar-sign"></i> Lucro
     </div>
+    <div class="nav-tab" data-tab="admin" onclick="trocarTab('admin')" id="navAdmin" style="display:none;">
+        <i class="fas fa-shield-alt"></i> Admin
+    </div>
 </nav>
 
 <!-- TOAST CONTAINER -->
@@ -1131,6 +1134,58 @@
         <div id="resumoLucro" style="margin-bottom:24px;"></div>
     </div>
 
+    <!-- ==================== ADMIN ==================== -->
+    <div class="tab-content" id="tab-admin">
+        <h3 class="section-title"><i class="fas fa-shield-alt"></i> Painel Administrativo</h3>
+
+        <!-- Liberar acesso -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-user-plus"></i> Liberar Acesso Gratuito</span>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:14px;">
+                Libere acesso gratuito a qualquer email cadastrado. O usuario recebera o plano selecionado pelo periodo informado.
+            </p>
+            <div class="form-row" style="flex-wrap:wrap; gap:10px;">
+                <div class="form-group" style="flex:2; min-width:200px;">
+                    <label class="form-label">Email do usuario</label>
+                    <input class="form-input" id="adminEmail" type="email" placeholder="usuario@email.com">
+                </div>
+                <div class="form-group" style="flex:1; min-width:120px;">
+                    <label class="form-label">Plano</label>
+                    <select class="form-input" id="adminPlano">
+                        <option value="basico">Basico</option>
+                        <option value="pro">Pro</option>
+                        <option value="empresarial" selected>Empresarial</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1; min-width:100px;">
+                    <label class="form-label">Meses</label>
+                    <input class="form-input" id="adminMeses" type="number" min="1" max="120" value="1" style="width:80px;">
+                </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:10px;">
+                <button class="btn btn-primary btn-sm" onclick="adminLiberarAcesso()">
+                    <i class="fas fa-check"></i> Liberar Acesso
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="adminRevogarAcesso()" style="background:#dc2626; border-color:#dc2626; color:#fff;">
+                    <i class="fas fa-ban"></i> Revogar (Free)
+                </button>
+            </div>
+        </div>
+
+        <!-- Lista de usuarios -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-users"></i> Usuarios Cadastrados</span>
+                <button class="btn btn-secondary btn-sm" onclick="adminCarregarUsuarios()" style="font-size:11px;">
+                    <i class="fas fa-sync-alt"></i> Atualizar
+                </button>
+            </div>
+            <div id="adminListaUsuarios" style="margin-top:12px; overflow-x:auto;"></div>
+        </div>
+    </div>
+
 </div>
 
 <script>
@@ -1387,6 +1442,7 @@ function trocarTab(tab) {
     if (tabEl) tabEl.classList.add('active');
     // Carregar lojas do Lucro independentemente (via XMLs da pasta_lucro)
     if (tab === 'lucro') carregarLojasLucro();
+    if (tab === 'admin') adminCarregarUsuarios();
 }
 
 async function carregarLojasLucro() {
@@ -1469,7 +1525,10 @@ async function atualizarStatus() {
     if (!data) return;
 
     // Atualizar info do usuario
-    if (data.user) atualizarInfoUsuario(data.user);
+    if (data.user) {
+        atualizarInfoUsuario(data.user);
+        verificarAdmin();
+    }
 
     // Status
     const dot = document.getElementById('statusDot');
@@ -2676,6 +2735,91 @@ async function init() {
 }
 
 init();
+
+// ================================================================
+// ADMIN
+// ================================================================
+let _isAdmin = false;
+
+async function verificarAdmin() {
+    if (_isAdmin) return;
+    const res = await fetchAPI('/api/admin/check');
+    if (res && res.is_admin) {
+        _isAdmin = true;
+        document.getElementById('navAdmin').style.display = '';
+    }
+}
+
+async function adminCarregarUsuarios() {
+    const res = await fetchAPI('/api/admin/usuarios');
+    if (!res || !res.usuarios) return;
+    const el = document.getElementById('adminListaUsuarios');
+    const usuarios = res.usuarios;
+
+    let html = `<table style="width:100%; border-collapse:collapse; font-size:12px;">
+        <thead><tr style="background:var(--bg-input);">
+            <th style="padding:8px; text-align:left;">Email</th>
+            <th style="padding:8px; text-align:center;">Plano</th>
+            <th style="padding:8px; text-align:center;">Expira</th>
+            <th style="padding:8px; text-align:center;">Bonus</th>
+            <th style="padding:8px; text-align:center;">Cadastro</th>
+            <th style="padding:8px; text-align:center;">Acao</th>
+        </tr></thead><tbody>`;
+
+    for (const u of usuarios) {
+        const planoCor = u.plano === 'free' ? '#a78bfa' : '#22c55e';
+        html += `<tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:6px 8px; font-size:12px;">${u.email}</td>
+            <td style="padding:6px; text-align:center;"><span style="padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${u.plano === 'free' ? '#2d1b4e' : '#1b2d1b'}; color:${planoCor};">${u.plano_nome}</span></td>
+            <td style="padding:6px; text-align:center; font-size:11px; color:var(--text-muted);">${u.plano_expira || '-'}</td>
+            <td style="padding:6px; text-align:center; font-size:11px; color:var(--accent);">${u.meses_gratis > 0 ? u.meses_gratis + ' mes(es)' : '-'}</td>
+            <td style="padding:6px; text-align:center; font-size:11px; color:var(--text-muted);">${u.created_at}</td>
+            <td style="padding:6px; text-align:center;">
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('adminEmail').value='${u.email}'" style="font-size:10px; padding:2px 8px;">Selecionar</button>
+            </td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    html += `<div style="margin-top:8px; font-size:11px; color:var(--text-muted);">${usuarios.length} usuario(s) cadastrado(s)</div>`;
+    el.innerHTML = html;
+}
+
+async function adminLiberarAcesso() {
+    const email = document.getElementById('adminEmail').value.trim();
+    const plano = document.getElementById('adminPlano').value;
+    const meses = parseInt(document.getElementById('adminMeses').value) || 1;
+
+    if (!email) { toast('Digite o email', 'warning'); return; }
+
+    const res = await fetchAPI('/api/admin/liberar-acesso', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, plano, meses }),
+    });
+    if (res && res.mensagem) {
+        toast(res.mensagem, 'success');
+        adminCarregarUsuarios();
+    } else {
+        toast(res?.erro || 'Erro ao liberar acesso', 'error');
+    }
+}
+
+async function adminRevogarAcesso() {
+    const email = document.getElementById('adminEmail').value.trim();
+    if (!email) { toast('Digite o email', 'warning'); return; }
+
+    const res = await fetchAPI('/api/admin/revogar-acesso', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+    });
+    if (res && res.mensagem) {
+        toast(res.mensagem, 'success');
+        adminCarregarUsuarios();
+    } else {
+        toast(res?.erro || 'Erro ao revogar acesso', 'error');
+    }
+}
 </script>
 </body>
 </html>

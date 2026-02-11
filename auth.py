@@ -314,6 +314,117 @@ def reset_password():
 
 
 # ================================================================
+# ADMIN - GERENCIAR ACESSOS
+# ================================================================
+
+def _is_admin(user_id):
+    """Verifica se o usuario e admin (email na lista VIP)."""
+    user = User.query.get(int(user_id))
+    return user and user.email in EMAILS_VITALICIO
+
+
+@auth_bp.route('/api/admin/usuarios')
+@jwt_required()
+def admin_listar_usuarios():
+    """Lista todos os usuarios (somente admin)."""
+    user_id = get_jwt_identity()
+    if not _is_admin(user_id):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    usuarios = User.query.order_by(User.created_at.desc()).all()
+    lista = []
+    for u in usuarios:
+        lista.append({
+            "id": u.id,
+            "email": u.email,
+            "plano": u.plano,
+            "plano_nome": u.get_plano_info()["nome"],
+            "is_active": u.is_active,
+            "created_at": u.created_at.strftime("%d/%m/%Y"),
+            "plano_expira": u.plano_expira.strftime("%d/%m/%Y") if u.plano_expira else '',
+            "meses_gratis": u.meses_gratis or 0,
+            "email_verified": u.email_verified,
+        })
+    return jsonify({"usuarios": lista})
+
+
+@auth_bp.route('/api/admin/liberar-acesso', methods=['POST'])
+@jwt_required()
+def admin_liberar_acesso():
+    """Libera acesso gratuito a um email (somente admin)."""
+    user_id = get_jwt_identity()
+    if not _is_admin(user_id):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    dados = request.get_json() or {}
+    email = (dados.get('email') or '').strip().lower()
+    plano = dados.get('plano', 'empresarial')
+    meses = int(dados.get('meses', 1))
+
+    if not email:
+        return jsonify({"erro": "Email nao informado"}), 400
+    if plano not in PLANOS or plano == 'free':
+        return jsonify({"erro": "Plano invalido"}), 400
+    if meses < 1 or meses > 120:
+        return jsonify({"erro": "Meses deve ser entre 1 e 120"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"erro": f"Usuario '{email}' nao encontrado"}), 404
+
+    user.plano = plano
+    # Calcular expiracao
+    base = user.plano_expira if user.plano_expira and user.plano_expira > datetime.utcnow() else datetime.utcnow()
+    user.plano_expira = base + timedelta(days=meses * 30)
+    db.session.commit()
+
+    return jsonify({
+        "mensagem": f"Acesso {PLANOS[plano]['nome']} liberado para {email} por {meses} mes(es)",
+        "usuario": {
+            "email": user.email,
+            "plano": user.plano,
+            "plano_expira": user.plano_expira.strftime("%d/%m/%Y") if user.plano_expira else '',
+        },
+    })
+
+
+@auth_bp.route('/api/admin/revogar-acesso', methods=['POST'])
+@jwt_required()
+def admin_revogar_acesso():
+    """Revoga acesso de um usuario, voltando para Free (somente admin)."""
+    user_id = get_jwt_identity()
+    if not _is_admin(user_id):
+        return jsonify({"erro": "Acesso negado"}), 403
+
+    dados = request.get_json() or {}
+    email = (dados.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({"erro": "Email nao informado"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"erro": f"Usuario '{email}' nao encontrado"}), 404
+
+    if user.email in EMAILS_VITALICIO:
+        return jsonify({"erro": "Nao e possivel revogar acesso de um administrador"}), 400
+
+    user.plano = 'free'
+    user.plano_expira = None
+    db.session.commit()
+
+    return jsonify({"mensagem": f"Acesso de {email} revogado. Plano: Free"})
+
+
+@auth_bp.route('/api/admin/check')
+@jwt_required()
+def admin_check():
+    """Verifica se o usuario logado e admin."""
+    user_id = get_jwt_identity()
+    return jsonify({"is_admin": _is_admin(user_id)})
+
+
+# ================================================================
 # GOOGLE OAUTH
 # ================================================================
 
