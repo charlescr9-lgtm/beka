@@ -833,8 +833,9 @@ class ProcessadorEtiquetasShopee:
         margem_dir = self.MARGEM_DIREITA
         larg = self.LARGURA_PT
         fs = self.fonte_produto
-        fs_destaque = int(round(fs * 1.5))  # 50% maior para SKU e quantidade
-        line_h = fs_destaque + 2  # espacamento acomoda a fonte maior
+        fs_destaque = int(round(fs * 1.5))  # 50% maior para SKU
+        fs_qtd = int(round(fs_destaque * 1.5))  # quantidade 50% maior que destaque
+        line_h = fs_qtd + 2  # espacamento acomoda a fonte da quantidade
 
         nf = dados.get('nf', '')
         chave = dados.get('chave', '')
@@ -966,7 +967,7 @@ class ProcessadorEtiquetasShopee:
 
             pagina.insert_text(
                 (col_qtd, y), qtd,
-                fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                fontsize=fs_qtd, fontname=fonte_bold, color=preto
             )
             y += line_h
             ultimo_desenhado = i_abs + 1
@@ -1617,8 +1618,9 @@ class ProcessadorEtiquetasShopee:
         margem_esq = self.MARGEM_ESQUERDA
         margem_dir = self.MARGEM_DIREITA
         fs = self.fonte_produto
-        fs_destaque = int(round(fs * 1.5))  # 50% maior para SKU e quantidade
-        line_h = fs_destaque + 2
+        fs_destaque = int(round(fs * 1.5))  # 50% maior para SKU
+        fs_qtd = int(round(fs_destaque * 1.5))  # quantidade 50% maior que destaque
+        line_h = fs_qtd + 2
 
         # Limite inferior da pagina para nao cortar rodape
         y_limite = (alt_pagina or self.ALTURA_CPF_PT) - self.MARGEM_INFERIOR - 5
@@ -1733,7 +1735,7 @@ class ProcessadorEtiquetasShopee:
             )
             pagina.insert_text(
                 (col_qtd, y), qtd,
-                fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                fontsize=fs_qtd, fontname=fonte_bold, color=preto
             )
             y += line_h
 
@@ -2166,6 +2168,7 @@ class ProcessadorEtiquetasShopee:
 
             # Linhas de produtos
             fs_destaque = int(round(fs * 1.5))
+            fs_qtd = int(round(fs_destaque * 1.5))  # quantidade 50% maior
             for prod in produtos_shein[:5]:
                 atrib = prod.get('atributos', '')
                 modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
@@ -2187,7 +2190,7 @@ class ProcessadorEtiquetasShopee:
                 # Coluna 3: Quantidade
                 nova_pag.insert_text(
                     (col_qtd, y), qtd,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                    fontsize=fs_qtd, fontname=fonte_bold, color=preto
                 )
                 y += line_h
 

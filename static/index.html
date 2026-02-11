@@ -2354,12 +2354,13 @@ function renderConfigLucroLojas(lojas) {
     document.getElementById('configLucroLojas').style.display = 'block';
 
     // Carregar config existente
-    fetch('/api/configuracoes-lucro-lojas')
-        .then(r => r.json())
+    fetchAPI('/api/configuracoes-lucro-lojas')
         .then(data => {
-            _lucroLojasDefaults = data.defaults || {};
-            _lucroLojasOverrides = data.por_loja || {};
-            _renderTabelaConfigLojas(lojas);
+            if (data) {
+                _lucroLojasDefaults = data.defaults || {};
+                _lucroLojasOverrides = data.por_loja || {};
+                _renderTabelaConfigLojas(lojas);
+            }
         });
 }
 
