@@ -17,7 +17,7 @@ import os
 import io
 import zipfile
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 
 # python-barcode para gerar Code128
 import barcode
@@ -796,7 +796,7 @@ class ProcessadorEtiquetasShopee:
                     pag_cont.insert_text(
                         (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
                         f"p.{numero_ordem} (cont.{cont_num})",
-                        fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
+                        fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
                     )
                     cont_num += 1
             else:
@@ -806,8 +806,8 @@ class ProcessadorEtiquetasShopee:
             nova_pag.insert_text(
                 (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
                 f"p.{numero_ordem}",
-                fontsize=6,
-                fontname="helv",
+                fontsize=9,
+                fontname="hebo",
                 color=(0.4, 0.4, 0.4)
             )
 
@@ -1075,12 +1075,20 @@ class ProcessadorEtiquetasShopee:
                         'qtd': qtd,
                     })
 
-            # Acumular produtos se o mesmo order_sn aparecer em multiplas linhas
+            # Acumular apenas produtos NOVOS se o mesmo order_sn aparecer em multiplas linhas
             if order_sn in dados_pedidos:
-                dados_pedidos[order_sn]['produtos'].extend(produtos)
-                dados_pedidos[order_sn]['total_itens'] = len(dados_pedidos[order_sn]['produtos'])
+                existentes = dados_pedidos[order_sn]['produtos']
+                chaves_existentes = set()
+                for p in existentes:
+                    chaves_existentes.add((p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', '')))
+                for p in produtos:
+                    chave_p = (p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', ''))
+                    if chave_p not in chaves_existentes:
+                        existentes.append(p)
+                        chaves_existentes.add(chave_p)
+                dados_pedidos[order_sn]['total_itens'] = len(existentes)
                 dados_pedidos[order_sn]['total_qtd'] = sum(
-                    int(float(p.get('qtd', 1))) for p in dados_pedidos[order_sn]['produtos']
+                    int(float(p.get('qtd', 1))) for p in existentes
                 )
             else:
                 total_qtd = sum(int(float(p.get('qtd', 1))) for p in produtos)
@@ -1185,10 +1193,19 @@ class ProcessadorEtiquetasShopee:
                             'total_qtd': sum(int(float(p.get('qtd', 1))) for p in produtos),
                         }
                     else:
-                        self.dados_xlsx_global[order_sn]['produtos'].extend(produtos)
-                        self.dados_xlsx_global[order_sn]['total_itens'] = len(self.dados_xlsx_global[order_sn]['produtos'])
+                        # Adicionar apenas produtos que ainda nao existem (evita duplicacao)
+                        existentes = self.dados_xlsx_global[order_sn]['produtos']
+                        chaves_existentes = set()
+                        for p in existentes:
+                            chaves_existentes.add((p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', '')))
+                        for p in produtos:
+                            chave_p = (p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', ''))
+                            if chave_p not in chaves_existentes:
+                                existentes.append(p)
+                                chaves_existentes.add(chave_p)
+                        self.dados_xlsx_global[order_sn]['total_itens'] = len(existentes)
                         self.dados_xlsx_global[order_sn]['total_qtd'] = sum(
-                            int(float(p.get('qtd', 1))) for p in self.dados_xlsx_global[order_sn]['produtos'])
+                            int(float(p.get('qtd', 1))) for p in existentes)
 
                     if tracking:
                         self.dados_xlsx_tracking[tracking] = order_sn
@@ -1799,7 +1816,7 @@ class ProcessadorEtiquetasShopee:
             nova_pag.insert_text(
                 (larg - self.MARGEM_DIREITA - 15, alt - self.MARGEM_INFERIOR - 8),
                 f"p.{idx + 1}",
-                fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
+                fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
             )
 
         for doc in docs_abertos.values():
@@ -2194,7 +2211,7 @@ class ProcessadorEtiquetasShopee:
             nova_pag.insert_text(
                 (larg - margem_dir - 15, alt - margem_inf - 8),
                 f"p.{idx + 1}",
-                fontsize=6, fontname="helv", color=(0.4, 0.4, 0.4)
+                fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
             )
 
         for doc in docs_abertos.values():
