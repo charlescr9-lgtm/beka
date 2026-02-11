@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beka Market Place - Dashboard</title>
+    <title>Beka MultiPlace - Dashboard</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
     <style>
@@ -800,7 +800,7 @@
     <div class="header-left">
         <div class="logo"><img src="/static/logo.svg" alt="Beka" style="width:100%; height:100%; object-fit:contain; border-radius:inherit;"></div>
         <div class="header-title">
-            <h1>Beka Market Place</h1>
+            <h1>Beka MultiPlace</h1>
             <span>Processador de Etiquetas &amp; DANFE</span>
         </div>
     </div>
@@ -1081,7 +1081,7 @@
             </div>
             <div class="form-row">
                 <div class="form-group">
-                    <label class="form-label">Imposto Simples (%)</label>
+                    <label class="form-label">Aliquota (%)</label>
                     <input class="form-input" id="cfgImpostoSimples" type="number" min="0" max="100" step="0.5" value="4" style="width:120px;">
                 </div>
                 <div class="form-group">
@@ -2165,10 +2165,10 @@ function _renderTabelaConfigLojas(lojas) {
         const o = _lucroLojasOverrides[l.nome] || {};
         return `<tr>
             <td style="padding:6px 8px; font-size:12px; font-weight:600; white-space:nowrap;">${escapeHtml(l.nome)}</td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="perc_declarado" type="number" step="1" value="${o.perc_declarado || ''}" placeholder="${d.perc_declarado || ''}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="taxa_shopee" type="number" step="0.5" value="${o.taxa_shopee || ''}" placeholder="${d.taxa_shopee || ''}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="imposto_simples" type="number" step="0.5" value="${o.imposto_simples || ''}" placeholder="${d.imposto_simples || ''}" style="width:70px; font-size:11px;"></td>
-            <td style="padding:4px;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="custo_fixo" type="number" step="0.5" value="${o.custo_fixo || ''}" placeholder="${d.custo_fixo || ''}" style="width:70px; font-size:11px;"></td>
+            <td style="padding:4px; text-align:center;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="perc_declarado" type="number" step="1" value="${o.perc_declarado || ''}" placeholder="${d.perc_declarado || ''}" style="width:70px; font-size:11px; text-align:center;"></td>
+            <td style="padding:4px; text-align:center;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="taxa_shopee" type="number" step="0.5" value="${o.taxa_shopee || ''}" placeholder="${d.taxa_shopee || ''}" style="width:70px; font-size:11px; text-align:center;"></td>
+            <td style="padding:4px; text-align:center;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="imposto_simples" type="number" step="0.5" value="${o.imposto_simples || ''}" placeholder="${d.imposto_simples || ''}" style="width:70px; font-size:11px; text-align:center;"></td>
+            <td style="padding:4px; text-align:center;"><input class="form-input cfg-loja-input" data-loja="${escapeHtml(l.nome)}" data-campo="custo_fixo" type="number" step="0.5" value="${o.custo_fixo || ''}" placeholder="${d.custo_fixo || ''}" style="width:70px; font-size:11px; text-align:center;"></td>
         </tr>`;
     }).join('');
 
@@ -2177,7 +2177,7 @@ function _renderTabelaConfigLojas(lojas) {
         <span style="font-size:11px; font-weight:600; white-space:nowrap;"><i class="fas fa-edit"></i> Aplicar a todas:</span>
         <input class="form-input" id="massPercDeclarado" type="number" step="1" placeholder="% Decl" style="width:65px; font-size:11px;">
         <input class="form-input" id="massTaxaShopee" type="number" step="0.5" placeholder="Shopee %" style="width:65px; font-size:11px;">
-        <input class="form-input" id="massImposto" type="number" step="0.5" placeholder="Imposto %" style="width:65px; font-size:11px;">
+        <input class="form-input" id="massImposto" type="number" step="0.5" placeholder="Aliquota %" style="width:65px; font-size:11px;">
         <input class="form-input" id="massCustoFixo" type="number" step="0.5" placeholder="Custo R$" style="width:65px; font-size:11px;">
         <button class="btn btn-secondary btn-sm" onclick="aplicarMassaLucro()" style="font-size:11px; white-space:nowrap;">
             <i class="fas fa-copy"></i> Aplicar
@@ -2188,7 +2188,7 @@ function _renderTabelaConfigLojas(lojas) {
             <th style="padding:8px; text-align:left;">Loja</th>
             <th style="padding:8px; text-align:center;">% Declarado</th>
             <th style="padding:8px; text-align:center;">Taxa Shopee %</th>
-            <th style="padding:8px; text-align:center;">Imposto %</th>
+            <th style="padding:8px; text-align:center;">Aliquota %</th>
             <th style="padding:8px; text-align:center;">Custo Fixo R$</th>
         </tr></thead>
         <tbody>${rows}</tbody>
@@ -2431,12 +2431,12 @@ function mostrarAjuda(topico) {
                             <li>Coluna B = Custo unitario</li>
                         </ul>
                     </li>
-                    <li>Configure os parametros: taxa Shopee, imposto, custo fixo, etc.</li>
+                    <li>Configure os parametros: taxa Shopee, aliquota, custo fixo, etc.</li>
                     <li>Processe as etiquetas normalmente</li>
                     <li>Clique em <strong>"Resumo de Lucro"</strong></li>
                 </ol>
                 <p>O sistema calcula para cada item:</p>
-                <p><strong>Lucro = Valor Real - Imposto - Taxa Shopee - Custo Fixo - Custo Produto</strong></p>
+                <p><strong>Lucro = Valor Real - Aliquota - Taxa Shopee - Custo Fixo - Custo Produto</strong></p>
                 <div class="destaque">
                     <strong>Busca inteligente de SKU:</strong> O sistema primeiro busca o SKU exato na planilha. Se nao encontrar, busca pelo maior prefixo correspondente. Ex: se sua planilha tem "ABC" e o XML tem "ABC123", o sistema encontra o custo!
                 </div>
@@ -2451,7 +2451,7 @@ function mostrarAjuda(topico) {
                 <ul>
                     <li><strong>% Valor Declarado:</strong> Percentual do valor total declarado na NF (padrao: 100%)</li>
                     <li><strong>Taxa Shopee:</strong> Percentual cobrado pela Shopee sobre o valor real (padrao: 18%)</li>
-                    <li><strong>Imposto Simples:</strong> Percentual de imposto sobre o valor declarado (padrao: 4%)</li>
+                    <li><strong>Aliquota:</strong> Percentual de imposto sobre o valor declarado (padrao: 4%)</li>
                     <li><strong>Custo Fixo:</strong> Custo fixo por unidade vendida, ex: embalagem (padrao: R$ 3,00)</li>
                 </ul>
                 <div class="destaque">

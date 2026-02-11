@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Dashboard Interativo - Beka Market Place
+Dashboard Interativo - Beka MultiPlace
 Backend Flask com API REST + Autenticacao JWT + Multi-usuario
 """
 
@@ -1043,7 +1043,7 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
         "V. Decl.": round(v_declarado_total, 2),
         "Custo": round(c_produto_total, 2),
         "Shopee": round(c_shopee, 2),
-        "Imposto": round(c_imposto, 2),
+        "Aliquota": round(c_imposto, 2),
         "LUCRO": round(lucro, 2),
     }]
     sem_custo = [0] if not encontrou_principal else []
@@ -1466,11 +1466,16 @@ def _formatar_excel_lucro(caminho_arquivo, linhas_sem_custo):
         max_length = 0
         for cell in col_cells:
             try:
-                if len(str(cell.value)) > max_length:
-                    max_length = len(str(cell.value))
+                val = cell.value
+                if isinstance(val, (int, float)) and cell.col_idx >= 3:
+                    display_len = len(f"R$ {val:,.2f}")
+                else:
+                    display_len = len(str(val)) if val is not None else 0
+                if display_len > max_length:
+                    max_length = display_len
             except Exception:
                 pass
-        ws.column_dimensions[get_column_letter(col_cells[0].column)].width = max_length + 2
+        ws.column_dimensions[get_column_letter(col_cells[0].column)].width = max(max_length + 3, 12)
 
     wb.save(caminho_arquivo)
 
@@ -1922,7 +1927,7 @@ def _formatar_tamanho(bytes_val):
 # ----------------------------------------------------------------
 if __name__ == '__main__':
     print("=" * 60)
-    print("DASHBOARD - Beka Market Place")
+    print("DASHBOARD - Beka MultiPlace")
     print("=" * 60)
     print(f"\n  Abra no navegador: http://localhost:5000\n")
     print("=" * 60)
