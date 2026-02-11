@@ -38,6 +38,10 @@ class User(db.Model):
     email_code = db.Column(db.String(6), default='')
     email_code_expires = db.Column(db.DateTime, nullable=True)
 
+    # Recuperacao de senha
+    reset_code = db.Column(db.String(6), default='')
+    reset_code_expires = db.Column(db.DateTime, nullable=True)
+
     # Google OAuth
     google_id = db.Column(db.String(255), nullable=True, unique=True)
 

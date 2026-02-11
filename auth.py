@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 from models import db, User, Session, PLANOS
-from email_utils import smtp_configurado, enviar_codigo_verificacao
+from email_utils import smtp_configurado, enviar_codigo_verificacao, enviar_codigo_reset_senha
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -243,6 +243,74 @@ def resend_code():
     if enviado:
         return jsonify({"mensagem": "Codigo reenviado para " + user.email})
     return jsonify({"erro": "Erro ao enviar email. Tente novamente."}), 500
+
+
+# ================================================================
+# RECUPERACAO DE SENHA
+# ================================================================
+
+@auth_bp.route('/api/auth/forgot-password', methods=['POST'])
+def forgot_password():
+    """Envia codigo de recuperacao de senha por email."""
+    dados = request.get_json()
+    email = (dados.get('email') or '').strip().lower() if dados else ''
+
+    if not email or not _validar_email(email):
+        return jsonify({"erro": "Email invalido"}), 400
+
+    if not smtp_configurado():
+        return jsonify({"erro": "Servico de email nao configurado. Contate o suporte."}), 503
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        # Nao revelar se email existe ou nao (seguranca)
+        return jsonify({"mensagem": "Se o email estiver cadastrado, voce recebera um codigo de recuperacao."})
+
+    codigo = str(random.randint(100000, 999999))
+    user.reset_code = codigo
+    user.reset_code_expires = datetime.utcnow() + timedelta(minutes=15)
+    db.session.commit()
+
+    enviado = enviar_codigo_reset_senha(email, codigo)
+    if not enviado:
+        return jsonify({"erro": "Erro ao enviar email. Tente novamente."}), 500
+
+    return jsonify({"mensagem": "Se o email estiver cadastrado, voce recebera um codigo de recuperacao."})
+
+
+@auth_bp.route('/api/auth/reset-password', methods=['POST'])
+def reset_password():
+    """Valida codigo e redefine a senha."""
+    dados = request.get_json()
+    if not dados:
+        return jsonify({"erro": "Dados nao enviados"}), 400
+
+    email = (dados.get('email') or '').strip().lower()
+    codigo = (dados.get('codigo') or '').strip()
+    nova_senha = dados.get('nova_senha') or ''
+
+    if not email or not codigo or not nova_senha:
+        return jsonify({"erro": "Preencha todos os campos"}), 400
+
+    if len(nova_senha) < 6:
+        return jsonify({"erro": "Senha deve ter pelo menos 6 caracteres"}), 400
+
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        return jsonify({"erro": "Codigo invalido ou expirado"}), 400
+
+    if not user.reset_code or user.reset_code != codigo:
+        return jsonify({"erro": "Codigo invalido ou expirado"}), 400
+
+    if user.reset_code_expires and datetime.utcnow() > user.reset_code_expires:
+        return jsonify({"erro": "Codigo expirado. Solicite um novo."}), 400
+
+    user.set_password(nova_senha)
+    user.reset_code = ''
+    user.reset_code_expires = None
+    db.session.commit()
+
+    return jsonify({"mensagem": "Senha redefinida com sucesso! Faca login com a nova senha."})
 
 
 # ================================================================

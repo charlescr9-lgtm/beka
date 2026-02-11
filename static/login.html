@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Beka Market Place - Login</title>
+    <title>Beka MultiPlace - Login</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
@@ -149,7 +149,7 @@
     <div class="container">
         <div class="logo">
             <div class="logo-icon" style="background:none; box-shadow:none;"><img src="/static/logo.svg" alt="Beka" style="width:100%; height:100%; object-fit:contain;"></div>
-            <h1>Beka Market Place</h1>
+            <h1>Beka MultiPlace</h1>
             <p>Processador de Etiquetas & DANFE</p>
         </div>
 
@@ -175,6 +175,54 @@
                 <button class="btn" onclick="fazerLogin()">
                     <i class="fas fa-sign-in-alt"></i> Entrar
                 </button>
+                <p style="text-align:center; margin-top:14px;">
+                    <a href="#" onclick="trocarTab('esqueci')" style="color:#ff6b35; font-size:13px; text-decoration:none;">Esqueci minha senha</a>
+                </p>
+            </div>
+
+            <!-- ESQUECI MINHA SENHA - PEDIR CODIGO -->
+            <div id="form-esqueci" class="form-section">
+                <p style="text-align:center; margin-bottom:20px; color:#aaa; font-size:14px;">
+                    Digite seu email para receber um codigo de recuperacao.
+                </p>
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="esqueci-email" placeholder="seu@email.com">
+                </div>
+                <button class="btn" onclick="solicitarReset()">
+                    <i class="fas fa-paper-plane"></i> Enviar Codigo
+                </button>
+                <p style="text-align:center; margin-top:14px;">
+                    <a href="#" onclick="trocarTab('login')" style="color:#888; font-size:13px; text-decoration:none;"><i class="fas fa-arrow-left"></i> Voltar ao login</a>
+                </p>
+            </div>
+
+            <!-- REDEFINIR SENHA - CODIGO + NOVA SENHA -->
+            <div id="form-redefinir" class="form-section">
+                <p style="text-align:center; margin-bottom:20px; color:#aaa; font-size:14px;">
+                    Digite o codigo recebido por email e sua nova senha.
+                </p>
+                <div class="form-group">
+                    <label>Codigo de Recuperacao</label>
+                    <input type="text" id="redefinir-codigo" placeholder="000000" maxlength="6" style="text-align:center; font-size:24px; letter-spacing:8px;">
+                </div>
+                <div class="form-group">
+                    <label>Nova Senha</label>
+                    <input type="password" id="redefinir-senha" placeholder="Minimo 6 caracteres">
+                </div>
+                <div class="form-group">
+                    <label>Confirmar Nova Senha</label>
+                    <input type="password" id="redefinir-senha2" placeholder="Repita a nova senha">
+                </div>
+                <button class="btn" onclick="redefinirSenha()">
+                    <i class="fas fa-key"></i> Redefinir Senha
+                </button>
+                <button class="btn" onclick="solicitarReset()" style="background:transparent; border:1px solid #1e2540; margin-top:8px; font-size:13px;">
+                    <i class="fas fa-redo"></i> Reenviar codigo
+                </button>
+                <p style="text-align:center; margin-top:14px;">
+                    <a href="#" onclick="trocarTab('login')" style="color:#888; font-size:13px; text-decoration:none;"><i class="fas fa-arrow-left"></i> Voltar ao login</a>
+                </p>
             </div>
 
             <!-- CADASTRO -->
@@ -249,8 +297,11 @@
                 document.querySelectorAll('.tab')[1].classList.add('active');
                 document.getElementById('form-cadastro').classList.add('active');
             } else if (tab === 'verificacao') {
-                // Esconder tabs
                 document.getElementById('form-verificacao').classList.add('active');
+            } else if (tab === 'esqueci') {
+                document.getElementById('form-esqueci').classList.add('active');
+            } else if (tab === 'redefinir') {
+                document.getElementById('form-redefinir').classList.add('active');
             }
         }
 
@@ -402,6 +453,78 @@
             }
         }
 
+        // ---- RECUPERACAO DE SENHA ----
+        let _resetEmail = '';
+
+        async function solicitarReset() {
+            esconderMensagens();
+            const email = document.getElementById('esqueci-email')?.value.trim() || _resetEmail;
+
+            if (!email) {
+                mostrarErro('Digite seu email');
+                return;
+            }
+            _resetEmail = email;
+
+            try {
+                const res = await fetch(API + '/api/auth/forgot-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    mostrarErro(data.erro || 'Erro ao solicitar recuperacao');
+                    return;
+                }
+
+                trocarTab('redefinir');
+                mostrarSucesso('Se o email estiver cadastrado, voce recebera um codigo de recuperacao.');
+            } catch (e) {
+                mostrarErro('Erro de conexao');
+            }
+        }
+
+        async function redefinirSenha() {
+            esconderMensagens();
+            const codigo = document.getElementById('redefinir-codigo').value.trim();
+            const novaSenha = document.getElementById('redefinir-senha').value;
+            const novaSenha2 = document.getElementById('redefinir-senha2').value;
+
+            if (!codigo || codigo.length !== 6) {
+                mostrarErro('Digite o codigo de 6 digitos');
+                return;
+            }
+            if (!novaSenha || novaSenha.length < 6) {
+                mostrarErro('Senha deve ter pelo menos 6 caracteres');
+                return;
+            }
+            if (novaSenha !== novaSenha2) {
+                mostrarErro('As senhas nao coincidem');
+                return;
+            }
+
+            try {
+                const res = await fetch(API + '/api/auth/reset-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: _resetEmail, codigo, nova_senha: novaSenha }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    mostrarErro(data.erro || 'Erro ao redefinir senha');
+                    return;
+                }
+
+                mostrarSucesso(data.mensagem || 'Senha redefinida com sucesso!');
+                setTimeout(() => { trocarTab('login'); }, 2000);
+            } catch (e) {
+                mostrarErro('Erro de conexao');
+            }
+        }
+
         // Google OAuth callback
         async function handleGoogleLogin(response) {
             esconderMensagens();
@@ -462,6 +585,12 @@
         });
         document.getElementById('verificacao-codigo').addEventListener('keypress', e => {
             if (e.key === 'Enter') verificarEmail();
+        });
+        document.getElementById('esqueci-email').addEventListener('keypress', e => {
+            if (e.key === 'Enter') solicitarReset();
+        });
+        document.getElementById('redefinir-senha2').addEventListener('keypress', e => {
+            if (e.key === 'Enter') redefinirSenha();
         });
     </script>
 </body>
