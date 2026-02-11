@@ -1106,9 +1106,12 @@
 
             <!-- Config por loja -->
             <div id="configLucroLojas" style="margin-top:20px; display:none;">
-                <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary);">
-                    <i class="fas fa-store"></i> Configuracao Individual por Loja
-                    <span style="font-size:11px; font-weight:400; color:var(--text-muted); margin-left:8px;">Deixe vazio para usar o padrao global</span>
+                <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary); display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <span><i class="fas fa-store"></i> Configuracao Individual por Loja</span>
+                    <span style="font-size:11px; font-weight:400; color:var(--text-muted);">Deixe vazio para usar o padrao global</span>
+                    <button class="btn btn-secondary btn-sm" onclick="atualizarLojasLucro()" id="btnAtualizarLojasLucro" style="font-size:11px; margin-left:auto;">
+                        <i class="fas fa-sync-alt"></i> Atualizar Lojas
+                    </button>
                 </div>
                 <div id="tabelaConfigLojas" style="overflow-x:auto;"></div>
                 <button class="btn btn-primary btn-sm" onclick="salvarConfigLucroLojas()" style="margin-top:12px;">
@@ -1244,6 +1247,22 @@ async function carregarLojasLucro() {
     const data = await fetchAPI('/api/lojas-lucro');
     if (data && data.lojas && data.lojas.length > 0) {
         renderConfigLucroLojas(data.lojas);
+    }
+}
+
+async function atualizarLojasLucro() {
+    const btn = document.getElementById('btnAtualizarLojasLucro');
+    const iconEl = btn.querySelector('i');
+    btn.disabled = true;
+    iconEl.classList.add('fa-spin');
+    try {
+        await carregarLojasLucro();
+        toast('Lojas atualizadas!', 'success');
+    } catch(e) {
+        toast('Erro ao atualizar lojas: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        iconEl.classList.remove('fa-spin');
     }
 }
 
@@ -2250,7 +2269,7 @@ async function gerarLucro() {
         } else {
             toast(`Lucro gerado! Total: R$ ${data.lucro_total.toFixed(2)}`, 'success');
             renderResumoLucro(data);
-            baixarArquivo('/api/download-lucro', 'lucro_consolidado.xlsx');
+            baixarArquivo('/api/download-lucro', 'Relatorio_Lucro.zip');
         }
     } catch (e) {
         toast('Erro ao gerar lucro: ' + e.message, 'error');
@@ -2329,8 +2348,8 @@ function renderResumoLucro(data) {
     <div class="card">
         <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
             <span class="card-title"><i class="fas fa-calculator"></i> Resumo de Lucro</span>
-            <button class="btn btn-primary btn-sm" onclick="baixarArquivo('/api/download-lucro', 'lucro_consolidado.xlsx')">
-                <i class="fas fa-download"></i> Baixar XLSX Consolidado
+            <button class="btn btn-primary btn-sm" onclick="baixarArquivo('/api/download-lucro', 'Relatorio_Lucro.zip')">
+                <i class="fas fa-download"></i> Baixar ZIP (todas as lojas)
             </button>
         </div>
         <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:16px; margin-top:12px;">

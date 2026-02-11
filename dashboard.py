@@ -1362,6 +1362,9 @@ def api_gerar_lucro():
 @app.route('/api/download-lucro')
 @jwt_required()
 def api_download_lucro():
+    """Gera ZIP com XLSX de lucro separado por loja + consolidado na raiz."""
+    import zipfile as zf_mod
+    import io as io_mod
     user_id = get_jwt_identity()
     estado = _get_estado(user_id)
     if not estado:
@@ -1369,11 +1372,34 @@ def api_download_lucro():
     lucro = estado.get("ultimo_lucro")
     if not lucro:
         return jsonify({"erro": "Nenhum relatorio de lucro disponivel"}), 404
-    pasta = estado["configuracoes"]["pasta_saida"]
-    caminho = os.path.join(pasta, lucro["arquivo"])
-    if os.path.exists(caminho):
-        return send_file(caminho, as_attachment=True)
-    return jsonify({"erro": "Arquivo nao encontrado"}), 404
+
+    pasta_saida = estado["configuracoes"]["pasta_saida"]
+    lojas = lucro.get("lojas", [])
+
+    buf = io_mod.BytesIO()
+    arquivos_adicionados = 0
+    with zf_mod.ZipFile(buf, 'w', zf_mod.ZIP_DEFLATED) as zf:
+        # Consolidado na raiz
+        caminho_consolidado = os.path.join(pasta_saida, lucro["arquivo"])
+        if os.path.exists(caminho_consolidado):
+            zf.write(caminho_consolidado, lucro["arquivo"])
+            arquivos_adicionados += 1
+
+        # XLSX separado por loja em pastas
+        for loja_info in lojas:
+            nome_loja = loja_info.get("nome", "")
+            arquivo_loja = loja_info.get("arquivo", "")
+            if nome_loja and arquivo_loja:
+                caminho_loja = os.path.join(pasta_saida, nome_loja, arquivo_loja)
+                if os.path.exists(caminho_loja):
+                    zf.write(caminho_loja, os.path.join(nome_loja, arquivo_loja))
+                    arquivos_adicionados += 1
+
+    if arquivos_adicionados == 0:
+        return jsonify({"erro": "Nenhum arquivo de lucro encontrado"}), 404
+
+    buf.seek(0)
+    return send_file(buf, as_attachment=True, download_name="Relatorio_Lucro.zip", mimetype="application/zip")
 
 
 @app.route('/api/download-lucro/<loja>')
