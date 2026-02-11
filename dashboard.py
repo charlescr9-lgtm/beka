@@ -76,6 +76,10 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN email_code_expires DATETIME'))
             if 'google_id' not in colunas:
                 conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN google_id VARCHAR(255)'))
+            if 'reset_code' not in colunas:
+                conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN reset_code VARCHAR(6) DEFAULT ''"))
+            if 'reset_code_expires' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN reset_code_expires DATETIME'))
 
 # Criar tabelas
 with app.app_context():
