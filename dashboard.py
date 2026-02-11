@@ -1033,8 +1033,9 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
 
     v_real = v_declarado_total / perc_declarado if perc_declarado > 0 else v_declarado_total
     c_imposto = v_declarado_total * taxa_imposto
-    c_shopee = (v_real * taxa_shopee) + (custo_fixo * qtd_total)
-    lucro = v_real - c_imposto - c_shopee - c_produto_total
+    c_shopee = v_real * taxa_shopee
+    c_fixo_total = custo_fixo * qtd_total
+    lucro = v_real - c_imposto - c_shopee - c_fixo_total - c_produto_total
 
     itens = [{
         "SKU": sku_principal,
@@ -1043,7 +1044,8 @@ def _processar_nfe_lucro(nfe, dict_custos, cfg, cfg_por_loja, chaves_ordenadas=N
         "V. Decl.": round(v_declarado_total, 2),
         "Custo": round(c_produto_total, 2),
         "Shopee": round(c_shopee, 2),
-        "Aliquota": round(c_imposto, 2),
+        "Imposto": round(c_imposto, 2),
+        "Custo Fixo": round(c_fixo_total, 2),
         "LUCRO": round(lucro, 2),
     }]
     sem_custo = [0] if not encontrou_principal else []
