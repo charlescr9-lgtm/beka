@@ -17,7 +17,7 @@ payments_bp = Blueprint('payments', __name__)
 PERIODOS = {
     "mensal":    {"meses": 1,  "desconto": 0,    "label": "Mensal"},
     "semestral": {"meses": 6,  "desconto": 0.20, "label": "Semestral (-20%)"},
-    "anual":     {"meses": 12, "desconto": 0.40, "label": "Anual (-40%)"},
+    "anual":     {"meses": 12, "desconto": 0.30, "label": "Anual (-30%)"},
 }
 
 
