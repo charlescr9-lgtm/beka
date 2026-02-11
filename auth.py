@@ -334,14 +334,24 @@ def admin_listar_usuarios():
     usuarios = User.query.order_by(User.created_at.desc()).all()
     lista = []
     for u in usuarios:
+        vitalicio = u.email in EMAILS_VITALICIO
+        if vitalicio:
+            expira_str = "Vitalicio"
+        elif u.plano_expira:
+            expira_str = u.plano_expira.strftime("%d/%m/%Y")
+        elif u.plano != 'free':
+            expira_str = "Sem expiracao"
+        else:
+            expira_str = ""
         lista.append({
             "id": u.id,
             "email": u.email,
             "plano": u.plano,
             "plano_nome": u.get_plano_info()["nome"],
             "is_active": u.is_active,
+            "vitalicio": vitalicio,
             "created_at": u.created_at.strftime("%d/%m/%Y"),
-            "plano_expira": u.plano_expira.strftime("%d/%m/%Y") if u.plano_expira else '',
+            "plano_expira": expira_str,
             "meses_gratis": u.meses_gratis or 0,
             "email_verified": u.email_verified,
         })

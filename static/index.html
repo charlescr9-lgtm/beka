@@ -2768,10 +2768,18 @@ async function adminCarregarUsuarios() {
 
     for (const u of usuarios) {
         const planoCor = u.plano === 'free' ? '#a78bfa' : '#22c55e';
+        let expiraHtml = '-';
+        if (u.plano_expira === 'Vitalicio') {
+            expiraHtml = '<span style="color:#f59e0b; font-weight:600;">&#9733; Vitalicio</span>';
+        } else if (u.plano_expira === 'Sem expiracao') {
+            expiraHtml = '<span style="color:#22c55e;">Ativo</span>';
+        } else if (u.plano_expira) {
+            expiraHtml = u.plano_expira;
+        }
         html += `<tr style="border-bottom:1px solid var(--border);">
-            <td style="padding:6px 8px; font-size:12px;">${u.email}</td>
+            <td style="padding:6px 8px; font-size:12px;">${u.email}${u.vitalicio ? ' <i class="fas fa-crown" style="color:#f59e0b; font-size:10px;" title="Admin"></i>' : ''}</td>
             <td style="padding:6px; text-align:center;"><span style="padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; background:${u.plano === 'free' ? '#2d1b4e' : '#1b2d1b'}; color:${planoCor};">${u.plano_nome}</span></td>
-            <td style="padding:6px; text-align:center; font-size:11px; color:var(--text-muted);">${u.plano_expira || '-'}</td>
+            <td style="padding:6px; text-align:center; font-size:11px;">${expiraHtml}</td>
             <td style="padding:6px; text-align:center; font-size:11px; color:var(--accent);">${u.meses_gratis > 0 ? u.meses_gratis + ' mes(es)' : '-'}</td>
             <td style="padding:6px; text-align:center; font-size:11px; color:var(--text-muted);">${u.created_at}</td>
             <td style="padding:6px; text-align:center;">
