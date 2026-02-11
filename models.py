@@ -42,6 +42,12 @@ class User(db.Model):
     reset_code = db.Column(db.String(6), default='')
     reset_code_expires = db.Column(db.DateTime, nullable=True)
 
+    # Sistema de indicacao
+    cupom_indicacao = db.Column(db.String(20), unique=True, nullable=True)
+    indicado_por = db.Column(db.Integer, nullable=True)  # user_id de quem indicou
+    meses_gratis = db.Column(db.Integer, default=0)  # meses gratis acumulados
+    plano_expira = db.Column(db.DateTime, nullable=True)  # quando plano pago expira
+
     # Google OAuth
     google_id = db.Column(db.String(255), nullable=True, unique=True)
 
@@ -156,6 +162,9 @@ class User(db.Model):
             "max_dispositivos": info["max_ips"],
             "created_at": self.created_at.strftime("%d/%m/%Y"),
             "email_verified": self.email_verified,
+            "cupom_indicacao": self.cupom_indicacao or '',
+            "meses_gratis": self.meses_gratis or 0,
+            "plano_expira": self.plano_expira.strftime("%d/%m/%Y") if self.plano_expira else '',
         }
 
 

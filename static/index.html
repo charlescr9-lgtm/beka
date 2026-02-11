@@ -1158,16 +1158,42 @@ async function sair() {
     window.location.href = '/login';
 }
 
+let _planoSelecionado = '';
+let _periodoSelecionado = 'mensal';
+let _cupomDigitado = '';
+let _planosData = [];
+
 async function assinarPremium() {
-    // Buscar planos disponiveis e mostrar modal
     const res = await fetchAPI('/api/planos');
-    if (!res || !res.planos) {
-        toast('Erro ao carregar planos', 'error');
-        return;
+    if (!res || !res.planos) { toast('Erro ao carregar planos', 'error'); return; }
+    _planosData = res.planos;
+    _planoSelecionado = '';
+    _periodoSelecionado = 'mensal';
+    _cupomDigitado = '';
+
+    let modal = document.getElementById('modalPlanos');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalPlanos';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999; overflow-y:auto; padding:20px;';
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+        document.body.appendChild(modal);
     }
-    let html = '<div style="text-align:center; margin-bottom:16px;"><h3 style="margin-bottom:4px;">Escolha seu plano</h3><span style="color:var(--text-secondary); font-size:13px;">Processamentos ilimitados em todos os planos pagos</span></div>';
-    for (const p of res.planos) {
-        html += `<div onclick="contratarPlano('${p.id}')" style="cursor:pointer; padding:16px; margin-bottom:10px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); display:flex; justify-content:space-between; align-items:center; transition:all 0.2s;" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+    _renderModalPlanos(modal);
+}
+
+function _renderModalPlanos(modal) {
+    const planos = _planosData;
+    let html = `<div style="background:var(--bg-card); border-radius:var(--radius); padding:24px; width:440px; max-width:95vw;">
+    <div style="text-align:center; margin-bottom:16px;">
+        <h3 style="margin-bottom:4px;">Escolha seu plano</h3>
+        <span style="color:var(--text-secondary); font-size:13px;">Processamentos ilimitados em todos os planos pagos</span>
+    </div>`;
+
+    // Planos
+    for (const p of planos) {
+        const sel = _planoSelecionado === p.id;
+        html += `<div onclick="_selecionarPlano('${p.id}')" style="cursor:pointer; padding:14px 16px; margin-bottom:8px; background:${sel ? 'rgba(139,92,246,0.15)' : 'var(--bg-input)'}; border:2px solid ${sel ? '#8b5cf6' : 'var(--border)'}; border-radius:var(--radius-sm); display:flex; justify-content:space-between; align-items:center; transition:all 0.2s;">
             <div>
                 <div style="font-weight:600; font-size:15px;">${p.nome}</div>
                 <div style="font-size:12px; color:var(--text-secondary);">Ate ${p.max_ips} dispositivo(s)</div>
@@ -1175,33 +1201,152 @@ async function assinarPremium() {
             <div style="font-size:18px; font-weight:700; color:var(--accent);">R$ ${p.valor.toFixed(2)}<span style="font-size:11px; color:var(--text-muted);">/mes</span></div>
         </div>`;
     }
-    // Criar modal simples
-    let modal = document.getElementById('modalPlanos');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'modalPlanos';
-        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:9999;';
-        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-        document.body.appendChild(modal);
+
+    // Periodo (aparece apos selecionar plano)
+    if (_planoSelecionado) {
+        const plano = planos.find(p => p.id === _planoSelecionado);
+        const vm = plano ? plano.valor : 0;
+        html += `<div style="margin-top:16px; padding:14px; background:var(--bg-input); border-radius:var(--radius-sm); border:1px solid var(--border);">
+            <div style="font-weight:600; font-size:13px; margin-bottom:10px;"><i class="fas fa-calendar-alt"></i> Periodo de assinatura</div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">`;
+        const periodos = [
+            {id: 'mensal',    label: 'Mensal',    desc: '', meses: 1, desconto: 0},
+            {id: 'semestral', label: 'Semestral',  desc: '-20%', meses: 6, desconto: 0.20},
+            {id: 'anual',     label: 'Anual',      desc: '-40%', meses: 12, desconto: 0.40},
+        ];
+        for (const per of periodos) {
+            const sel = _periodoSelecionado === per.id;
+            const totalOrig = vm * per.meses;
+            const totalDesc = Math.round(totalOrig * (1 - per.desconto) * 100) / 100;
+            const mensal = per.meses > 0 ? (totalDesc / per.meses).toFixed(2) : vm.toFixed(2);
+            html += `<div onclick="_selecionarPeriodo('${per.id}')" style="cursor:pointer; flex:1; min-width:110px; padding:10px 8px; text-align:center; background:${sel ? 'rgba(139,92,246,0.15)' : 'var(--bg-card)'}; border:2px solid ${sel ? '#8b5cf6' : 'var(--border)'}; border-radius:8px; transition:all 0.2s;">
+                <div style="font-weight:600; font-size:13px;">${per.label}</div>
+                ${per.desc ? `<div style="font-size:11px; color:#22c55e; font-weight:600;">${per.desc}</div>` : ''}
+                <div style="font-size:15px; font-weight:700; color:var(--accent); margin-top:4px;">R$ ${totalDesc.toFixed(2)}</div>
+                ${per.meses > 1 ? `<div style="font-size:10px; color:var(--text-muted);">R$ ${mensal}/mes</div>` : ''}
+            </div>`;
+        }
+        html += `</div></div>`;
+
+        // Campo de cupom
+        html += `<div style="margin-top:12px; padding:12px 14px; background:var(--bg-input); border-radius:var(--radius-sm); border:1px solid var(--border);">
+            <div style="font-weight:600; font-size:13px; margin-bottom:8px;"><i class="fas fa-gift"></i> Cupom de indicacao <span style="font-size:11px; font-weight:400; color:var(--text-muted);">(opcional)</span></div>
+            <div style="display:flex; gap:8px; align-items:center;">
+                <input class="form-input" id="inputCupomPlano" type="text" placeholder="Digite o cupom" value="${_cupomDigitado}" style="flex:1; font-size:13px; text-transform:uppercase;" oninput="_cupomDigitado=this.value.toUpperCase()">
+                <button class="btn btn-secondary btn-sm" onclick="_validarCupomPlano()" style="font-size:11px; white-space:nowrap;">Validar</button>
+            </div>
+            <div id="cupomFeedback" style="font-size:11px; margin-top:6px;"></div>
+        </div>`;
+
+        // Botao contratar
+        const selPer = periodos.find(p => p.id === _periodoSelecionado);
+        const totalFinal = Math.round(vm * selPer.meses * (1 - selPer.desconto) * 100) / 100;
+        html += `<button onclick="contratarPlano()" class="btn" style="width:100%; margin-top:16px; background:linear-gradient(135deg,#8b5cf6,#6d28d9); color:#fff; font-size:15px; padding:14px;">
+            <i class="fas fa-credit-card"></i> Pagar R$ ${totalFinal.toFixed(2)}
+        </button>`;
     }
-    modal.innerHTML = `<div style="background:var(--bg-card); border-radius:var(--radius); padding:24px; width:380px; max-width:90vw;">${html}<div style="text-align:center; margin-top:8px;"><button onclick="document.getElementById('modalPlanos').remove()" class="btn btn-secondary btn-sm">Cancelar</button></div></div>`;
+
+    html += `<div style="text-align:center; margin-top:12px;">
+        <button onclick="document.getElementById('modalPlanos').remove()" class="btn btn-secondary btn-sm">Cancelar</button>
+        <button onclick="_abrirIndicacao()" class="btn btn-secondary btn-sm" style="margin-left:6px;"><i class="fas fa-share-alt"></i> Meu cupom</button>
+    </div></div>`;
+
+    modal.innerHTML = html;
 }
 
-async function contratarPlano(planoId) {
+function _selecionarPlano(id) {
+    _planoSelecionado = id;
+    const modal = document.getElementById('modalPlanos');
+    if (modal) _renderModalPlanos(modal);
+}
+
+function _selecionarPeriodo(id) {
+    _periodoSelecionado = id;
+    const modal = document.getElementById('modalPlanos');
+    if (modal) _renderModalPlanos(modal);
+}
+
+async function _validarCupomPlano() {
+    const cupom = (document.getElementById('inputCupomPlano')?.value || '').trim().toUpperCase();
+    _cupomDigitado = cupom;
+    const fb = document.getElementById('cupomFeedback');
+    if (!cupom) { fb.innerHTML = ''; return; }
+
+    const res = await fetchAPI('/api/indicacao/validar-cupom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cupom }),
+    });
+    if (res && res.valido) {
+        fb.innerHTML = `<span style="color:#22c55e;"><i class="fas fa-check-circle"></i> ${res.mensagem}</span>`;
+    } else {
+        fb.innerHTML = `<span style="color:#ef4444;"><i class="fas fa-times-circle"></i> ${res?.erro || 'Cupom invalido'}</span>`;
+    }
+}
+
+async function contratarPlano() {
+    if (!_planoSelecionado) { toast('Selecione um plano', 'warning'); return; }
     const modal = document.getElementById('modalPlanos');
     if (modal) modal.remove();
 
     toast('Redirecionando para pagamento...', 'info');
+    const body = { plano: _planoSelecionado, periodo: _periodoSelecionado };
+    if (_cupomDigitado) body.cupom = _cupomDigitado;
+
     const res = await fetchAPI('/api/payment/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plano: planoId }),
+        body: JSON.stringify(body),
     });
     if (res && res.url) {
         window.open(res.url, '_blank');
     } else {
         toast(res?.erro || 'Erro ao criar pagamento', 'error');
     }
+}
+
+async function _abrirIndicacao() {
+    const res = await fetchAPI('/api/indicacao/meu-cupom');
+    if (!res) { toast('Erro ao carregar cupom', 'error'); return; }
+
+    let modal = document.getElementById('modalIndicacao');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'modalIndicacao';
+        modal.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:10000; padding:20px;';
+        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+        document.body.appendChild(modal);
+    }
+    modal.innerHTML = `<div style="background:var(--bg-card); border-radius:var(--radius); padding:28px; width:380px; max-width:95vw; text-align:center;">
+        <h3 style="margin-bottom:4px;"><i class="fas fa-gift"></i> Indique e Ganhe</h3>
+        <p style="color:var(--text-secondary); font-size:13px; margin-bottom:20px;">Compartilhe seu cupom e ganhe 1 mes gratis por cada indicacao!</p>
+
+        <div style="background:var(--bg-input); border:2px dashed var(--accent); border-radius:12px; padding:16px; margin-bottom:16px;">
+            <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">Seu cupom:</div>
+            <div style="font-size:28px; font-weight:700; color:var(--accent); letter-spacing:3px;">${res.cupom}</div>
+        </div>
+
+        <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${res.cupom}'); toast('Cupom copiado!', 'success');" style="margin-bottom:16px;">
+            <i class="fas fa-copy"></i> Copiar Cupom
+        </button>
+
+        <div style="display:flex; gap:16px; justify-content:center; margin-bottom:16px;">
+            <div style="text-align:center;">
+                <div style="font-size:24px; font-weight:700; color:#22c55e;">${res.total_indicados}</div>
+                <div style="font-size:11px; color:var(--text-muted);">Indicados</div>
+            </div>
+            <div style="text-align:center;">
+                <div style="font-size:24px; font-weight:700; color:var(--accent);">${res.meses_gratis}</div>
+                <div style="font-size:11px; color:var(--text-muted);">Meses gratis</div>
+            </div>
+        </div>
+
+        <div style="font-size:11px; color:var(--text-muted); margin-bottom:12px;">
+            <i class="fas fa-info-circle"></i> Voce ganha 1 mes gratis a cada amigo que assinar usando seu cupom. Seu amigo tambem ganha 1 mes gratis!
+        </div>
+
+        <button onclick="document.getElementById('modalIndicacao').remove()" class="btn btn-secondary btn-sm">Fechar</button>
+    </div>`;
 }
 
 function atualizarInfoUsuario(user) {
@@ -1211,10 +1356,11 @@ function atualizarInfoUsuario(user) {
     badge.style.display = 'inline-block';
 
     if (user.plano !== 'free') {
-        badge.textContent = `${user.plano_nome} (${user.dispositivos}/${user.max_dispositivos} IPs)`;
+        let txt = `${user.plano_nome} (${user.dispositivos}/${user.max_dispositivos} IPs)`;
+        if (user.plano_expira) txt += ` ate ${user.plano_expira}`;
+        badge.textContent = txt;
         badge.style.background = '#1b2d1b';
         badge.style.color = '#22c55e';
-        btnAssinar.textContent = ' Upgrade';
         btnAssinar.innerHTML = '<i class="fas fa-crown"></i> Upgrade';
         btnAssinar.style.display = 'inline-flex';
     } else {

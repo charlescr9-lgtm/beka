@@ -80,6 +80,14 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN reset_code VARCHAR(6) DEFAULT ''"))
             if 'reset_code_expires' not in colunas:
                 conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN reset_code_expires DATETIME'))
+            if 'cupom_indicacao' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN cupom_indicacao VARCHAR(20)'))
+            if 'indicado_por' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN indicado_por INTEGER'))
+            if 'meses_gratis' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN meses_gratis INTEGER DEFAULT 0'))
+            if 'plano_expira' not in colunas:
+                conn.execute(sqlalchemy.text('ALTER TABLE users ADD COLUMN plano_expira DATETIME'))
 
 # Criar tabelas
 with app.app_context():
