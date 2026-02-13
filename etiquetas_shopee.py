@@ -29,9 +29,12 @@ from barcode.writer import SVGWriter
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
-# Marketplace drivers
-from marketplaces.registry_bootstrap import bootstrap_drivers
-from marketplaces.registry import detect_best, get_driver_by_kind
+# Marketplace drivers (mantidos para uso futuro, não usados no fluxo principal)
+try:
+    from marketplaces.registry_bootstrap import bootstrap_drivers
+    from marketplaces.registry import detect_best, get_driver_by_kind
+except ImportError:
+    pass
 
 
 class ProcessadorEtiquetasShopee:
@@ -560,16 +563,8 @@ class ProcessadorEtiquetasShopee:
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
 
-            # --- Central do Vendedor: NÃO PULAR! processar aqui mesmo ---
-            if self._is_pdf_central_vendedor(caminho):
-                extra_cv = self._processar_pdf_central_vendedor_um(caminho)
-                if extra_cv:
-                    todas_etiquetas.extend(extra_cv)
-                else:
-                    self._push_intercalacao_warning(f"[CENTRAL] Detectado mas extraiu 0 etiquetas: {os.path.basename(caminho)}")
-                continue
-
-            # Fluxo normal (parser existente)
+            # Fluxo normal (parser existente) — TODOS os PDFs passam por aqui
+            # incluindo Central do Vendedor (recorte em quadrantes + intercalação XLSX)
             etqs = self._carregar_pdf(caminho)
             for etq in etqs:
                 # Tentar injetar produtos de retirada no fluxo normal também
