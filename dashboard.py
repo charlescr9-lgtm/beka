@@ -9,6 +9,7 @@ import sys
 import json
 import time
 import threading
+import uuid
 import re as _re
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -25,6 +26,7 @@ from etiquetas_shopee import ProcessadorEtiquetasShopee
 from models import db, bcrypt, User, Session
 from auth import auth_bp
 from payments import payments_bp
+from pdf_normalizer import normalize_pdf_to_labels
 
 # PyInstaller frozen path support
 if getattr(sys, 'frozen', False):
@@ -1632,6 +1634,48 @@ def _executar_processamento(user_id):
             os.makedirs(pasta_saida, exist_ok=True)
 
             adicionar_log(estado, "Iniciando processamento...", "info")
+
+            # Normalizar PDFs DANFE (Shopee Central do Vendedor) antes do pipeline
+            _PDFS_ESPECIAIS = ("lanim.pdf", "shein crua.pdf", "shein.pdf")
+            for f in os.listdir(pasta_entrada):
+                if f.startswith("_"):
+                    continue
+                if not f.lower().endswith(".pdf"):
+                    continue
+                if f.startswith("etiquetas_prontas"):
+                    continue
+                if f.lower().startswith("lanim"):
+                    continue
+                if f.lower() in _PDFS_ESPECIAIS:
+                    continue
+
+                in_path = os.path.join(pasta_entrada, f)
+                tmp_path = os.path.join(pasta_entrada, f"_norm_{uuid.uuid4().hex}_{f}")
+
+                try:
+                    info = normalize_pdf_to_labels(
+                        input_pdf_path=in_path,
+                        output_pdf_path=tmp_path,
+                        target_w_mm=estado["configuracoes"].get("largura_mm", 150),
+                        target_h_mm=estado["configuracoes"].get("altura_mm", 230),
+                        padding_mm=3.0,
+                        only_when_matches_danfe=True,
+                    )
+
+                    if info.get("matched"):
+                        os.replace(tmp_path, in_path)
+                        adicionar_log(estado, f"PDF normalizado (DANFE): {f}", "success")
+                    else:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+
+                except Exception as e:
+                    try:
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+                    except Exception:
+                        pass
+                    adicionar_log(estado, f"Aviso: nao normalizou {f}: {e}", "warning")
 
             proc = ProcessadorEtiquetasShopee()
 
