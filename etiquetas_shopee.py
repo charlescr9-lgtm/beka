@@ -319,173 +319,119 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # CENTRAL DO VENDEDOR (Shopee - DANFE + DECLARAÇÃO)
     # ----------------------------------------------------------------
-    DANFE_ETIQUETA_MARKER = "DANFE SIMPLIFICADO - ETIQUETA"
-    DECLARACAO_MARKER = "DECLARAÇÃO DE CONTEÚDO"
-    DECLARACAO_MARKER_ALT = "DECLARACAO DE CONTEUDO"  # sem acento
-    BR_TRACKING_RE = re.compile(r'BR\d{10,}[A-Z]?')
-
-    def _extrair_br_tracking(self, texto):
-        """Extrai codigo de rastreio BR do texto. Retorna o primeiro encontrado ou None."""
-        m = self.BR_TRACKING_RE.search(texto)
-        return m.group(0) if m else None
-
-    def _eh_pagina_danfe_central_vendedor(self, texto):
-        """Verifica se a pagina e DANFE SIMPLIFICADO - ETIQUETA (Central do Vendedor)."""
-        return self.DANFE_ETIQUETA_MARKER in texto.upper()
-
-    def _eh_pagina_declaracao(self, texto):
-        """Verifica se a pagina e DECLARAÇÃO DE CONTEÚDO."""
-        t = texto.upper()
-        return self.DECLARACAO_MARKER.upper() in t or self.DECLARACAO_MARKER_ALT.upper() in t
-
-    def _parse_produtos_declaracao(self, texto):
-        """Extrai lista de produtos da tabela DECLARAÇÃO DE CONTEÚDO.
-        Formato: Nº CÓDIGO (SKU) DESCRIÇÃO DO PRODUTO VARIAÇÃO QTD VALOR
-        Exemplo: "1 H CHINELO RASTEIRINHA FEMININO COM BRILHO - FESTA Preto Brilhante,37/8 1 34.75"
-        Retorna lista de dict: {codigo, descricao, variacao, qtd}
+    def processar_central_vendedor(self, pasta_entrada: str):
         """
-        produtos = []
-        linhas = [l.strip() for l in texto.split('\n') if l.strip()]
-
-        # Encontrar início da tabela (após o cabeçalho)
-        header_patterns = ('Nº', 'CÓDIGO', 'SKU', 'DESCRIÇÃO', 'VARIAÇÃO', 'QTD', 'VALOR')
-        start_idx = 0
-        for i, linha in enumerate(linhas):
-            if any(p in linha.upper() for p in header_patterns) and 'QTD' in linha.upper():
-                start_idx = i + 1
-                break
-
-        for linha in linhas[start_idx:]:
-            if not linha or len(linha) < 5:
-                continue
-            parts = linha.split()
-            if len(parts) < 4:
-                continue
-            try:
-                valor = float(parts[-1].replace(',', '.'))
-                qtd = int(float(parts[-2].replace(',', '.')))
-            except (ValueError, IndexError):
-                continue
-
-            # parts[0]=num, parts[1]=sku, parts[2:-2]=descricao+variacao
-            sku = parts[1] if len(parts) > 2 else ''
-            resto = parts[2:-2]
-            if not resto:
-                produtos.append({'codigo': sku, 'descricao': '', 'variacao': '', 'qtd': str(qtd)})
-                continue
-
-            # Último token do resto costuma ser variacao (cor/tamanho com 37/8, etc)
-            variacao = resto[-1] if resto else ''
-            descricao = ' '.join(resto[:-1]) if len(resto) > 1 else (resto[0] if resto else '')
-
-            produtos.append({
-                'codigo': sku,
-                'descricao': descricao,
-                'variacao': variacao,
-                'qtd': str(qtd),
-            })
-
-        return produtos
-
-    def _coletar_paginas_central_vendedor(self, pasta):
-        """Varre todos os PDFs da pasta e coleta paginas DANFE e DECLARAÇÃO.
-        Retorna (danfes, declaracoes):
-          danfes: [(caminho, pagina_idx, clip, texto, br), ...]
-          declaracoes: [(caminho, pagina_idx, texto, br, produtos), ...]
+        Processa PDFs do tipo 'Central do Vendedor'
+        e gera etiquetas no MESMO formato das Shopee normais,
+        garantindo rodapé idêntico (CÓDIGO | PROD | Q.).
         """
-        especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
-        pdfs = [f for f in os.listdir(pasta)
-                if f.lower().endswith('.pdf')
-                and not f.startswith('etiquetas_prontas')
-                and not f.lower().startswith('lanim')
-                and f.lower() not in especiais_lower]
-
-        danfes = []
-        declaracoes = []
-
-        for pdf_name in pdfs:
-            caminho = os.path.join(pasta, pdf_name)
-            if self._eh_pdf_shein(caminho):
-                continue
-            try:
-                doc = fitz.open(caminho)
-                for num_pag in range(len(doc)):
-                    pagina = doc[num_pag]
-                    texto = pagina.get_text()
-                    rect = pagina.rect
-                    clip = fitz.Rect(0, 0, rect.width, rect.height)
-
-                    if self._eh_pagina_danfe_central_vendedor(texto):
-                        br = self._extrair_br_tracking(texto)
-                        if br:
-                            danfes.append((caminho, num_pag, clip, texto, br))
-                    elif self._eh_pagina_declaracao(texto):
-                        br = self._extrair_br_tracking(texto)
-                        produtos = self._parse_produtos_declaracao(texto)
-                        declaracoes.append((caminho, num_pag, texto, br, produtos))
-                doc.close()
-            except Exception as e:
-                print(f"  Aviso: erro ao ler {pdf_name}: {e}")
-
-        return danfes, declaracoes
-
-    def processar_central_vendedor(self, pasta):
-        """Processa PDFs Central do Vendedor (DANFE + DECLARAÇÃO).
-        Casar etiqueta <-> declaração pelo rastreio BR.
-        Retorna lista de etiquetas no formato do pipeline (gerar_pdf_loja).
-        Suporta: A) PDF único 2 páginas; B) PDFs separados no mesmo lote.
-        """
-        danfes, declaracoes = self._coletar_paginas_central_vendedor(pasta)
-        if not danfes:
-            return []
-
-        # Mapear BR -> produtos (declaração)
-        br_to_produtos = {}
-        for _, _, _, br, produtos in declaracoes:
-            if br and produtos:
-                br_to_produtos[br] = produtos
-
+        from collections import defaultdict
         etiquetas = []
-        for caminho, pagina_idx, clip, texto, br in danfes:
-            produtos = br_to_produtos.get(br, [])
-            total_qtd = sum(int(float(p.get('qtd', 1))) for p in produtos)
-            total_itens = len(produtos)
-            sku = produtos[0].get('codigo', '') if produtos else ''
-            num_produtos = total_itens or 1
+        pdfs = [
+            f for f in os.listdir(pasta_entrada)
+            if f.lower().endswith(".pdf")
+            and not f.startswith("_")
+            and not f.lower().startswith("shein")
+        ]
+        for nome_pdf in pdfs:
+            caminho_pdf = os.path.join(pasta_entrada, nome_pdf)
+            try:
+                doc = fitz.open(caminho_pdf)
+            except Exception:
+                continue
 
-            nome_loja = self._extrair_nome_loja_remetente(texto)
-            cnpj = f"CV_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}" if nome_loja else "CV_CENTRAL_VENDEDOR"
-            if cnpj not in self.cnpj_loja and nome_loja:
-                self.cnpj_loja[cnpj] = nome_loja
-                self.cnpj_nome[cnpj] = nome_loja
+            paginas_danfe = []
+            paginas_decl = []
+            track_por_pagina = {}
 
-            dados_xml = {
-                'nf': br,
-                'serie': '',
-                'data_emissao': '',
-                'chave': '',
-                'cnpj_emitente': cnpj,
-                'nome_emitente': nome_loja or 'Central do Vendedor',
-                'produtos': produtos,
-                'total_itens': total_itens,
-                'total_qtd': total_qtd,
-                'fonte_dados': 'central_vendedor',
-            }
+            for i in range(len(doc)):
+                texto = doc[i].get_text("text") or ""
+                up = texto.upper()
+                if "DANFE SIMPLIFICADO - ETIQUETA" in up:
+                    paginas_danfe.append(i)
+                if "DECLARAÇÃO DE CONTEÚDO" in up or "DECLARACAO DE CONTEUDO" in up:
+                    paginas_decl.append(i)
+                mtrack = re.search(r"\b(BR\d{10,})\b", texto, re.IGNORECASE)
+                if mtrack:
+                    track_por_pagina[i] = mtrack.group(1).upper()
 
-            etiquetas.append({
-                'nf': br,
-                'sku': sku,
-                'num_produtos': num_produtos,
-                'cnpj': cnpj,
-                'clip': clip,
-                'pagina_idx': pagina_idx,
-                'caminho_pdf': caminho,
-                'dados_xml': dados_xml,
-                'tipo_especial': None,  # usa gerar_pdf_loja
-            })
+            # ----------------------------
+            # Extrair produtos das declarações
+            # ----------------------------
+            produtos_por_track = defaultdict(list)
+            for i in paginas_decl:
+                texto = doc[i].get_text("text") or ""
+                track = track_por_pagina.get(i, "")
+                linhas = [l.strip() for l in texto.splitlines() if l.strip()]
 
-        if etiquetas:
-            print(f"  Central do Vendedor: {len(etiquetas)} etiquetas")
+                inicio = -1
+                for idx, l in enumerate(linhas):
+                    if "CÓDIGO" in l.upper() and "DESCRI" in l.upper():
+                        inicio = idx
+                        break
+                if inicio < 0:
+                    continue
+
+                dados = linhas[inicio + 1:]
+                for l in dados:
+                    if l.upper().startswith("P."):
+                        break
+                    m = re.match(r"^\s*(\d+)\s+(\S+)\s+(.+)$", l)
+                    if not m:
+                        continue
+                    _, sku, resto = m.groups()
+                    nums = re.findall(r"(\d+[.,]?\d*)", resto)
+                    qtd = "1"
+                    if len(nums) >= 2:
+                        qtd = nums[-2]
+
+                    resto_limpo = resto
+                    if len(nums) >= 2:
+                        resto_limpo = re.sub(r"\s+" + re.escape(nums[-1]) + r"\s*$", "", resto_limpo)
+                        resto_limpo = re.sub(r"\s+" + re.escape(nums[-2]) + r"\s*$", "", resto_limpo)
+                    descricao = resto_limpo.strip()
+
+                    variacao = ""
+                    mvar = re.search(r"(.+)\s+([^\s]+,[^\s]+)\s*$", descricao)
+                    if mvar:
+                        descricao = mvar.group(1).strip()
+                        variacao = mvar.group(2).strip()
+                    if not variacao:
+                        variacao = "-"
+
+                    try:
+                        qtd_int = int(float(qtd.replace(",", ".")))
+                    except Exception:
+                        qtd_int = 1
+
+                    produtos_por_track[track].append({
+                        "codigo": sku.strip(),
+                        "variacao": variacao,
+                        "qtd": str(qtd_int),
+                        "descricao": descricao[:80],
+                    })
+
+            # ----------------------------
+            # Criar etiquetas DANFE (fluxo NORMAL)
+            # ----------------------------
+            for i in paginas_danfe:
+                texto = doc[i].get_text("text") or ""
+                track = track_por_pagina.get(i, "")
+                produtos = produtos_por_track.get(track, [])
+
+                etiqueta = {
+                    "cnpj": "",
+                    "nf": "?",
+                    "pagina": i,
+                    "pdf": caminho_pdf,
+                    "dados_xml": {
+                        "produtos": produtos
+                    },
+                    "tipo_especial": None  # IMPORTANTÍSSIMO: fluxo normal
+                }
+                etiquetas.append(etiqueta)
+
+            doc.close()
         return etiquetas
 
     def _eh_pdf_central_vendedor(self, caminho_pdf):
@@ -493,7 +439,8 @@ class ProcessadorEtiquetasShopee:
         try:
             doc = fitz.open(caminho_pdf)
             for i in range(min(3, len(doc))):
-                if self._eh_pagina_danfe_central_vendedor(doc[i].get_text()):
+                texto = doc[i].get_text("text") or ""
+                if "DANFE SIMPLIFICADO - ETIQUETA" in texto.upper():
                     doc.close()
                     return True
             doc.close()
