@@ -319,13 +319,179 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # CENTRAL DO VENDEDOR (Shopee - DANFE + DECLARAÇÃO)
     # ----------------------------------------------------------------
+    def _is_pdf_central_vendedor(self, caminho_pdf: str) -> bool:
+        """Detecta PDF 'Central do Vendedor' (DANFE/Declaração)."""
+        try:
+            doc = fitz.open(caminho_pdf)
+            for i in range(min(2, len(doc))):
+                t = (doc[i].get_text("text") or "").upper()
+                if "DANFE SIMPLIFICADO - ETIQUETA" in t or "DECLARAÇÃO DE CONTEÚDO" in t or "DECLARACAO DE CONTEUDO" in t:
+                    doc.close()
+                    return True
+            doc.close()
+        except Exception:
+            pass
+        return False
+
+    def _extrair_cnpj_do_texto(self, texto: str) -> str:
+        """Tenta extrair CNPJ (14 dígitos) do texto."""
+        if not texto:
+            return ""
+        # formato 00.000.000/0000-00
+        m = re.search(r"\b(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}\-?\d{2})\b", texto)
+        if m:
+            c = re.sub(r"\D", "", m.group(1))
+            return c if len(c) == 14 else ""
+        # 14 dígitos soltos
+        m = re.search(r"\b(\d{14})\b", texto)
+        if m:
+            return m.group(1)
+        return ""
+
+    def _extrair_track_do_texto(self, texto: str) -> str:
+        """Extrai tracking BR..."""
+        m = re.search(r"\b(BR\d{10,})\b", texto or "", re.IGNORECASE)
+        return (m.group(1).upper() if m else "")
+
+    def _parse_declaracao_produtos(self, texto: str):
+        """
+        Extrai produtos da DECLARAÇÃO.
+        Retorna lista no formato esperado pelo rodapé (codigo, variacao, qtd, descricao).
+        """
+        produtos = []
+        if not texto:
+            return produtos
+        linhas = [l.strip() for l in (texto.splitlines() or []) if l.strip()]
+        ini = -1
+        for i, l in enumerate(linhas):
+            u = l.upper()
+            if ("CÓDIGO" in u or "CODIGO" in u) and ("DESCRI" in u or "PROD" in u):
+                ini = i
+                break
+        if ini < 0:
+            return produtos
+        dados = linhas[ini + 1:]
+        for l in dados:
+            if l.upper().startswith("P.") or "TOTAL" in l.upper():
+                break
+            m = re.match(r"^\s*(\d+)\s+(\S+)\s+(.+)$", l)
+            if not m:
+                continue
+            _, sku, resto = m.groups()
+            nums = re.findall(r"(\d+[.,]?\d*)", resto)
+            qtd = "1"
+            if len(nums) >= 2:
+                qtd = nums[-2]
+            resto_limpo = resto
+            if len(nums) >= 2:
+                resto_limpo = re.sub(r"\s+" + re.escape(nums[-1]) + r"\s*$", "", resto_limpo)
+                resto_limpo = re.sub(r"\s+" + re.escape(nums[-2]) + r"\s*$", "", resto_limpo)
+            descricao = resto_limpo.strip()
+            variacao = "-"
+            mvar = re.search(r"(.+)\s+([^\s]+,[^\s]+)\s*$", descricao)
+            if mvar:
+                descricao = mvar.group(1).strip()
+                vv = (mvar.group(2) or "").strip()
+                variacao = vv if vv else "-"
+            try:
+                qtd_int = int(float(qtd.replace(",", ".")))
+            except Exception:
+                qtd_int = 1
+            produtos.append({
+                "codigo": sku.strip(),
+                "variacao": variacao,
+                "qtd": str(qtd_int),
+                "descricao": (descricao[:80] if descricao else sku.strip()),
+            })
+        return produtos
+
+    def _processar_pdf_central_vendedor_um(self, caminho_pdf: str):
+        """
+        Extrai etiquetas do PDF Central do Vendedor como ETIQUETAS NORMAIS:
+        - NÃO usa tipo_especial
+        - Preenche cnpj (pra separar_por_loja não ignorar)
+        - Preenche dados_xml["produtos"] pra rodapé sair igual
+        """
+        etiquetas = []
+        try:
+            doc = fitz.open(caminho_pdf)
+        except Exception as e:
+            self._push_intercalacao_warning(f"[CENTRAL] Falha ao abrir PDF: {os.path.basename(caminho_pdf)} ({e})")
+            return etiquetas
+
+        paginas_danfe = []
+        paginas_decl = []
+        texto_pag = {}
+        track_pag = {}
+        cnpj_pag = {}
+
+        for i in range(len(doc)):
+            t = doc[i].get_text("text") or ""
+            texto_pag[i] = t
+            up = t.upper()
+            if "DANFE SIMPLIFICADO - ETIQUETA" in up:
+                paginas_danfe.append(i)
+            if "DECLARAÇÃO DE CONTEÚDO" in up or "DECLARACAO DE CONTEUDO" in up:
+                paginas_decl.append(i)
+            track_pag[i] = self._extrair_track_do_texto(t)
+            cnpj_pag[i] = self._extrair_cnpj_do_texto(t)
+
+        produtos_por_track = defaultdict(list)
+        cnpj_por_track = {}
+
+        for i in paginas_decl:
+            t = texto_pag.get(i, "")
+            tr = track_pag.get(i, "")
+            if not tr:
+                continue
+            prods = self._parse_declaracao_produtos(t)
+            if prods:
+                produtos_por_track[tr].extend(prods)
+            c = cnpj_pag.get(i, "")
+            if c:
+                cnpj_por_track.setdefault(tr, c)
+
+        # criar etiquetas DANFE
+        for i in paginas_danfe:
+            t = texto_pag.get(i, "")
+            tr = track_pag.get(i, "")
+            prods = produtos_por_track.get(tr, []) if tr else []
+
+            # cnpj: tenta do DANFE; senão do track; senão fallback
+            cnpj = cnpj_pag.get(i, "") or (cnpj_por_track.get(tr, "") if tr else "")
+            if not cnpj:
+                cnpj = "CENTRALVENDEDOR000000"
+
+            etq = {
+                "cnpj": cnpj,
+                "nf": "?",
+                "pagina": i,
+                "pdf": caminho_pdf,
+                "dados_xml": {
+                    "produtos": prods,
+                    "tracking": tr,
+                },
+                "tipo_especial": None,  # IMPORTANTÍSSIMO: fluxo normal (rodapé padrão)
+            }
+
+            # tentativa de RETIRADA (se tiver o texto)
+            try:
+                self._tentar_injetar_produtos_retirada(etq, t)
+            except Exception:
+                pass
+
+            if not prods:
+                self._push_intercalacao_warning(
+                    f"[CENTRAL] Sem produtos (track={tr or '?'}) em {os.path.basename(caminho_pdf)} pág {i+1}"
+                )
+
+            etiquetas.append(etq)
+
+        doc.close()
+        return etiquetas
+
     def processar_central_vendedor(self, pasta_entrada: str):
-        """
-        Processa PDFs do tipo 'Central do Vendedor'
-        e gera etiquetas no MESMO formato das Shopee normais,
-        garantindo rodapé idêntico (CÓDIGO | PROD | Q.).
-        """
-        from collections import defaultdict
+        """Wrapper para compatibilidade com dashboard.py que chama este método."""
         etiquetas = []
         pdfs = [
             f for f in os.listdir(pasta_entrada)
@@ -335,118 +501,10 @@ class ProcessadorEtiquetasShopee:
         ]
         for nome_pdf in pdfs:
             caminho_pdf = os.path.join(pasta_entrada, nome_pdf)
-            try:
-                doc = fitz.open(caminho_pdf)
-            except Exception:
-                continue
-
-            paginas_danfe = []
-            paginas_decl = []
-            track_por_pagina = {}
-
-            for i in range(len(doc)):
-                texto = doc[i].get_text("text") or ""
-                up = texto.upper()
-                if "DANFE SIMPLIFICADO - ETIQUETA" in up:
-                    paginas_danfe.append(i)
-                if "DECLARAÇÃO DE CONTEÚDO" in up or "DECLARACAO DE CONTEUDO" in up:
-                    paginas_decl.append(i)
-                mtrack = re.search(r"\b(BR\d{10,})\b", texto, re.IGNORECASE)
-                if mtrack:
-                    track_por_pagina[i] = mtrack.group(1).upper()
-
-            # ----------------------------
-            # Extrair produtos das declarações
-            # ----------------------------
-            produtos_por_track = defaultdict(list)
-            for i in paginas_decl:
-                texto = doc[i].get_text("text") or ""
-                track = track_por_pagina.get(i, "")
-                linhas = [l.strip() for l in texto.splitlines() if l.strip()]
-
-                inicio = -1
-                for idx, l in enumerate(linhas):
-                    if "CÓDIGO" in l.upper() and "DESCRI" in l.upper():
-                        inicio = idx
-                        break
-                if inicio < 0:
-                    continue
-
-                dados = linhas[inicio + 1:]
-                for l in dados:
-                    if l.upper().startswith("P."):
-                        break
-                    m = re.match(r"^\s*(\d+)\s+(\S+)\s+(.+)$", l)
-                    if not m:
-                        continue
-                    _, sku, resto = m.groups()
-                    nums = re.findall(r"(\d+[.,]?\d*)", resto)
-                    qtd = "1"
-                    if len(nums) >= 2:
-                        qtd = nums[-2]
-
-                    resto_limpo = resto
-                    if len(nums) >= 2:
-                        resto_limpo = re.sub(r"\s+" + re.escape(nums[-1]) + r"\s*$", "", resto_limpo)
-                        resto_limpo = re.sub(r"\s+" + re.escape(nums[-2]) + r"\s*$", "", resto_limpo)
-                    descricao = resto_limpo.strip()
-
-                    variacao = ""
-                    mvar = re.search(r"(.+)\s+([^\s]+,[^\s]+)\s*$", descricao)
-                    if mvar:
-                        descricao = mvar.group(1).strip()
-                        variacao = mvar.group(2).strip()
-                    if not variacao:
-                        variacao = "-"
-
-                    try:
-                        qtd_int = int(float(qtd.replace(",", ".")))
-                    except Exception:
-                        qtd_int = 1
-
-                    produtos_por_track[track].append({
-                        "codigo": sku.strip(),
-                        "variacao": variacao,
-                        "qtd": str(qtd_int),
-                        "descricao": descricao[:80],
-                    })
-
-            # ----------------------------
-            # Criar etiquetas DANFE (fluxo NORMAL)
-            # ----------------------------
-            for i in paginas_danfe:
-                texto = doc[i].get_text("text") or ""
-                track = track_por_pagina.get(i, "")
-                produtos = produtos_por_track.get(track, [])
-
-                etiqueta = {
-                    "cnpj": "",
-                    "nf": "?",
-                    "pagina": i,
-                    "pdf": caminho_pdf,
-                    "dados_xml": {
-                        "produtos": produtos
-                    },
-                    "tipo_especial": None  # IMPORTANTÍSSIMO: fluxo normal
-                }
-                etiquetas.append(etiqueta)
-
-            doc.close()
+            if self._is_pdf_central_vendedor(caminho_pdf):
+                extra = self._processar_pdf_central_vendedor_um(caminho_pdf)
+                etiquetas.extend(extra)
         return etiquetas
-
-    def _eh_pdf_central_vendedor(self, caminho_pdf):
-        """Detecta se um PDF contem paginas Central do Vendedor (DANFE ETIQUETA)."""
-        try:
-            doc = fitz.open(caminho_pdf)
-            for i in range(min(3, len(doc))):
-                texto = doc[i].get_text("text") or ""
-                if "DANFE SIMPLIFICADO - ETIQUETA" in texto.upper():
-                    doc.close()
-                    return True
-            doc.close()
-        except Exception:
-            pass
-        return False
 
     def _eh_pdf_shein(self, caminho_pdf):
         """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE).
@@ -485,71 +543,31 @@ class ProcessadorEtiquetasShopee:
                 and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
 
-        # Primeiro, detectar PDFs Shein e Central do Vendedor por conteudo para excluir do processamento normal
+        # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
         pdfs_shein_detectados = []
-        pdfs_central_vendedor = []
         pdfs_normais = []
         for pdf_name in pdfs:
             caminho = os.path.join(pasta, pdf_name)
             if self._eh_pdf_shein(caminho):
                 pdfs_shein_detectados.append(caminho)
                 print(f"  Detectado como Shein: {pdf_name}")
-            elif self._eh_pdf_central_vendedor(caminho):
-                pdfs_central_vendedor.append(caminho)
-                print(f"  Detectado como Central do Vendedor: {pdf_name}")
             else:
                 pdfs_normais.append(pdf_name)
 
         todas_etiquetas = []
         etiquetas_cpf_auto = []
 
-        # Inicializar drivers de marketplace
-        bootstrap_drivers()
-
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
 
-            # Tentar detecção via marketplace drivers primeiro
-            try:
-                docdet = detect_best(caminho)
-            except Exception:
-                docdet = None
-
-            if docdet:
-                try:
-                    driver = get_driver_by_kind(docdet.kind)
-                except Exception:
-                    driver = None
-                if driver:
-                    try:
-                        extraidas = driver.extract(docdet)
-                    except Exception as e:
-                        print(f"[ERRO DRIVER] {caminho}: {e}")
-                        extraidas = []
-                    if extraidas:
-                        for e in extraidas:
-                            etq = {
-                                "cnpj": e.cnpj,
-                                "nf": e.nf,
-                                "pagina": e.pagina,
-                                "pdf": e.pdf_path,
-                                "dados_xml": e.dados_xml,
-                                "tipo_especial": e.tipo_especial,
-                            }
-                            # Tentativa de preenchimento para RETIRADA
-                            try:
-                                doc_tmp = fitz.open(caminho)
-                                texto_p = doc_tmp[e.pagina].get_text("text") if e.pagina < len(doc_tmp) else ""
-                                doc_tmp.close()
-                            except Exception:
-                                texto_p = ""
-                            self._tentar_injetar_produtos_retirada(etq, texto_p)
-                            todas_etiquetas.append(etq)
-                        continue
-                    else:
-                        print(f"[AVISO] Driver detectou {docdet.kind}, mas não extraiu etiquetas: {caminho}")
+            # --- Central do Vendedor: NÃO PULAR! processar aqui mesmo ---
+            if self._is_pdf_central_vendedor(caminho):
+                extra_cv = self._processar_pdf_central_vendedor_um(caminho)
+                if extra_cv:
+                    todas_etiquetas.extend(extra_cv)
                 else:
-                    print(f"[AVISO] Driver não encontrado para kind: {docdet.kind}")
+                    self._push_intercalacao_warning(f"[CENTRAL] Detectado mas extraiu 0 etiquetas: {os.path.basename(caminho)}")
+                continue
 
             # Fluxo normal (parser existente)
             etqs = self._carregar_pdf(caminho)

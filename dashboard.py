@@ -1735,12 +1735,10 @@ def _executar_processamento(user_id):
             if etiquetas_shein:
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
 
-            etiquetas_central_vendedor = proc.processar_central_vendedor(pasta_entrada)
-            if etiquetas_central_vendedor:
-                todas_etiquetas.extend(etiquetas_central_vendedor)
-                adicionar_log(estado, f"Central do Vendedor: {len(etiquetas_central_vendedor)} etiquetas", "success")
+            # Central do Vendedor agora é processado dentro de carregar_todos_pdfs (fluxo normal)
+            # Não chamar processar_central_vendedor separadamente para evitar duplicação
 
-            if not etiquetas_cpf_especial and not etiquetas_shein and not etiquetas_central_vendedor:
+            if not etiquetas_cpf_especial and not etiquetas_shein:
                 adicionar_log(estado, "Nenhuma etiqueta especial encontrada", "info")
 
             todas_etiquetas, duplicadas = proc.remover_duplicatas(todas_etiquetas)
