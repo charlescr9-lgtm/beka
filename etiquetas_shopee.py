@@ -515,28 +515,41 @@ class ProcessadorEtiquetasShopee:
             except Exception:
                 docdet = None
 
-            if docdet and docdet.kind in ("shopee_danfe", "tiktok_shop", "temu"):
-                driver = get_driver_by_kind(docdet.kind)
-                extraidas = driver.extract(docdet) if driver else []
-                for e in extraidas:
-                    etq = {
-                        "cnpj": e.cnpj,
-                        "nf": e.nf,
-                        "pagina": e.pagina,
-                        "pdf": e.pdf_path,
-                        "dados_xml": e.dados_xml,
-                        "tipo_especial": e.tipo_especial,
-                    }
-                    # Tentativa de preenchimento para RETIRADA
+            if docdet:
+                try:
+                    driver = get_driver_by_kind(docdet.kind)
+                except Exception:
+                    driver = None
+                if driver:
                     try:
-                        doc_tmp = fitz.open(caminho)
-                        texto_p = doc_tmp[e.pagina].get_text("text") if e.pagina < len(doc_tmp) else ""
-                        doc_tmp.close()
-                    except Exception:
-                        texto_p = ""
-                    self._tentar_injetar_produtos_retirada(etq, texto_p)
-                    todas_etiquetas.append(etq)
-                continue
+                        extraidas = driver.extract(docdet)
+                    except Exception as e:
+                        print(f"[ERRO DRIVER] {caminho}: {e}")
+                        extraidas = []
+                    if extraidas:
+                        for e in extraidas:
+                            etq = {
+                                "cnpj": e.cnpj,
+                                "nf": e.nf,
+                                "pagina": e.pagina,
+                                "pdf": e.pdf_path,
+                                "dados_xml": e.dados_xml,
+                                "tipo_especial": e.tipo_especial,
+                            }
+                            # Tentativa de preenchimento para RETIRADA
+                            try:
+                                doc_tmp = fitz.open(caminho)
+                                texto_p = doc_tmp[e.pagina].get_text("text") if e.pagina < len(doc_tmp) else ""
+                                doc_tmp.close()
+                            except Exception:
+                                texto_p = ""
+                            self._tentar_injetar_produtos_retirada(etq, texto_p)
+                            todas_etiquetas.append(etq)
+                        continue
+                    else:
+                        print(f"[AVISO] Driver detectou {docdet.kind}, mas não extraiu etiquetas: {caminho}")
+                else:
+                    print(f"[AVISO] Driver não encontrado para kind: {docdet.kind}")
 
             # Fluxo normal (parser existente)
             etqs = self._carregar_pdf(caminho)
