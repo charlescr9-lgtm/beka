@@ -19,6 +19,8 @@ import zipfile
 from datetime import datetime
 from collections import defaultdict, OrderedDict
 
+import pandas as pd
+
 # python-barcode para gerar Code128
 import barcode
 from barcode.writer import SVGWriter
@@ -26,6 +28,10 @@ from barcode.writer import SVGWriter
 # openpyxl para gerar XLSX
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+
+# Marketplace drivers
+from marketplaces.registry_bootstrap import bootstrap_drivers
+from marketplaces.registry import detect_best, get_driver_by_kind
 
 
 class ProcessadorEtiquetasShopee:
@@ -47,6 +53,154 @@ class ProcessadorEtiquetasShopee:
         self.exibicao_produto = 'sku'  # 'sku', 'titulo' ou 'ambos'
         self.dados_xlsx_global = {}    # order_sn -> {produtos, total_itens, total_qtd}
         self.dados_xlsx_tracking = {}  # tracking_number -> order_sn
+        self._retirada_map_pedido = {}
+        self._retirada_map_track = {}
+        self._intercalacao_warnings = []
+
+    # ----------------------------------------------------------------
+    # INTERCALAÇÃO / RETIRADA
+    # ----------------------------------------------------------------
+    def get_intercalacao_warnings(self):
+        return list(getattr(self, "_intercalacao_warnings", []))
+
+    def _push_intercalacao_warning(self, msg: str):
+        if not hasattr(self, "_intercalacao_warnings"):
+            self._intercalacao_warnings = []
+        self._intercalacao_warnings.append(msg)
+
+    def _parse_retirada_product_info(self, product_info: str):
+        """
+        product_info exemplo:
+        "[1] Product Name:...; Variation Name:Preto,37/38; ... Quantity: 1; SKU Reference No.: XXX; Parent SKU Reference No.: FA; "
+        Retorna lista de dicts no formato esperado por dados_xml['produtos'].
+        """
+        if not product_info or not isinstance(product_info, str):
+            return []
+        parts = re.split(r"\[\d+\]\s*", product_info)
+        parts = [p.strip() for p in parts if p.strip()]
+        produtos = []
+        for p in parts:
+            fields = {}
+            for chunk in p.split(";"):
+                chunk = chunk.strip()
+                if not chunk or ":" not in chunk:
+                    continue
+                k, v = chunk.split(":", 1)
+                fields[k.strip().lower()] = v.strip()
+            nome = fields.get("product name", "") or fields.get("product", "") or ""
+            variacao = fields.get("variation name", "") or fields.get("variation", "") or ""
+            qtd = fields.get("quantity", "1") or "1"
+            sku = fields.get("parent sku reference no.", "") or fields.get("sku reference no.", "") or ""
+            try:
+                qtd_int = int(float(str(qtd).replace(",", ".")))
+            except Exception:
+                qtd_int = 1
+            produtos.append({
+                "codigo": sku.strip(),
+                "variacao": variacao.strip(),
+                "qtd": str(qtd_int),
+                "descricao": (nome.strip()[:80] if nome else ""),
+            })
+        return produtos
+
+    def carregar_retirada_xlsx(self, pasta_entrada: str):
+        """
+        Carrega retirada.xlsx (ou arquivos contendo 'retirada' no nome) e cria mapas:
+        - pedido(order_sn) -> produtos
+        - tracking_number -> produtos
+        """
+        self._retirada_map_pedido = {}
+        self._retirada_map_track = {}
+        if not pasta_entrada or not os.path.isdir(pasta_entrada):
+            return
+        candidatos = []
+        for f in os.listdir(pasta_entrada):
+            fn = f.lower()
+            if fn.endswith(".xlsx") and ("retirada" in fn or "pickup" in fn):
+                candidatos.append(os.path.join(pasta_entrada, f))
+        if not candidatos:
+            p = os.path.join(pasta_entrada, "retirada.xlsx")
+            if os.path.exists(p):
+                candidatos.append(p)
+        for caminho in candidatos:
+            try:
+                df = pd.read_excel(caminho)
+            except Exception as e:
+                self._push_intercalacao_warning(f"RETIRADA: falha ao ler XLSX '{os.path.basename(caminho)}': {e}")
+                continue
+            cols = {c.lower(): c for c in df.columns}
+            col_track = cols.get("tracking_number") or cols.get("tracking") or cols.get("tracking number")
+            col_pedido = cols.get("order_sn") or cols.get("order") or cols.get("order sn") or cols.get("pedido")
+            col_info = cols.get("product_info") or cols.get("product info") or cols.get("products") or cols.get("itens")
+            if not col_pedido or not col_info:
+                self._push_intercalacao_warning(
+                    f"RETIRADA: XLSX '{os.path.basename(caminho)}' sem colunas esperadas (order_sn/product_info)."
+                )
+                continue
+            for _, row in df.iterrows():
+                pedido = str(row.get(col_pedido, "")).strip()
+                track = str(row.get(col_track, "")).strip() if col_track else ""
+                info = str(row.get(col_info, "")).strip()
+                if not pedido and not track:
+                    continue
+                produtos = self._parse_retirada_product_info(info)
+                if not produtos:
+                    continue
+                if pedido:
+                    self._retirada_map_pedido[pedido] = produtos
+                if track:
+                    m = re.search(r"(BR\d{10,})", track, re.IGNORECASE)
+                    key = (m.group(1).upper() if m else track.upper())
+                    self._retirada_map_track[key] = produtos
+
+    def _is_retirada_pelo_comprador_texto(self, texto: str) -> bool:
+        if not texto:
+            return False
+        return bool(re.search(r"\bRETIRADA\s*(PELO)?\s*COMPRADOR\b", texto, re.IGNORECASE))
+
+    def _extrair_pedido_do_texto(self, texto: str) -> str:
+        if not texto:
+            return ""
+        m = re.search(r"\bPEDIDO\s*[:#]?\s*([A-Z0-9]{8,})\b", texto, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    def _extrair_tracking_do_texto(self, texto: str) -> str:
+        if not texto:
+            return ""
+        m = re.search(r"\b(BR\d{10,})\b", texto, re.IGNORECASE)
+        return m.group(1).upper() if m else ""
+
+    def _tentar_injetar_produtos_retirada(self, etiqueta: dict, texto_pagina: str):
+        """
+        Se etiqueta for de RETIRADA PELO COMPRADOR e nao tiver produtos,
+        tenta buscar em retirada.xlsx por pedido ou tracking.
+        """
+        try:
+            if not self._is_retirada_pelo_comprador_texto(texto_pagina):
+                return
+            dados = etiqueta.get("dados_xml") or {}
+            produtos = dados.get("produtos") or []
+            if produtos:
+                return
+            pedido = self._extrair_pedido_do_texto(texto_pagina)
+            track = self._extrair_tracking_do_texto(texto_pagina)
+            produtos_encontrados = []
+            if pedido and getattr(self, "_retirada_map_pedido", None):
+                produtos_encontrados = self._retirada_map_pedido.get(pedido, []) or []
+            if not produtos_encontrados and track and getattr(self, "_retirada_map_track", None):
+                produtos_encontrados = self._retirada_map_track.get(track, []) or []
+            if produtos_encontrados:
+                dados["produtos"] = produtos_encontrados
+                dados["pedido"] = pedido
+                dados["tracking"] = track
+                dados["modalidade"] = "retirada"
+                etiqueta["dados_xml"] = dados
+            else:
+                self._push_intercalacao_warning(
+                    f"INTERCALAÇÃO RETIRADA FALHOU: sem match no retirada.xlsx (pedido={pedido or '-'} track={track or '-'})."
+                )
+        except Exception as e:
+            self._push_intercalacao_warning(f"INTERCALAÇÃO RETIRADA ERRO: {e}")
 
     # ----------------------------------------------------------------
     # LEITURA DOS XMLs
@@ -162,6 +316,191 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # RECORTE DAS ETIQUETAS DO PDF DA SHOPEE
     # ----------------------------------------------------------------
+    # ----------------------------------------------------------------
+    # CENTRAL DO VENDEDOR (Shopee - DANFE + DECLARAÇÃO)
+    # ----------------------------------------------------------------
+    DANFE_ETIQUETA_MARKER = "DANFE SIMPLIFICADO - ETIQUETA"
+    DECLARACAO_MARKER = "DECLARAÇÃO DE CONTEÚDO"
+    DECLARACAO_MARKER_ALT = "DECLARACAO DE CONTEUDO"  # sem acento
+    BR_TRACKING_RE = re.compile(r'BR\d{10,}[A-Z]?')
+
+    def _extrair_br_tracking(self, texto):
+        """Extrai codigo de rastreio BR do texto. Retorna o primeiro encontrado ou None."""
+        m = self.BR_TRACKING_RE.search(texto)
+        return m.group(0) if m else None
+
+    def _eh_pagina_danfe_central_vendedor(self, texto):
+        """Verifica se a pagina e DANFE SIMPLIFICADO - ETIQUETA (Central do Vendedor)."""
+        return self.DANFE_ETIQUETA_MARKER in texto.upper()
+
+    def _eh_pagina_declaracao(self, texto):
+        """Verifica se a pagina e DECLARAÇÃO DE CONTEÚDO."""
+        t = texto.upper()
+        return self.DECLARACAO_MARKER.upper() in t or self.DECLARACAO_MARKER_ALT.upper() in t
+
+    def _parse_produtos_declaracao(self, texto):
+        """Extrai lista de produtos da tabela DECLARAÇÃO DE CONTEÚDO.
+        Formato: Nº CÓDIGO (SKU) DESCRIÇÃO DO PRODUTO VARIAÇÃO QTD VALOR
+        Exemplo: "1 H CHINELO RASTEIRINHA FEMININO COM BRILHO - FESTA Preto Brilhante,37/8 1 34.75"
+        Retorna lista de dict: {codigo, descricao, variacao, qtd}
+        """
+        produtos = []
+        linhas = [l.strip() for l in texto.split('\n') if l.strip()]
+
+        # Encontrar início da tabela (após o cabeçalho)
+        header_patterns = ('Nº', 'CÓDIGO', 'SKU', 'DESCRIÇÃO', 'VARIAÇÃO', 'QTD', 'VALOR')
+        start_idx = 0
+        for i, linha in enumerate(linhas):
+            if any(p in linha.upper() for p in header_patterns) and 'QTD' in linha.upper():
+                start_idx = i + 1
+                break
+
+        for linha in linhas[start_idx:]:
+            if not linha or len(linha) < 5:
+                continue
+            parts = linha.split()
+            if len(parts) < 4:
+                continue
+            try:
+                valor = float(parts[-1].replace(',', '.'))
+                qtd = int(float(parts[-2].replace(',', '.')))
+            except (ValueError, IndexError):
+                continue
+
+            # parts[0]=num, parts[1]=sku, parts[2:-2]=descricao+variacao
+            sku = parts[1] if len(parts) > 2 else ''
+            resto = parts[2:-2]
+            if not resto:
+                produtos.append({'codigo': sku, 'descricao': '', 'variacao': '', 'qtd': str(qtd)})
+                continue
+
+            # Último token do resto costuma ser variacao (cor/tamanho com 37/8, etc)
+            variacao = resto[-1] if resto else ''
+            descricao = ' '.join(resto[:-1]) if len(resto) > 1 else (resto[0] if resto else '')
+
+            produtos.append({
+                'codigo': sku,
+                'descricao': descricao,
+                'variacao': variacao,
+                'qtd': str(qtd),
+            })
+
+        return produtos
+
+    def _coletar_paginas_central_vendedor(self, pasta):
+        """Varre todos os PDFs da pasta e coleta paginas DANFE e DECLARAÇÃO.
+        Retorna (danfes, declaracoes):
+          danfes: [(caminho, pagina_idx, clip, texto, br), ...]
+          declaracoes: [(caminho, pagina_idx, texto, br, produtos), ...]
+        """
+        especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
+        pdfs = [f for f in os.listdir(pasta)
+                if f.lower().endswith('.pdf')
+                and not f.startswith('etiquetas_prontas')
+                and not f.lower().startswith('lanim')
+                and f.lower() not in especiais_lower]
+
+        danfes = []
+        declaracoes = []
+
+        for pdf_name in pdfs:
+            caminho = os.path.join(pasta, pdf_name)
+            if self._eh_pdf_shein(caminho):
+                continue
+            try:
+                doc = fitz.open(caminho)
+                for num_pag in range(len(doc)):
+                    pagina = doc[num_pag]
+                    texto = pagina.get_text()
+                    rect = pagina.rect
+                    clip = fitz.Rect(0, 0, rect.width, rect.height)
+
+                    if self._eh_pagina_danfe_central_vendedor(texto):
+                        br = self._extrair_br_tracking(texto)
+                        if br:
+                            danfes.append((caminho, num_pag, clip, texto, br))
+                    elif self._eh_pagina_declaracao(texto):
+                        br = self._extrair_br_tracking(texto)
+                        produtos = self._parse_produtos_declaracao(texto)
+                        declaracoes.append((caminho, num_pag, texto, br, produtos))
+                doc.close()
+            except Exception as e:
+                print(f"  Aviso: erro ao ler {pdf_name}: {e}")
+
+        return danfes, declaracoes
+
+    def processar_central_vendedor(self, pasta):
+        """Processa PDFs Central do Vendedor (DANFE + DECLARAÇÃO).
+        Casar etiqueta <-> declaração pelo rastreio BR.
+        Retorna lista de etiquetas no formato do pipeline (gerar_pdf_loja).
+        Suporta: A) PDF único 2 páginas; B) PDFs separados no mesmo lote.
+        """
+        danfes, declaracoes = self._coletar_paginas_central_vendedor(pasta)
+        if not danfes:
+            return []
+
+        # Mapear BR -> produtos (declaração)
+        br_to_produtos = {}
+        for _, _, _, br, produtos in declaracoes:
+            if br and produtos:
+                br_to_produtos[br] = produtos
+
+        etiquetas = []
+        for caminho, pagina_idx, clip, texto, br in danfes:
+            produtos = br_to_produtos.get(br, [])
+            total_qtd = sum(int(float(p.get('qtd', 1))) for p in produtos)
+            total_itens = len(produtos)
+            sku = produtos[0].get('codigo', '') if produtos else ''
+            num_produtos = total_itens or 1
+
+            nome_loja = self._extrair_nome_loja_remetente(texto)
+            cnpj = f"CV_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}" if nome_loja else "CV_CENTRAL_VENDEDOR"
+            if cnpj not in self.cnpj_loja and nome_loja:
+                self.cnpj_loja[cnpj] = nome_loja
+                self.cnpj_nome[cnpj] = nome_loja
+
+            dados_xml = {
+                'nf': br,
+                'serie': '',
+                'data_emissao': '',
+                'chave': '',
+                'cnpj_emitente': cnpj,
+                'nome_emitente': nome_loja or 'Central do Vendedor',
+                'produtos': produtos,
+                'total_itens': total_itens,
+                'total_qtd': total_qtd,
+                'fonte_dados': 'central_vendedor',
+            }
+
+            etiquetas.append({
+                'nf': br,
+                'sku': sku,
+                'num_produtos': num_produtos,
+                'cnpj': cnpj,
+                'clip': clip,
+                'pagina_idx': pagina_idx,
+                'caminho_pdf': caminho,
+                'dados_xml': dados_xml,
+                'tipo_especial': None,  # usa gerar_pdf_loja
+            })
+
+        if etiquetas:
+            print(f"  Central do Vendedor: {len(etiquetas)} etiquetas")
+        return etiquetas
+
+    def _eh_pdf_central_vendedor(self, caminho_pdf):
+        """Detecta se um PDF contem paginas Central do Vendedor (DANFE ETIQUETA)."""
+        try:
+            doc = fitz.open(caminho_pdf)
+            for i in range(min(3, len(doc))):
+                if self._eh_pagina_danfe_central_vendedor(doc[i].get_text()):
+                    doc.close()
+                    return True
+            doc.close()
+        except Exception:
+            pass
+        return False
+
     def _eh_pdf_shein(self, caminho_pdf):
         """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE).
         Retorna True se o PDF tem estrutura Shein.
@@ -199,23 +538,72 @@ class ProcessadorEtiquetasShopee:
                 and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
 
-        # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
+        # Primeiro, detectar PDFs Shein e Central do Vendedor por conteudo para excluir do processamento normal
         pdfs_shein_detectados = []
+        pdfs_central_vendedor = []
         pdfs_normais = []
         for pdf_name in pdfs:
             caminho = os.path.join(pasta, pdf_name)
             if self._eh_pdf_shein(caminho):
                 pdfs_shein_detectados.append(caminho)
                 print(f"  Detectado como Shein: {pdf_name}")
+            elif self._eh_pdf_central_vendedor(caminho):
+                pdfs_central_vendedor.append(caminho)
+                print(f"  Detectado como Central do Vendedor: {pdf_name}")
             else:
                 pdfs_normais.append(pdf_name)
 
         todas_etiquetas = []
         etiquetas_cpf_auto = []
+
+        # Inicializar drivers de marketplace
+        bootstrap_drivers()
+
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
+
+            # Tentar detecção via marketplace drivers primeiro
+            try:
+                docdet = detect_best(caminho)
+            except Exception:
+                docdet = None
+
+            if docdet and docdet.kind in ("shopee_danfe", "tiktok_shop", "temu"):
+                driver = get_driver_by_kind(docdet.kind)
+                extraidas = driver.extract(docdet) if driver else []
+                for e in extraidas:
+                    etq = {
+                        "cnpj": e.cnpj,
+                        "nf": e.nf,
+                        "pagina": e.pagina,
+                        "pdf": e.pdf_path,
+                        "dados_xml": e.dados_xml,
+                        "tipo_especial": e.tipo_especial,
+                    }
+                    # Tentativa de preenchimento para RETIRADA
+                    try:
+                        doc_tmp = fitz.open(caminho)
+                        texto_p = doc_tmp[e.pagina].get_text("text") if e.pagina < len(doc_tmp) else ""
+                        doc_tmp.close()
+                    except Exception:
+                        texto_p = ""
+                    self._tentar_injetar_produtos_retirada(etq, texto_p)
+                    todas_etiquetas.append(etq)
+                continue
+
+            # Fluxo normal (parser existente)
             etqs = self._carregar_pdf(caminho)
             for etq in etqs:
+                # Tentar injetar produtos de retirada no fluxo normal também
+                try:
+                    doc_tmp = fitz.open(caminho)
+                    pg = etq.get('pagina', 0)
+                    texto_p = doc_tmp[pg].get_text("text") if pg < len(doc_tmp) else ""
+                    doc_tmp.close()
+                except Exception:
+                    texto_p = ""
+                self._tentar_injetar_produtos_retirada(etq, texto_p)
+
                 if etq.get('tipo_especial') == 'cpf':
                     etiquetas_cpf_auto.append(etq)
                 else:
@@ -1221,6 +1609,9 @@ class ProcessadorEtiquetasShopee:
                 print(f"    XLSX erro: {xlsx_nome} - {e}")
 
         print(f"  Total XLSX: {len(self.dados_xlsx_global)} pedidos, {len(self.dados_xlsx_tracking)} trackings")
+
+        # Carregar retirada.xlsx para intercalação de produtos de retirada
+        self.carregar_retirada_xlsx(pasta)
 
     def _extrair_pedido_texto(self, texto):
         """Extrai o numero do pedido (order_sn) do texto da etiqueta."""

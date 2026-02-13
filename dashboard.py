@@ -1704,6 +1704,18 @@ def _executar_processamento(user_id):
             if pdfs_shein_auto:
                 adicionar_log(estado, f"Shein auto-detectados: {len(pdfs_shein_auto)} PDF(s)", "info")
 
+            # Avisos de intercalação / match de retirada
+            try:
+                warns = proc.get_intercalacao_warnings() if hasattr(proc, "get_intercalacao_warnings") else []
+                if warns:
+                    adicionar_log(estado, "--- AVISOS DE INTERCALAÇÃO / MATCH ---", "warning")
+                    for w in warns[:50]:
+                        adicionar_log(estado, w, "warning")
+                    if len(warns) > 50:
+                        adicionar_log(estado, f"... e mais {len(warns) - 50} aviso(s) de intercalação", "warning")
+            except Exception:
+                pass
+
             # Verificar quais etiquetas tem/nao tem dados de produto
             n_com_dados = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('produtos'))
             n_sem_dados = len(todas_etiquetas) - n_com_dados
@@ -1723,7 +1735,12 @@ def _executar_processamento(user_id):
             if etiquetas_shein:
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
 
-            if not etiquetas_cpf_especial and not etiquetas_shein:
+            etiquetas_central_vendedor = proc.processar_central_vendedor(pasta_entrada)
+            if etiquetas_central_vendedor:
+                todas_etiquetas.extend(etiquetas_central_vendedor)
+                adicionar_log(estado, f"Central do Vendedor: {len(etiquetas_central_vendedor)} etiquetas", "success")
+
+            if not etiquetas_cpf_especial and not etiquetas_shein and not etiquetas_central_vendedor:
                 adicionar_log(estado, "Nenhuma etiqueta especial encontrada", "info")
 
             todas_etiquetas, duplicadas = proc.remover_duplicatas(todas_etiquetas)
