@@ -1143,13 +1143,33 @@ class ProcessadorEtiquetasShopee:
                 sem_xml += 1
 
             # Numero de ordem (subido para nao cortar na impressao)
-            nova_pag.insert_text(
-                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
-                f"p.{numero_ordem}",
-                fontsize=9,
-                fontname="hebo",
-                color=(0.4, 0.4, 0.4)
-            )
+            try:
+                # Recuperar pagina via doc_saida caso referencia direta tenha sido perdida (bug PyMuPDF)
+                pag_num = nova_pag.number if nova_pag.parent else None
+                if pag_num is None:
+                    # Buscar a pagina principal desta etiqueta no doc_saida
+                    # (e a ultima pagina menos continuacoes)
+                    pag_num = len(doc_saida) - 1
+                    # Se houve paginas de continuacao, voltar para a pagina principal
+                    if tem_dados_produto and num_prods > 0:
+                        # Contar quantas continuacoes foram criadas
+                        continuacoes = 0
+                        if tem_dados_produto:
+                            try:
+                                continuacoes = (cont_num - 1) if 'cont_num' in dir() else 0
+                            except Exception:
+                                continuacoes = 0
+                        pag_num = pag_num - continuacoes
+                    nova_pag = doc_saida[pag_num]
+                nova_pag.insert_text(
+                    (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                    f"p.{numero_ordem}",
+                    fontsize=9,
+                    fontname="hebo",
+                    color=(0.4, 0.4, 0.4)
+                )
+            except Exception:
+                pass  # Pular numeracao se PyMuPDF perder referencia da pagina
 
         # Fechar docs de entrada
         for doc in docs_abertos.values():
