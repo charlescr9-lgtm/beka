@@ -1104,10 +1104,16 @@ class ProcessadorEtiquetasShopee:
                 line_h = fs_dest + 2
                 espaco_barcode = 37 if tem_chave else 0
                 espaco_tabela = espaco_barcode + 20 + (min(num_prods, 10) * line_h) + 15
-                # Limitar altura da etiqueta para garantir espaco
-                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
+                # Garantir espaco minimo para produtos (pelo menos 120pt)
+                espaco_minimo_produtos = max(espaco_tabela, 120)
+                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_minimo_produtos
                 if alt_etiqueta > alt_max:
-                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.45)  # minimo 45% da pagina
+                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.35)  # minimo 35% da pagina
+            else:
+                # Sem produtos: limitar a 85% da pagina para nao ficar colado na borda
+                alt_max_sem_prod = (self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR) * 0.92
+                if alt_etiqueta > alt_max_sem_prod:
+                    alt_etiqueta = alt_max_sem_prod
 
             dest_rect = fitz.Rect(
                 self.MARGEM_ESQUERDA,
