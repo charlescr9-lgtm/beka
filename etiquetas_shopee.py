@@ -19,8 +19,6 @@ import zipfile
 from datetime import datetime
 from collections import defaultdict, OrderedDict
 
-import pandas as pd
-
 # python-barcode para gerar Code128
 import barcode
 from barcode.writer import SVGWriter
@@ -28,13 +26,6 @@ from barcode.writer import SVGWriter
 # openpyxl para gerar XLSX
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
-
-# Marketplace drivers (mantidos para uso futuro, não usados no fluxo principal)
-try:
-    from marketplaces.registry_bootstrap import bootstrap_drivers
-    from marketplaces.registry import detect_best, get_driver_by_kind
-except ImportError:
-    pass
 
 
 class ProcessadorEtiquetasShopee:
@@ -56,155 +47,6 @@ class ProcessadorEtiquetasShopee:
         self.exibicao_produto = 'sku'  # 'sku', 'titulo' ou 'ambos'
         self.dados_xlsx_global = {}    # order_sn -> {produtos, total_itens, total_qtd}
         self.dados_xlsx_tracking = {}  # tracking_number -> order_sn
-        self._retirada_map_pedido = {}
-        self._retirada_map_track = {}
-        self._intercalacao_warnings = []
-        self._contagem_etiquetas_input = 0  # total de etiquetas detectadas nos PDFs de entrada
-
-    # ----------------------------------------------------------------
-    # INTERCALAÇÃO / RETIRADA
-    # ----------------------------------------------------------------
-    def get_intercalacao_warnings(self):
-        return list(getattr(self, "_intercalacao_warnings", []))
-
-    def _push_intercalacao_warning(self, msg: str):
-        if not hasattr(self, "_intercalacao_warnings"):
-            self._intercalacao_warnings = []
-        self._intercalacao_warnings.append(msg)
-
-    def _parse_retirada_product_info(self, product_info: str):
-        """
-        product_info exemplo:
-        "[1] Product Name:...; Variation Name:Preto,37/38; ... Quantity: 1; SKU Reference No.: XXX; Parent SKU Reference No.: FA; "
-        Retorna lista de dicts no formato esperado por dados_xml['produtos'].
-        """
-        if not product_info or not isinstance(product_info, str):
-            return []
-        parts = re.split(r"\[\d+\]\s*", product_info)
-        parts = [p.strip() for p in parts if p.strip()]
-        produtos = []
-        for p in parts:
-            fields = {}
-            for chunk in p.split(";"):
-                chunk = chunk.strip()
-                if not chunk or ":" not in chunk:
-                    continue
-                k, v = chunk.split(":", 1)
-                fields[k.strip().lower()] = v.strip()
-            nome = fields.get("product name", "") or fields.get("product", "") or ""
-            variacao = fields.get("variation name", "") or fields.get("variation", "") or ""
-            qtd = fields.get("quantity", "1") or "1"
-            sku = fields.get("parent sku reference no.", "") or fields.get("sku reference no.", "") or ""
-            try:
-                qtd_int = int(float(str(qtd).replace(",", ".")))
-            except Exception:
-                qtd_int = 1
-            produtos.append({
-                "codigo": sku.strip(),
-                "variacao": variacao.strip(),
-                "qtd": str(qtd_int),
-                "descricao": (nome.strip()[:80] if nome else ""),
-            })
-        return produtos
-
-    def carregar_retirada_xlsx(self, pasta_entrada: str):
-        """
-        Carrega retirada.xlsx (ou arquivos contendo 'retirada' no nome) e cria mapas:
-        - pedido(order_sn) -> produtos
-        - tracking_number -> produtos
-        """
-        self._retirada_map_pedido = {}
-        self._retirada_map_track = {}
-        if not pasta_entrada or not os.path.isdir(pasta_entrada):
-            return
-        candidatos = []
-        for f in os.listdir(pasta_entrada):
-            fn = f.lower()
-            if fn.endswith(".xlsx") and ("retirada" in fn or "pickup" in fn):
-                candidatos.append(os.path.join(pasta_entrada, f))
-        if not candidatos:
-            p = os.path.join(pasta_entrada, "retirada.xlsx")
-            if os.path.exists(p):
-                candidatos.append(p)
-        for caminho in candidatos:
-            try:
-                df = pd.read_excel(caminho)
-            except Exception as e:
-                self._push_intercalacao_warning(f"RETIRADA: falha ao ler XLSX '{os.path.basename(caminho)}': {e}")
-                continue
-            cols = {c.lower(): c for c in df.columns}
-            col_track = cols.get("tracking_number") or cols.get("tracking") or cols.get("tracking number")
-            col_pedido = cols.get("order_sn") or cols.get("order") or cols.get("order sn") or cols.get("pedido")
-            col_info = cols.get("product_info") or cols.get("product info") or cols.get("products") or cols.get("itens")
-            if not col_pedido or not col_info:
-                self._push_intercalacao_warning(
-                    f"RETIRADA: XLSX '{os.path.basename(caminho)}' sem colunas esperadas (order_sn/product_info)."
-                )
-                continue
-            for _, row in df.iterrows():
-                pedido = str(row.get(col_pedido, "")).strip()
-                track = str(row.get(col_track, "")).strip() if col_track else ""
-                info = str(row.get(col_info, "")).strip()
-                if not pedido and not track:
-                    continue
-                produtos = self._parse_retirada_product_info(info)
-                if not produtos:
-                    continue
-                if pedido:
-                    self._retirada_map_pedido[pedido] = produtos
-                if track:
-                    m = re.search(r"(BR\d{10,})", track, re.IGNORECASE)
-                    key = (m.group(1).upper() if m else track.upper())
-                    self._retirada_map_track[key] = produtos
-
-    def _is_retirada_pelo_comprador_texto(self, texto: str) -> bool:
-        if not texto:
-            return False
-        return bool(re.search(r"\bRETIRADA\s*(PELO)?\s*COMPRADOR\b", texto, re.IGNORECASE))
-
-    def _extrair_pedido_do_texto(self, texto: str) -> str:
-        if not texto:
-            return ""
-        m = re.search(r"\bPEDIDO\s*[:#]?\s*([A-Z0-9]{8,})\b", texto, re.IGNORECASE)
-        return m.group(1).strip() if m else ""
-
-    def _extrair_tracking_do_texto(self, texto: str) -> str:
-        if not texto:
-            return ""
-        m = re.search(r"\b(BR\d{10,})\b", texto, re.IGNORECASE)
-        return m.group(1).upper() if m else ""
-
-    def _tentar_injetar_produtos_retirada(self, etiqueta: dict, texto_pagina: str):
-        """
-        Se etiqueta for de RETIRADA PELO COMPRADOR e nao tiver produtos,
-        tenta buscar em retirada.xlsx por pedido ou tracking.
-        """
-        try:
-            if not self._is_retirada_pelo_comprador_texto(texto_pagina):
-                return
-            dados = etiqueta.get("dados_xml") or {}
-            produtos = dados.get("produtos") or []
-            if produtos:
-                return
-            pedido = self._extrair_pedido_do_texto(texto_pagina)
-            track = self._extrair_tracking_do_texto(texto_pagina)
-            produtos_encontrados = []
-            if pedido and getattr(self, "_retirada_map_pedido", None):
-                produtos_encontrados = self._retirada_map_pedido.get(pedido, []) or []
-            if not produtos_encontrados and track and getattr(self, "_retirada_map_track", None):
-                produtos_encontrados = self._retirada_map_track.get(track, []) or []
-            if produtos_encontrados:
-                dados["produtos"] = produtos_encontrados
-                dados["pedido"] = pedido
-                dados["tracking"] = track
-                dados["modalidade"] = "retirada"
-                etiqueta["dados_xml"] = dados
-            else:
-                self._push_intercalacao_warning(
-                    f"INTERCALAÇÃO RETIRADA FALHOU: sem match no retirada.xlsx (pedido={pedido or '-'} track={track or '-'})."
-                )
-        except Exception as e:
-            self._push_intercalacao_warning(f"INTERCALAÇÃO RETIRADA ERRO: {e}")
 
     # ----------------------------------------------------------------
     # LEITURA DOS XMLs
@@ -320,196 +162,6 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # RECORTE DAS ETIQUETAS DO PDF DA SHOPEE
     # ----------------------------------------------------------------
-    # ----------------------------------------------------------------
-    # CENTRAL DO VENDEDOR (Shopee - DANFE + DECLARAÇÃO)
-    # ----------------------------------------------------------------
-    def _is_pdf_central_vendedor(self, caminho_pdf: str) -> bool:
-        """Detecta PDF 'Central do Vendedor' (DANFE/Declaração)."""
-        try:
-            doc = fitz.open(caminho_pdf)
-            for i in range(min(2, len(doc))):
-                t = (doc[i].get_text("text") or "").upper()
-                if "DANFE SIMPLIFICADO - ETIQUETA" in t or "DECLARAÇÃO DE CONTEÚDO" in t or "DECLARACAO DE CONTEUDO" in t:
-                    doc.close()
-                    return True
-            doc.close()
-        except Exception:
-            pass
-        return False
-
-    def _extrair_cnpj_do_texto(self, texto: str) -> str:
-        """Tenta extrair CNPJ (14 dígitos) do texto."""
-        if not texto:
-            return ""
-        # formato 00.000.000/0000-00
-        m = re.search(r"\b(\d{2}\.?\d{3}\.?\d{3}\/?\d{4}\-?\d{2})\b", texto)
-        if m:
-            c = re.sub(r"\D", "", m.group(1))
-            return c if len(c) == 14 else ""
-        # 14 dígitos soltos
-        m = re.search(r"\b(\d{14})\b", texto)
-        if m:
-            return m.group(1)
-        return ""
-
-    def _extrair_track_do_texto(self, texto: str) -> str:
-        """Extrai tracking BR..."""
-        m = re.search(r"\b(BR\d{10,})\b", texto or "", re.IGNORECASE)
-        return (m.group(1).upper() if m else "")
-
-    def _parse_declaracao_produtos(self, texto: str):
-        """
-        Extrai produtos da DECLARAÇÃO.
-        Retorna lista no formato esperado pelo rodapé (codigo, variacao, qtd, descricao).
-        """
-        produtos = []
-        if not texto:
-            return produtos
-        linhas = [l.strip() for l in (texto.splitlines() or []) if l.strip()]
-        ini = -1
-        for i, l in enumerate(linhas):
-            u = l.upper()
-            if ("CÓDIGO" in u or "CODIGO" in u) and ("DESCRI" in u or "PROD" in u):
-                ini = i
-                break
-        if ini < 0:
-            return produtos
-        dados = linhas[ini + 1:]
-        for l in dados:
-            if l.upper().startswith("P.") or "TOTAL" in l.upper():
-                break
-            m = re.match(r"^\s*(\d+)\s+(\S+)\s+(.+)$", l)
-            if not m:
-                continue
-            _, sku, resto = m.groups()
-            nums = re.findall(r"(\d+[.,]?\d*)", resto)
-            qtd = "1"
-            if len(nums) >= 2:
-                qtd = nums[-2]
-            resto_limpo = resto
-            if len(nums) >= 2:
-                resto_limpo = re.sub(r"\s+" + re.escape(nums[-1]) + r"\s*$", "", resto_limpo)
-                resto_limpo = re.sub(r"\s+" + re.escape(nums[-2]) + r"\s*$", "", resto_limpo)
-            descricao = resto_limpo.strip()
-            variacao = "-"
-            mvar = re.search(r"(.+)\s+([^\s]+,[^\s]+)\s*$", descricao)
-            if mvar:
-                descricao = mvar.group(1).strip()
-                vv = (mvar.group(2) or "").strip()
-                variacao = vv if vv else "-"
-            try:
-                qtd_int = int(float(qtd.replace(",", ".")))
-            except Exception:
-                qtd_int = 1
-            produtos.append({
-                "codigo": sku.strip(),
-                "variacao": variacao,
-                "qtd": str(qtd_int),
-                "descricao": (descricao[:80] if descricao else sku.strip()),
-            })
-        return produtos
-
-    def _processar_pdf_central_vendedor_um(self, caminho_pdf: str):
-        """
-        Extrai etiquetas do PDF Central do Vendedor como ETIQUETAS NORMAIS:
-        - NÃO usa tipo_especial
-        - Preenche cnpj (pra separar_por_loja não ignorar)
-        - Preenche dados_xml["produtos"] pra rodapé sair igual
-        """
-        etiquetas = []
-        try:
-            doc = fitz.open(caminho_pdf)
-        except Exception as e:
-            self._push_intercalacao_warning(f"[CENTRAL] Falha ao abrir PDF: {os.path.basename(caminho_pdf)} ({e})")
-            return etiquetas
-
-        paginas_danfe = []
-        paginas_decl = []
-        texto_pag = {}
-        track_pag = {}
-        cnpj_pag = {}
-
-        for i in range(len(doc)):
-            t = doc[i].get_text("text") or ""
-            texto_pag[i] = t
-            up = t.upper()
-            if "DANFE SIMPLIFICADO - ETIQUETA" in up:
-                paginas_danfe.append(i)
-            if "DECLARAÇÃO DE CONTEÚDO" in up or "DECLARACAO DE CONTEUDO" in up:
-                paginas_decl.append(i)
-            track_pag[i] = self._extrair_track_do_texto(t)
-            cnpj_pag[i] = self._extrair_cnpj_do_texto(t)
-
-        produtos_por_track = defaultdict(list)
-        cnpj_por_track = {}
-
-        for i in paginas_decl:
-            t = texto_pag.get(i, "")
-            tr = track_pag.get(i, "")
-            if not tr:
-                continue
-            prods = self._parse_declaracao_produtos(t)
-            if prods:
-                produtos_por_track[tr].extend(prods)
-            c = cnpj_pag.get(i, "")
-            if c:
-                cnpj_por_track.setdefault(tr, c)
-
-        # criar etiquetas DANFE
-        for i in paginas_danfe:
-            t = texto_pag.get(i, "")
-            tr = track_pag.get(i, "")
-            prods = produtos_por_track.get(tr, []) if tr else []
-
-            # cnpj: tenta do DANFE; senão do track; senão fallback
-            cnpj = cnpj_pag.get(i, "") or (cnpj_por_track.get(tr, "") if tr else "")
-            if not cnpj:
-                cnpj = "CENTRALVENDEDOR000000"
-
-            etq = {
-                "cnpj": cnpj,
-                "nf": "?",
-                "pagina": i,
-                "pdf": caminho_pdf,
-                "dados_xml": {
-                    "produtos": prods,
-                    "tracking": tr,
-                },
-                "tipo_especial": None,  # IMPORTANTÍSSIMO: fluxo normal (rodapé padrão)
-            }
-
-            # tentativa de RETIRADA (se tiver o texto)
-            try:
-                self._tentar_injetar_produtos_retirada(etq, t)
-            except Exception:
-                pass
-
-            if not prods:
-                self._push_intercalacao_warning(
-                    f"[CENTRAL] Sem produtos (track={tr or '?'}) em {os.path.basename(caminho_pdf)} pág {i+1}"
-                )
-
-            etiquetas.append(etq)
-
-        doc.close()
-        return etiquetas
-
-    def processar_central_vendedor(self, pasta_entrada: str):
-        """Wrapper para compatibilidade com dashboard.py que chama este método."""
-        etiquetas = []
-        pdfs = [
-            f for f in os.listdir(pasta_entrada)
-            if f.lower().endswith(".pdf")
-            and not f.startswith("_")
-            and not f.lower().startswith("shein")
-        ]
-        for nome_pdf in pdfs:
-            caminho_pdf = os.path.join(pasta_entrada, nome_pdf)
-            if self._is_pdf_central_vendedor(caminho_pdf):
-                extra = self._processar_pdf_central_vendedor_um(caminho_pdf)
-                etiquetas.extend(extra)
-        return etiquetas
-
     def _eh_pdf_shein(self, caminho_pdf):
         """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE).
         Retorna True se o PDF tem estrutura Shein.
@@ -535,15 +187,16 @@ class ProcessadorEtiquetasShopee:
 
     def carregar_todos_pdfs(self, pasta):
         """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais e Shein).
-        Retorna (etiquetas_normais, [], pdfs_shein_detectados).
-        Sem distinção CPF/CNPJ — todas as etiquetas vão para o fluxo normal.
+        Retorna (etiquetas_normais, etiquetas_cpf_detectadas, pdfs_shein_detectados).
+        Etiquetas CPF detectadas automaticamente (sem NF real) sao separadas
+        para processamento especial.
         PDFs Shein detectados por conteudo sao retornados como lista de caminhos.
         """
         especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
         pdfs = [f for f in os.listdir(pasta)
                 if f.lower().endswith('.pdf')
                 and not f.startswith('etiquetas_prontas')
-                and not f.lower().startswith('lanim')  # lanim*.pdf processado separadamente
+                and not f.lower().startswith('lanim')  # CPF processado separadamente
                 and f.lower() not in especiais_lower]
 
         # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
@@ -558,28 +211,21 @@ class ProcessadorEtiquetasShopee:
                 pdfs_normais.append(pdf_name)
 
         todas_etiquetas = []
-
+        etiquetas_cpf_auto = []
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
-
-            # Fluxo normal — TODOS os PDFs passam por aqui (sem distinção CPF/CNPJ)
             etqs = self._carregar_pdf(caminho)
             for etq in etqs:
-                # Tentar injetar produtos de retirada no fluxo normal também
-                try:
-                    doc_tmp = fitz.open(caminho)
-                    pg = etq.get('pagina', 0)
-                    texto_p = doc_tmp[pg].get_text("text") if pg < len(doc_tmp) else ""
-                    doc_tmp.close()
-                except Exception:
-                    texto_p = ""
-                self._tentar_injetar_produtos_retirada(etq, texto_p)
-                todas_etiquetas.append(etq)
-
+                if etq.get('tipo_especial') == 'cpf':
+                    etiquetas_cpf_auto.append(etq)
+                else:
+                    todas_etiquetas.append(etq)
+        if etiquetas_cpf_auto:
+            print(f"  CPF detectadas automaticamente: {len(etiquetas_cpf_auto)} etiquetas")
         if pdfs_shein_detectados:
             print(f"  Shein detectados automaticamente: {len(pdfs_shein_detectados)} PDF(s)")
         print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs_normais)} PDF(s)")
-        return todas_etiquetas, [], pdfs_shein_detectados
+        return todas_etiquetas, etiquetas_cpf_auto, pdfs_shein_detectados
 
     def _carregar_pdf(self, caminho_pdf):
         """Carrega e recorta etiquetas de um PDF."""
@@ -593,14 +239,8 @@ class ProcessadorEtiquetasShopee:
             etiquetas.extend(etqs)
 
         doc.close()
-        self._contagem_etiquetas_input += len(etiquetas)
         print(f"    {len(etiquetas)} etiquetas")
         return etiquetas
-
-    def get_etiquetas_engolidas(self, total_geradas):
-        """Retorna quantas etiquetas foram carregadas mas nao foram geradas (engolidas)."""
-        diferenca = self._contagem_etiquetas_input - total_geradas
-        return max(0, diferenca)
 
     def _extrair_nf_quadrante(self, pagina, clip):
         """Extrai o numero da NF do texto dentro de um quadrante."""
@@ -742,7 +382,7 @@ class ProcessadorEtiquetasShopee:
         Retorna lista de clips (regioes) para recortar.
         Layouts possiveis:
           - 4 etiquetas (grid 2x2) - padrao Shopee para pedidos simples e multi-produto
-          - 2 etiquetas (2 linhas, largura total) - formato alternativo (etiquetas empilhadas)
+          - 2 etiquetas (2 linhas, largura total) - formato alternativo
           - 1 etiqueta (pagina inteira) - fallback
         Deteccao baseada em marcadores de etiqueta (Pedido:, REMETENTE, DANFE), nao apenas NFs.
         Paginas pequenas (<= 420pt largura) sao sempre 1 etiqueta (tamanho de 1 quadrante A4).
@@ -752,48 +392,35 @@ class ProcessadorEtiquetasShopee:
         alt = rect.height
 
         # Pagina pequena = 1 etiqueta (ex: 297x419, tamanho de 1 quadrante A4)
+        # A4 = 595x842, metade = ~297x421. Se largura <= 420, e uma etiqueta individual.
         if larg <= 420:
             return [fitz.Rect(0, 0, larg, alt)]
 
         meio_x = larg / 2
         meio_y = alt / 2
 
-        # Testar grid 2x2
+        # Testar grid 2x2 primeiro (padrao Shopee)
         quadrantes_2x2 = [
-            fitz.Rect(0, 0, meio_x, meio_y),       # TL
-            fitz.Rect(meio_x, 0, larg, meio_y),     # TR
-            fitz.Rect(0, meio_y, meio_x, alt),       # BL
-            fitz.Rect(meio_x, meio_y, larg, alt),    # BR
+            fitz.Rect(0, 0, meio_x, meio_y),
+            fitz.Rect(meio_x, 0, larg, meio_y),
+            fitz.Rect(0, meio_y, meio_x, alt),
+            fitz.Rect(meio_x, meio_y, larg, alt),
         ]
 
-        tem_conteudo = [self._contar_etiquetas_regiao(pagina, clip) for clip in quadrantes_2x2]
-        tl, tr, bl, br = tem_conteudo
-        etiquetas_2x2 = sum(tem_conteudo)
+        etiquetas_2x2 = sum(1 for clip in quadrantes_2x2 if self._contar_etiquetas_regiao(pagina, clip))
 
-        # Layout 2x1 (etiquetas empilhadas, largura total)
+        # Se encontrou 2+ etiquetas no grid 2x2, usar este layout
+        if etiquetas_2x2 >= 2:
+            return quadrantes_2x2
+
+        # Testar layout 2 etiquetas (metade superior + metade inferior, largura total)
         quadrantes_2x1 = [
             fitz.Rect(0, 0, larg, meio_y),
             fitz.Rect(0, meio_y, larg, alt),
         ]
 
-        # REGRA CHAVE: se ha conteudo na esquerda (TL/BL) mas NAO na direita (TR/BR),
-        # entao as etiquetas ocupam a largura total → layout 2x1
-        esquerda_tem = tl or bl
-        direita_tem = tr or br
-        if esquerda_tem and not direita_tem:
-            # Verificar se realmente sao 2 etiquetas em 2x1
-            etiquetas_2x1 = sum(1 for clip in quadrantes_2x1
-                                if self._contar_etiquetas_regiao(pagina, clip))
-            if etiquetas_2x1 >= 1:
-                return quadrantes_2x1
+        etiquetas_2x1 = sum(1 for clip in quadrantes_2x1 if self._contar_etiquetas_regiao(pagina, clip))
 
-        # Se encontrou conteudo nos dois lados, usar 2x2
-        if etiquetas_2x2 >= 2:
-            return quadrantes_2x2
-
-        # Testar 2x1 como fallback
-        etiquetas_2x1 = sum(1 for clip in quadrantes_2x1
-                            if self._contar_etiquetas_regiao(pagina, clip))
         if etiquetas_2x1 >= 2:
             return quadrantes_2x1
 
@@ -825,16 +452,28 @@ class ProcessadorEtiquetasShopee:
 
     def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
-        Retorna: 'retirada', 'shein' ou None (normal).
+        Retorna: 'retirada', 'shein', 'cnpj' ou 'cpf'
 
-        Nao distingue CPF/CNPJ — com XLSX ambos geram da mesma forma.
+        Criterios:
+        - 'retirada': contem "RETIRADA PELO COMPRADOR"
+        - 'shein': tem marcadores Shein (PUDO-PGK, Ref.No:GSH, etc.)
+        - 'cnpj': tem DANFE SIMPLIFICADO E tem NF numerica real
+        - 'cpf': tem DANFE SIMPLIFICADO mas SEM NF numerica (loja CPF/pessoa fisica)
+                  OU nao tem DANFE SIMPLIFICADO (declaracao de conteudo)
         """
         texto_upper = texto.upper()
         if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
             return 'retirada'
+        # Detectar Shein antes de CNPJ/CPF
         if self._eh_etiqueta_shein(texto):
             return 'shein'
-        return None
+        if 'DANFE SIMPLIFICADO' in texto_upper:
+            # Tem DANFE SIMPLIFICADO, mas tem NF real?
+            if nf_encontrada and nf_encontrada.isdigit():
+                return 'cnpj'
+            # Sem NF real = loja CPF (pessoa fisica)
+            return 'cpf'
+        return 'cpf'
 
     def _recortar_pagina(self, pagina, caminho_pdf):
         """Recorta etiquetas de uma pagina, detectando automaticamente o layout."""
@@ -865,6 +504,10 @@ class ProcessadorEtiquetasShopee:
             # Extrair order_sn para usar como NF em etiquetas CPF
             order_sn_txt = self._extrair_pedido_texto(texto_quad)
 
+            # Para etiquetas CPF, usar order_sn como identificador (nao tem NF real)
+            if tipo_etiqueta == 'cpf' and order_sn_txt:
+                nf = order_sn_txt
+
             # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
             if self.dados_xlsx_global:
                 dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto_quad)
@@ -883,8 +526,8 @@ class ProcessadorEtiquetasShopee:
                     }
                     print(f"    Pag {pagina.number} Q{idx}: Dados XLSX (order_sn={order_sn_xlsx})")
 
-            # FALLBACK: XML (se XLSX nao encontrou produtos e NF eh numerica real)
-            if not dados_nf.get('produtos') and nf and nf.isdigit() and nf in self.dados_xml:
+            # FALLBACK: XML (se XLSX nao encontrou produtos) - apenas para CNPJ
+            if tipo_etiqueta == 'cnpj' and not dados_nf.get('produtos') and nf in self.dados_xml:
                 dados_nf = self.dados_xml.get(nf, {})
 
             sku = ''
@@ -898,7 +541,11 @@ class ProcessadorEtiquetasShopee:
             nome_loja = self._extrair_nome_loja_remetente(texto_quad)
             if not cnpj:
                 if nome_loja:
-                    cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    if tipo_etiqueta == 'cpf':
+                        # Loja CPF: prefixo CPF_ para agrupar separadamente
+                        cnpj_sintetico = f"CPF_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    else:
+                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
                     cnpj = cnpj_sintetico
                     if cnpj not in self.cnpj_loja:
                         self.cnpj_loja[cnpj] = nome_loja
@@ -916,7 +563,7 @@ class ProcessadorEtiquetasShopee:
                 'pagina_idx': pagina.number,
                 'caminho_pdf': caminho_pdf,
                 'dados_xml': dados_nf,
-                'tipo_especial': tipo_etiqueta,
+                'tipo_especial': tipo_etiqueta if tipo_etiqueta != 'cnpj' else None,
             })
 
         return etiquetas
@@ -1104,16 +751,10 @@ class ProcessadorEtiquetasShopee:
                 line_h = fs_dest + 2
                 espaco_barcode = 37 if tem_chave else 0
                 espaco_tabela = espaco_barcode + 20 + (min(num_prods, 10) * line_h) + 15
-                # Garantir espaco minimo para produtos (pelo menos 120pt)
-                espaco_minimo_produtos = max(espaco_tabela, 120)
-                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_minimo_produtos
+                # Limitar altura da etiqueta para garantir espaco
+                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
                 if alt_etiqueta > alt_max:
-                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.35)  # minimo 35% da pagina
-            else:
-                # Sem produtos: limitar a 85% da pagina para nao ficar colado na borda
-                alt_max_sem_prod = (self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR) * 0.92
-                if alt_etiqueta > alt_max_sem_prod:
-                    alt_etiqueta = alt_max_sem_prod
+                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.45)  # minimo 45% da pagina
 
             dest_rect = fitz.Rect(
                 self.MARGEM_ESQUERDA,
@@ -1162,33 +803,13 @@ class ProcessadorEtiquetasShopee:
                 sem_xml += 1
 
             # Numero de ordem (subido para nao cortar na impressao)
-            try:
-                # Recuperar pagina via doc_saida caso referencia direta tenha sido perdida (bug PyMuPDF)
-                pag_num = nova_pag.number if nova_pag.parent else None
-                if pag_num is None:
-                    # Buscar a pagina principal desta etiqueta no doc_saida
-                    # (e a ultima pagina menos continuacoes)
-                    pag_num = len(doc_saida) - 1
-                    # Se houve paginas de continuacao, voltar para a pagina principal
-                    if tem_dados_produto and num_prods > 0:
-                        # Contar quantas continuacoes foram criadas
-                        continuacoes = 0
-                        if tem_dados_produto:
-                            try:
-                                continuacoes = (cont_num - 1) if 'cont_num' in dir() else 0
-                            except Exception:
-                                continuacoes = 0
-                        pag_num = pag_num - continuacoes
-                    nova_pag = doc_saida[pag_num]
-                nova_pag.insert_text(
-                    (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
-                    f"p.{numero_ordem}",
-                    fontsize=9,
-                    fontname="hebo",
-                    color=(0.4, 0.4, 0.4)
-                )
-            except Exception:
-                pass  # Pular numeracao se PyMuPDF perder referencia da pagina
+            nova_pag.insert_text(
+                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                f"p.{numero_ordem}",
+                fontsize=9,
+                fontname="hebo",
+                color=(0.4, 0.4, 0.4)
+            )
 
         # Fechar docs de entrada
         for doc in docs_abertos.values():
@@ -1600,9 +1221,6 @@ class ProcessadorEtiquetasShopee:
                 print(f"    XLSX erro: {xlsx_nome} - {e}")
 
         print(f"  Total XLSX: {len(self.dados_xlsx_global)} pedidos, {len(self.dados_xlsx_tracking)} trackings")
-
-        # Carregar retirada.xlsx para intercalação de produtos de retirada
-        self.carregar_retirada_xlsx(pasta)
 
     def _extrair_pedido_texto(self, texto):
         """Extrai o numero do pedido (order_sn) do texto da etiqueta."""
@@ -2947,18 +2565,30 @@ def main():
         if not os.path.exists(pasta_loja):
             os.makedirs(pasta_loja)
 
+        # Separar etiquetas regulares e CPF
+        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf',)]
+        etiq_cpf_loja = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         total_pags = 0
         n_simples = n_multi = com_xml = sem_xml = 0
 
-        # Todas as etiquetas passam pelo mesmo fluxo (sem distinção CPF/CNPJ)
-        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-        total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
-            etiquetas_loja, caminho_pdf
-        )
-        print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
-        if sem_xml > 0:
-            print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
+        # Gerar PDF regular (CNPJ/retirada)
+        if etiq_regular:
+            caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+            total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
+                etiq_regular, caminho_pdf
+            )
+            print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
+            if sem_xml > 0:
+                print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
+
+        # Gerar PDF CPF separado (formato 150x225mm)
+        if etiq_cpf_loja:
+            caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
+            total_cpf = proc.gerar_pdf_cpf(etiq_cpf_loja, caminho_cpf_pdf)
+            total_pags += total_cpf
+            print(f"    PDF CPF: {total_cpf} paginas")
 
         # Gerar XLSX (inclui regular + CPF)
         caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")

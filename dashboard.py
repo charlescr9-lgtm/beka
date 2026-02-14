@@ -9,7 +9,6 @@ import sys
 import json
 import time
 import threading
-import uuid
 import re as _re
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -26,7 +25,6 @@ from etiquetas_shopee import ProcessadorEtiquetasShopee
 from models import db, bcrypt, User, Session
 from auth import auth_bp
 from payments import payments_bp
-from pdf_normalizer import normalize_pdf_to_labels
 
 # PyInstaller frozen path support
 if getattr(sys, 'frozen', False):
@@ -1635,48 +1633,6 @@ def _executar_processamento(user_id):
 
             adicionar_log(estado, "Iniciando processamento...", "info")
 
-            # Normalizar PDFs DANFE (Shopee Central do Vendedor) antes do pipeline
-            _PDFS_ESPECIAIS = ("lanim.pdf", "shein crua.pdf", "shein.pdf")
-            for f in os.listdir(pasta_entrada):
-                if f.startswith("_"):
-                    continue
-                if not f.lower().endswith(".pdf"):
-                    continue
-                if f.startswith("etiquetas_prontas"):
-                    continue
-                if f.lower().startswith("lanim"):
-                    continue
-                if f.lower() in _PDFS_ESPECIAIS:
-                    continue
-
-                in_path = os.path.join(pasta_entrada, f)
-                tmp_path = os.path.join(pasta_entrada, f"_norm_{uuid.uuid4().hex}_{f}")
-
-                try:
-                    info = normalize_pdf_to_labels(
-                        input_pdf_path=in_path,
-                        output_pdf_path=tmp_path,
-                        target_w_mm=estado["configuracoes"].get("largura_mm", 150),
-                        target_h_mm=estado["configuracoes"].get("altura_mm", 230),
-                        padding_mm=3.0,
-                        only_when_matches_danfe=True,
-                    )
-
-                    if info.get("matched"):
-                        os.replace(tmp_path, in_path)
-                        adicionar_log(estado, f"PDF normalizado (DANFE): {f}", "success")
-                    else:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-
-                except Exception as e:
-                    try:
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
-                    except Exception:
-                        pass
-                    adicionar_log(estado, f"Aviso: nao normalizou {f}: {e}", "warning")
-
             proc = ProcessadorEtiquetasShopee()
 
             proc.LARGURA_PT = estado["configuracoes"]["largura_mm"] * 2.835
@@ -1697,22 +1653,12 @@ def _executar_processamento(user_id):
                 adicionar_log(estado, "Nenhum XLSX de empacotamento encontrado", "warning")
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
-            todas_etiquetas, _, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
+            todas_etiquetas, cpf_auto_detectadas, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
+            if cpf_auto_detectadas:
+                adicionar_log(estado, f"CPF auto-detectadas: {len(cpf_auto_detectadas)} etiquetas", "info")
             if pdfs_shein_auto:
                 adicionar_log(estado, f"Shein auto-detectados: {len(pdfs_shein_auto)} PDF(s)", "info")
-
-            # Avisos de intercalação / match de retirada
-            try:
-                warns = proc.get_intercalacao_warnings() if hasattr(proc, "get_intercalacao_warnings") else []
-                if warns:
-                    adicionar_log(estado, "--- AVISOS DE INTERCALAÇÃO / MATCH ---", "warning")
-                    for w in warns[:50]:
-                        adicionar_log(estado, w, "warning")
-                    if len(warns) > 50:
-                        adicionar_log(estado, f"... e mais {len(warns) - 50} aviso(s) de intercalação", "warning")
-            except Exception:
-                pass
 
             # Verificar quais etiquetas tem/nao tem dados de produto
             n_com_dados = sum(1 for e in todas_etiquetas if e.get('dados_xml', {}).get('produtos'))
@@ -1722,11 +1668,12 @@ def _executar_processamento(user_id):
 
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
 
-            # lanim*.pdf = CPF genuino (processado separadamente com layout proprio)
             etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
+            # Juntar CPF do lanim*.pdf com CPF auto-detectadas de PDFs genericos
+            etiquetas_cpf_especial.extend(cpf_auto_detectadas)
             if etiquetas_cpf_especial:
                 todas_etiquetas.extend(etiquetas_cpf_especial)
-                adicionar_log(estado, f"CPF (lanim*.pdf): {len(etiquetas_cpf_especial)} etiquetas", "success")
+                adicionar_log(estado, f"CPF: {len(etiquetas_cpf_especial)} etiquetas ({len(cpf_auto_detectadas)} auto-detectadas)", "success")
 
             etiquetas_shein = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein_auto)
             if etiquetas_shein:
@@ -1793,14 +1740,27 @@ def _executar_processamento(user_id):
 
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
+                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') != 'cpf']
+                    etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
+
                     total_pags = 0
                     n_simples = n_multi = com_xml = sem_xml = 0
                     pdf_nome = ''
 
-                    # Todas as etiquetas passam pelo mesmo fluxo (sem distinção CPF/CNPJ)
-                    caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-                    total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(etiquetas_loja, caminho_pdf)
-                    pdf_nome = os.path.basename(caminho_pdf)
+                    if etiq_regular:
+                        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+                        t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
+                        total_pags += t
+                        n_simples, n_multi, com_xml, sem_xml = ns, nm, cx, sx
+                        pdf_nome = os.path.basename(caminho_pdf)
+
+                    if etiq_cpf:
+                        caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
+                        total_cpf = proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf_pdf)
+                        total_pags += total_cpf
+                        if not pdf_nome:
+                            pdf_nome = os.path.basename(caminho_cpf_pdf)
+                        adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
 
                     caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
                     n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
@@ -1838,15 +1798,6 @@ def _executar_processamento(user_id):
                 resultado_lojas, dict(lojas), caminho_resumo_geral
             )
             adicionar_log(estado, f"Resumo geral: {n_lojas_rg} lojas, {total_un_rg} unidades total", "success")
-
-            # Aviso de etiquetas engolidas (carregadas mas nao geradas)
-            try:
-                total_geradas = sum(info.get("paginas", 0) for info in resultado_lojas)
-                engolidas = proc.get_etiquetas_engolidas(total_geradas)
-                if engolidas > 0:
-                    adicionar_log(estado, f"⚠ AVISO: {engolidas} etiqueta(s) foram carregadas mas NÃO foram geradas (engolidas)!", "warning")
-            except Exception:
-                pass
 
             # Aviso de etiquetas sem NF/declaracao
             if etiquetas_sem_nf:
