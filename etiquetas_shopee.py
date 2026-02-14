@@ -735,6 +735,7 @@ class ProcessadorEtiquetasShopee:
                 width=self.LARGURA_PT,
                 height=self.ALTURA_PT
             )
+            pag_principal_idx = len(doc_saida) - 1  # indice da pagina principal
 
             quad_larg = clip.width
             quad_alt = clip.height
@@ -746,15 +747,18 @@ class ProcessadorEtiquetasShopee:
             tem_chave = bool(dados.get('chave'))
             tem_dados_produto = num_prods > 0
             if tem_dados_produto:
-                # Espaco necessario: barcode(37 se tem chave) + cabecalho(20) + linhas(12 cada) + margem(15)
+                # Espaco necessario: barcode(37 se tem chave) + cabecalho(~36) + linhas(line_h cada) + margem(15)
+                # line_h deve corresponder ao usado em _desenhar_secao_produtos: fs_qtd + 2
                 fs_dest = int(round(self.fonte_produto * 1.5))
-                line_h = fs_dest + 2
+                fs_qtd = int(round(fs_dest * 1.5))
+                line_h = fs_qtd + 2
                 espaco_barcode = 37 if tem_chave else 0
-                espaco_tabela = espaco_barcode + 20 + (min(num_prods, 10) * line_h) + 15
+                espaco_cabecalho = line_h * 2 + 4  # duas linhas de cabecalho + separadores
+                espaco_tabela = espaco_barcode + espaco_cabecalho + (min(num_prods, 10) * line_h) + 15
                 # Limitar altura da etiqueta para garantir espaco
                 alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
                 if alt_etiqueta > alt_max:
-                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.45)  # minimo 45% da pagina
+                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.35)  # minimo 35% da pagina
 
             dest_rect = fitz.Rect(
                 self.MARGEM_ESQUERDA,
@@ -801,6 +805,9 @@ class ProcessadorEtiquetasShopee:
                     cont_num += 1
             else:
                 sem_xml += 1
+
+            # Re-adquirir referencia da pagina principal (new_page() invalida refs anteriores no PyMuPDF)
+            nova_pag = doc_saida[pag_principal_idx]
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
