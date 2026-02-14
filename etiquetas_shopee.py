@@ -59,6 +59,7 @@ class ProcessadorEtiquetasShopee:
         self._retirada_map_pedido = {}
         self._retirada_map_track = {}
         self._intercalacao_warnings = []
+        self._contagem_etiquetas_input = 0  # total de etiquetas detectadas nos PDFs de entrada
 
     # ----------------------------------------------------------------
     # INTERCALAÇÃO / RETIRADA
@@ -534,16 +535,15 @@ class ProcessadorEtiquetasShopee:
 
     def carregar_todos_pdfs(self, pasta):
         """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais e Shein).
-        Retorna (etiquetas_normais, etiquetas_cpf_detectadas, pdfs_shein_detectados).
-        Etiquetas CPF detectadas automaticamente (sem NF real) sao separadas
-        para processamento especial.
+        Retorna (etiquetas_normais, [], pdfs_shein_detectados).
+        Sem distinção CPF/CNPJ — todas as etiquetas vão para o fluxo normal.
         PDFs Shein detectados por conteudo sao retornados como lista de caminhos.
         """
         especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
         pdfs = [f for f in os.listdir(pasta)
                 if f.lower().endswith('.pdf')
                 and not f.startswith('etiquetas_prontas')
-                and not f.lower().startswith('lanim')  # CPF processado separadamente
+                and not f.lower().startswith('lanim')  # lanim*.pdf processado separadamente
                 and f.lower() not in especiais_lower]
 
         # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
@@ -558,13 +558,11 @@ class ProcessadorEtiquetasShopee:
                 pdfs_normais.append(pdf_name)
 
         todas_etiquetas = []
-        etiquetas_cpf_auto = []
 
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
 
-            # Fluxo normal (parser existente) — TODOS os PDFs passam por aqui
-            # incluindo Central do Vendedor (recorte em quadrantes + intercalação XLSX)
+            # Fluxo normal — TODOS os PDFs passam por aqui (sem distinção CPF/CNPJ)
             etqs = self._carregar_pdf(caminho)
             for etq in etqs:
                 # Tentar injetar produtos de retirada no fluxo normal também
@@ -576,17 +574,12 @@ class ProcessadorEtiquetasShopee:
                 except Exception:
                     texto_p = ""
                 self._tentar_injetar_produtos_retirada(etq, texto_p)
+                todas_etiquetas.append(etq)
 
-                if etq.get('tipo_especial') == 'cpf':
-                    etiquetas_cpf_auto.append(etq)
-                else:
-                    todas_etiquetas.append(etq)
-        if etiquetas_cpf_auto:
-            print(f"  CPF detectadas automaticamente: {len(etiquetas_cpf_auto)} etiquetas")
         if pdfs_shein_detectados:
             print(f"  Shein detectados automaticamente: {len(pdfs_shein_detectados)} PDF(s)")
         print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs_normais)} PDF(s)")
-        return todas_etiquetas, etiquetas_cpf_auto, pdfs_shein_detectados
+        return todas_etiquetas, [], pdfs_shein_detectados
 
     def _carregar_pdf(self, caminho_pdf):
         """Carrega e recorta etiquetas de um PDF."""
@@ -600,8 +593,14 @@ class ProcessadorEtiquetasShopee:
             etiquetas.extend(etqs)
 
         doc.close()
+        self._contagem_etiquetas_input += len(etiquetas)
         print(f"    {len(etiquetas)} etiquetas")
         return etiquetas
+
+    def get_etiquetas_engolidas(self, total_geradas):
+        """Retorna quantas etiquetas foram carregadas mas nao foram geradas (engolidas)."""
+        diferenca = self._contagem_etiquetas_input - total_geradas
+        return max(0, diferenca)
 
     def _extrair_nf_quadrante(self, pagina, clip):
         """Extrai o numero da NF do texto dentro de um quadrante."""
@@ -813,28 +812,16 @@ class ProcessadorEtiquetasShopee:
 
     def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
-        Retorna: 'retirada', 'shein', 'cnpj' ou 'cpf'
+        Retorna: 'retirada', 'shein' ou None (normal).
 
-        Criterios:
-        - 'retirada': contem "RETIRADA PELO COMPRADOR"
-        - 'shein': tem marcadores Shein (PUDO-PGK, Ref.No:GSH, etc.)
-        - 'cnpj': tem DANFE SIMPLIFICADO E tem NF numerica real
-        - 'cpf': tem DANFE SIMPLIFICADO mas SEM NF numerica (loja CPF/pessoa fisica)
-                  OU nao tem DANFE SIMPLIFICADO (declaracao de conteudo)
+        Nao distingue CPF/CNPJ — com XLSX ambos geram da mesma forma.
         """
         texto_upper = texto.upper()
         if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
             return 'retirada'
-        # Detectar Shein antes de CNPJ/CPF
         if self._eh_etiqueta_shein(texto):
             return 'shein'
-        if 'DANFE SIMPLIFICADO' in texto_upper:
-            # Tem DANFE SIMPLIFICADO, mas tem NF real?
-            if nf_encontrada and nf_encontrada.isdigit():
-                return 'cnpj'
-            # Sem NF real = loja CPF (pessoa fisica)
-            return 'cpf'
-        return 'cpf'
+        return None
 
     def _recortar_pagina(self, pagina, caminho_pdf):
         """Recorta etiquetas de uma pagina, detectando automaticamente o layout."""
@@ -865,10 +852,6 @@ class ProcessadorEtiquetasShopee:
             # Extrair order_sn para usar como NF em etiquetas CPF
             order_sn_txt = self._extrair_pedido_texto(texto_quad)
 
-            # Para etiquetas CPF, usar order_sn como identificador (nao tem NF real)
-            if tipo_etiqueta == 'cpf' and order_sn_txt:
-                nf = order_sn_txt
-
             # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
             if self.dados_xlsx_global:
                 dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto_quad)
@@ -887,8 +870,8 @@ class ProcessadorEtiquetasShopee:
                     }
                     print(f"    Pag {pagina.number} Q{idx}: Dados XLSX (order_sn={order_sn_xlsx})")
 
-            # FALLBACK: XML (se XLSX nao encontrou produtos) - apenas para CNPJ
-            if tipo_etiqueta == 'cnpj' and not dados_nf.get('produtos') and nf in self.dados_xml:
+            # FALLBACK: XML (se XLSX nao encontrou produtos e NF eh numerica real)
+            if not dados_nf.get('produtos') and nf and nf.isdigit() and nf in self.dados_xml:
                 dados_nf = self.dados_xml.get(nf, {})
 
             sku = ''
@@ -902,11 +885,7 @@ class ProcessadorEtiquetasShopee:
             nome_loja = self._extrair_nome_loja_remetente(texto_quad)
             if not cnpj:
                 if nome_loja:
-                    if tipo_etiqueta == 'cpf':
-                        # Loja CPF: prefixo CPF_ para agrupar separadamente
-                        cnpj_sintetico = f"CPF_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
-                    else:
-                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+                    cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
                     cnpj = cnpj_sintetico
                     if cnpj not in self.cnpj_loja:
                         self.cnpj_loja[cnpj] = nome_loja
@@ -924,7 +903,7 @@ class ProcessadorEtiquetasShopee:
                 'pagina_idx': pagina.number,
                 'caminho_pdf': caminho_pdf,
                 'dados_xml': dados_nf,
-                'tipo_especial': tipo_etiqueta if tipo_etiqueta != 'cnpj' else None,
+                'tipo_especial': tipo_etiqueta,
             })
 
         return etiquetas
@@ -2929,30 +2908,18 @@ def main():
         if not os.path.exists(pasta_loja):
             os.makedirs(pasta_loja)
 
-        # Separar etiquetas regulares e CPF
-        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf',)]
-        etiq_cpf_loja = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
-
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         total_pags = 0
         n_simples = n_multi = com_xml = sem_xml = 0
 
-        # Gerar PDF regular (CNPJ/retirada)
-        if etiq_regular:
-            caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-            total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
-                etiq_regular, caminho_pdf
-            )
-            print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
-            if sem_xml > 0:
-                print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
-
-        # Gerar PDF CPF separado (formato 150x225mm)
-        if etiq_cpf_loja:
-            caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
-            total_cpf = proc.gerar_pdf_cpf(etiq_cpf_loja, caminho_cpf_pdf)
-            total_pags += total_cpf
-            print(f"    PDF CPF: {total_cpf} paginas")
+        # Todas as etiquetas passam pelo mesmo fluxo (sem distinção CPF/CNPJ)
+        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+        total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
+            etiquetas_loja, caminho_pdf
+        )
+        print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
+        if sem_xml > 0:
+            print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
 
         # Gerar XLSX (inclui regular + CPF)
         caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")

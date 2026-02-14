@@ -1697,10 +1697,8 @@ def _executar_processamento(user_id):
                 adicionar_log(estado, "Nenhum XLSX de empacotamento encontrado", "warning")
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
-            todas_etiquetas, cpf_auto_detectadas, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
+            todas_etiquetas, _, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
             adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
-            if cpf_auto_detectadas:
-                adicionar_log(estado, f"CPF auto-detectadas: {len(cpf_auto_detectadas)} etiquetas", "info")
             if pdfs_shein_auto:
                 adicionar_log(estado, f"Shein auto-detectados: {len(pdfs_shein_auto)} PDF(s)", "info")
 
@@ -1724,19 +1722,15 @@ def _executar_processamento(user_id):
 
             adicionar_log(estado, "Verificando etiquetas especiais...", "info")
 
+            # lanim*.pdf = CPF genuino (processado separadamente com layout proprio)
             etiquetas_cpf_especial = proc.processar_cpf(pasta_entrada)
-            # Juntar CPF do lanim*.pdf com CPF auto-detectadas de PDFs genericos
-            etiquetas_cpf_especial.extend(cpf_auto_detectadas)
             if etiquetas_cpf_especial:
                 todas_etiquetas.extend(etiquetas_cpf_especial)
-                adicionar_log(estado, f"CPF: {len(etiquetas_cpf_especial)} etiquetas ({len(cpf_auto_detectadas)} auto-detectadas)", "success")
+                adicionar_log(estado, f"CPF (lanim*.pdf): {len(etiquetas_cpf_especial)} etiquetas", "success")
 
             etiquetas_shein = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein_auto)
             if etiquetas_shein:
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
-
-            # Central do Vendedor agora é processado dentro de carregar_todos_pdfs (fluxo normal)
-            # Não chamar processar_central_vendedor separadamente para evitar duplicação
 
             if not etiquetas_cpf_especial and not etiquetas_shein:
                 adicionar_log(estado, "Nenhuma etiqueta especial encontrada", "info")
@@ -1799,27 +1793,14 @@ def _executar_processamento(user_id):
 
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') != 'cpf']
-                    etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
-
                     total_pags = 0
                     n_simples = n_multi = com_xml = sem_xml = 0
                     pdf_nome = ''
 
-                    if etiq_regular:
-                        caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-                        t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
-                        total_pags += t
-                        n_simples, n_multi, com_xml, sem_xml = ns, nm, cx, sx
-                        pdf_nome = os.path.basename(caminho_pdf)
-
-                    if etiq_cpf:
-                        caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
-                        total_cpf = proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf_pdf)
-                        total_pags += total_cpf
-                        if not pdf_nome:
-                            pdf_nome = os.path.basename(caminho_cpf_pdf)
-                        adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
+                    # Todas as etiquetas passam pelo mesmo fluxo (sem distinção CPF/CNPJ)
+                    caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
+                    total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(etiquetas_loja, caminho_pdf)
+                    pdf_nome = os.path.basename(caminho_pdf)
 
                     caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
                     n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
@@ -1857,6 +1838,15 @@ def _executar_processamento(user_id):
                 resultado_lojas, dict(lojas), caminho_resumo_geral
             )
             adicionar_log(estado, f"Resumo geral: {n_lojas_rg} lojas, {total_un_rg} unidades total", "success")
+
+            # Aviso de etiquetas engolidas (carregadas mas nao geradas)
+            try:
+                total_geradas = sum(info.get("paginas", 0) for info in resultado_lojas)
+                engolidas = proc.get_etiquetas_engolidas(total_geradas)
+                if engolidas > 0:
+                    adicionar_log(estado, f"⚠ AVISO: {engolidas} etiqueta(s) foram carregadas mas NÃO foram geradas (engolidas)!", "warning")
+            except Exception:
+                pass
 
             # Aviso de etiquetas sem NF/declaracao
             if etiquetas_sem_nf:
