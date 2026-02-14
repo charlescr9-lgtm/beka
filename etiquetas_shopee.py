@@ -742,7 +742,7 @@ class ProcessadorEtiquetasShopee:
         Retorna lista de clips (regioes) para recortar.
         Layouts possiveis:
           - 4 etiquetas (grid 2x2) - padrao Shopee para pedidos simples e multi-produto
-          - 2 etiquetas (2 linhas, largura total) - formato alternativo
+          - 2 etiquetas (2 linhas, largura total) - formato alternativo (etiquetas empilhadas)
           - 1 etiqueta (pagina inteira) - fallback
         Deteccao baseada em marcadores de etiqueta (Pedido:, REMETENTE, DANFE), nao apenas NFs.
         Paginas pequenas (<= 420pt largura) sao sempre 1 etiqueta (tamanho de 1 quadrante A4).
@@ -752,35 +752,48 @@ class ProcessadorEtiquetasShopee:
         alt = rect.height
 
         # Pagina pequena = 1 etiqueta (ex: 297x419, tamanho de 1 quadrante A4)
-        # A4 = 595x842, metade = ~297x421. Se largura <= 420, e uma etiqueta individual.
         if larg <= 420:
             return [fitz.Rect(0, 0, larg, alt)]
 
         meio_x = larg / 2
         meio_y = alt / 2
 
-        # Testar grid 2x2 primeiro (padrao Shopee)
+        # Testar grid 2x2
         quadrantes_2x2 = [
-            fitz.Rect(0, 0, meio_x, meio_y),
-            fitz.Rect(meio_x, 0, larg, meio_y),
-            fitz.Rect(0, meio_y, meio_x, alt),
-            fitz.Rect(meio_x, meio_y, larg, alt),
+            fitz.Rect(0, 0, meio_x, meio_y),       # TL
+            fitz.Rect(meio_x, 0, larg, meio_y),     # TR
+            fitz.Rect(0, meio_y, meio_x, alt),       # BL
+            fitz.Rect(meio_x, meio_y, larg, alt),    # BR
         ]
 
-        etiquetas_2x2 = sum(1 for clip in quadrantes_2x2 if self._contar_etiquetas_regiao(pagina, clip))
+        tem_conteudo = [self._contar_etiquetas_regiao(pagina, clip) for clip in quadrantes_2x2]
+        tl, tr, bl, br = tem_conteudo
+        etiquetas_2x2 = sum(tem_conteudo)
 
-        # Se encontrou 2+ etiquetas no grid 2x2, usar este layout
-        if etiquetas_2x2 >= 2:
-            return quadrantes_2x2
-
-        # Testar layout 2 etiquetas (metade superior + metade inferior, largura total)
+        # Layout 2x1 (etiquetas empilhadas, largura total)
         quadrantes_2x1 = [
             fitz.Rect(0, 0, larg, meio_y),
             fitz.Rect(0, meio_y, larg, alt),
         ]
 
-        etiquetas_2x1 = sum(1 for clip in quadrantes_2x1 if self._contar_etiquetas_regiao(pagina, clip))
+        # REGRA CHAVE: se ha conteudo na esquerda (TL/BL) mas NAO na direita (TR/BR),
+        # entao as etiquetas ocupam a largura total → layout 2x1
+        esquerda_tem = tl or bl
+        direita_tem = tr or br
+        if esquerda_tem and not direita_tem:
+            # Verificar se realmente sao 2 etiquetas em 2x1
+            etiquetas_2x1 = sum(1 for clip in quadrantes_2x1
+                                if self._contar_etiquetas_regiao(pagina, clip))
+            if etiquetas_2x1 >= 1:
+                return quadrantes_2x1
 
+        # Se encontrou conteudo nos dois lados, usar 2x2
+        if etiquetas_2x2 >= 2:
+            return quadrantes_2x2
+
+        # Testar 2x1 como fallback
+        etiquetas_2x1 = sum(1 for clip in quadrantes_2x1
+                            if self._contar_etiquetas_regiao(pagina, clip))
         if etiquetas_2x1 >= 2:
             return quadrantes_2x1
 
