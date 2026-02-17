@@ -306,12 +306,13 @@ def adicionar_log(estado, msg, tipo="info"):
 def version():
     """Retorna versão do código em execução."""
     version_info = {
-        'version': '2026-02-17-12:09',
-        'build': 'bug-fixes-retirada-avisos',
+        'version': '2026-02-17-12:15',
+        'build': 'avisos-visíveis-web-ui',
         'features': [
+            'Avisos aparecem na interface web',
+            'Etiquetas de RETIRADA separadas em PDF próprio',
+            'Avisos de etiquetas sem XML',
             'Declaração de conteúdo desabilitada',
-            'Avisos de quadrantes vazios implementados',
-            'Separação de etiquetas de retirada',
             'PyMuPDF 1.24.14 fixado'
         ]
     }
