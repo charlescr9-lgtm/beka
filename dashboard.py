@@ -302,6 +302,27 @@ def adicionar_log(estado, msg, tipo="info"):
 # ROTAS PUBLICAS
 # ----------------------------------------------------------------
 
+@app.route('/version')
+def version():
+    """Retorna versão do código em execução."""
+    version_info = {
+        'version': '2026-02-17-12:09',
+        'build': 'bug-fixes-retirada-avisos',
+        'features': [
+            'Declaração de conteúdo desabilitada',
+            'Avisos de quadrantes vazios implementados',
+            'Separação de etiquetas de retirada',
+            'PyMuPDF 1.24.14 fixado'
+        ]
+    }
+    # Tentar ler arquivo VERSION se existir
+    try:
+        with open('VERSION', 'r') as f:
+            version_info['file'] = f.read().strip()
+    except:
+        pass
+    return jsonify(version_info)
+
 @app.route('/')
 def index():
     """Serve o dashboard (verifica login no frontend)."""
