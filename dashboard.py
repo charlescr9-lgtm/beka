@@ -1675,7 +1675,12 @@ def _executar_processamento(user_id):
 
             adicionar_log(estado, "Carregando etiquetas dos PDFs...", "info")
             todas_etiquetas, cpf_auto_detectadas, pdfs_shein_auto = proc.carregar_todos_pdfs(pasta_entrada)
-            adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraidas", "success")
+            adicionar_log(estado, f"Total: {len(todas_etiquetas)} etiquetas extraídas", "success")
+            
+            # Avisar sobre PDFs que podem ter quadrantes/páginas ignorados
+            pdfs_na_pasta = [f for f in os.listdir(pasta_entrada) if f.lower().endswith('.pdf')]
+            if len(pdfs_na_pasta) > len(todas_etiquetas) / 2:  # Heurística: se tem muito mais PDFs que etiquetas
+                adicionar_log(estado, f"INFO: {len(pdfs_na_pasta)} PDFs encontrados, verifique se todos foram processados", "info")
             if cpf_auto_detectadas:
                 adicionar_log(estado, f"CPF auto-detectadas: {len(cpf_auto_detectadas)} etiquetas", "info")
             if pdfs_shein_auto:
@@ -1714,6 +1719,11 @@ def _executar_processamento(user_id):
             adicionar_log(estado, "Separando etiquetas por loja...", "info")
             lojas = proc.separar_por_loja(todas_etiquetas)
             adicionar_log(estado, f"{len(lojas)} lojas para processar", "info")
+            
+            # Avisos sobre tipos especiais de etiquetas
+            n_retirada = sum(1 for e in todas_etiquetas if e.get('tipo_especial') == 'retirada')
+            if n_retirada > 0:
+                adicionar_log(estado, f"AVISO: {n_retirada} etiqueta(s) de RETIRADA (cliente retira na loja - sem endereço)", "warning")
 
             estado["_etiquetas_por_cnpj"] = dict(lojas)
             estado["_proc_config"] = {
@@ -1761,8 +1771,9 @@ def _executar_processamento(user_id):
 
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') != 'cpf']
+                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf', 'retirada')]
                     etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
+                    etiq_retirada = [e for e in etiquetas_loja if e.get('tipo_especial') == 'retirada']
 
                     total_pags = 0
                     n_simples = n_multi = com_xml = sem_xml = 0
@@ -1782,6 +1793,12 @@ def _executar_processamento(user_id):
                         if not pdf_nome:
                             pdf_nome = os.path.basename(caminho_cpf_pdf)
                         adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
+                    
+                    if etiq_retirada:
+                        caminho_retirada_pdf = os.path.join(pasta_loja, f"retirada_{nome_loja}_{timestamp}.pdf")
+                        total_retirada = proc.gerar_pdf_cpf(etiq_retirada, caminho_retirada_pdf)  # Usa mesmo formato do CPF
+                        total_pags += total_retirada
+                        adicionar_log(estado, f"  {nome_loja}: {total_retirada} etiquetas RETIRADA (cliente retira na loja - sem endereço)", "warning")
 
                     caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
                     n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_loja, caminho_xlsx, nome_loja)
