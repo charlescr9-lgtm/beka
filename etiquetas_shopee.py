@@ -450,18 +450,85 @@ class ProcessadorEtiquetasShopee:
             return True
         return False
 
+    def _eh_declaracao_conteudo(self, texto):
+        """Detecta se o quadrante é uma Declaração de Conteúdo.
+        DESABILITADO: retorna sempre False para evitar conflitos.
+        """
+        return False  # DESABILITADO - use XLSX para dados de produtos
+
+    def _extrair_produtos_declaracao(self, texto):
+        """Extrai produtos da Declaração de Conteúdo.
+        Retorna lista de dicionários com codigo, descricao, variacao, qtd.
+        """
+        produtos = []
+        linhas = texto.split('\n')
+        
+        # Procurar tabela de produtos (N° CÓDIGO DESCRIÇÃO VARIAÇÃO)
+        em_tabela = False
+        for i, linha in enumerate(linhas):
+            linha_upper = linha.upper()
+            
+            # Detectar início da tabela
+            if 'C' in linha_upper and 'DIGO' in linha_upper and 'DESCRI' in linha_upper:
+                em_tabela = True
+                continue
+            
+            # Parar na seção de totais
+            if em_tabela and ('TOTAIS' in linha_upper or 'PESO TOTAL' in linha_upper):
+                break
+            
+            # Extrair produtos (formato: número + código + descrição)
+            if em_tabela and linha.strip():
+                # Remover linhas de cabeçalho/observações
+                if any(x in linha_upper for x in ['OBSERV', 'ASSINATURA', 'CRIME', 'CONSTITUI']):
+                    break
+                
+                # Tentar extrair: número, código, descrição
+                partes = linha.split(None, 2)  # Split máximo 3 partes
+                if len(partes) >= 3:
+                    try:
+                        num = int(partes[0])  # Primeiro campo é número
+                        codigo = partes[1]
+                        descricao = partes[2] if len(partes) > 2 else ''
+                        
+                        # Limpar descrição
+                        descricao = descricao.strip()
+                        
+                        produtos.append({
+                            'codigo': codigo,
+                            'descricao': descricao,
+                            'variacao': '',
+                            'qtd': '1'
+                        })
+                    except (ValueError, IndexError):
+                        continue
+        
+        # Tentar extrair quantidade total (Peso Total ou quantidade)
+        for linha in linhas:
+            # Buscar "2" sozinho que geralmente indica quantidade
+            m = re.search(r'^(\d+)\s*$', linha.strip())
+            if m and produtos:
+                qtd_total = m.group(1)
+                # Distribuir quantidade pelos produtos
+                if len(produtos) == 1:
+                    produtos[0]['qtd'] = qtd_total
+        
+        return produtos
+
     def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
-        Retorna: 'retirada', 'shein', 'cnpj' ou 'cpf'
+        Retorna: 'retirada', 'shein', 'cnpj', 'cpf' ou 'declaracao'
 
         Criterios:
         - 'retirada': contem "RETIRADA PELO COMPRADOR"
         - 'shein': tem marcadores Shein (PUDO-PGK, Ref.No:GSH, etc.)
+        - 'declaracao': contem "DECLARAÇÃO DE CONTEÚDO" (não é etiqueta, é anexo)
         - 'cnpj': tem DANFE SIMPLIFICADO E tem NF numerica real
         - 'cpf': tem DANFE SIMPLIFICADO mas SEM NF numerica (loja CPF/pessoa fisica)
                   OU nao tem DANFE SIMPLIFICADO (declaracao de conteudo)
         """
         texto_upper = texto.upper()
+        
         if 'RETIRADA PELO' in texto_upper and 'COMPRADOR' in texto_upper:
             return 'retirada'
         # Detectar Shein antes de CNPJ/CPF
@@ -473,6 +540,11 @@ class ProcessadorEtiquetasShopee:
                 return 'cnpj'
             # Sem NF real = loja CPF (pessoa fisica)
             return 'cpf'
+        
+        # Detectar Declaração de Conteúdo por ÚLTIMO (só se não for etiqueta)
+        if self._eh_declaracao_conteudo(texto):
+            return 'declaracao'
+        
         return 'cpf'
 
     def _recortar_pagina(self, pagina, caminho_pdf):
@@ -480,10 +552,13 @@ class ProcessadorEtiquetasShopee:
         quadrantes = self._detectar_layout_pagina(pagina)
 
         etiquetas = []
+        quadrantes_vazios = 0
+        
         for idx, clip in enumerate(quadrantes):
             # Verificar se o quadrante tem conteudo (nao esta vazio)
             texto_quad = pagina.get_text(clip=clip).strip()
             if len(texto_quad) < 10:
+                quadrantes_vazios += 1
                 continue  # Quadrante vazio, pular
 
             # Extrair NF primeiro (necessario para detectar tipo)
@@ -491,6 +566,11 @@ class ProcessadorEtiquetasShopee:
 
             # Detectar tipo de etiqueta (passa nf para distinguir CNPJ vs CPF)
             tipo_etiqueta = self._detectar_tipo_etiqueta(texto_quad, nf_encontrada=nf)
+            
+            # Declaração de conteúdo desabilitada - ignorar
+            if tipo_etiqueta == 'declaracao':
+                print(f"    Pag {pagina.number} Q{idx}: AVISO - Declaração de Conteúdo detectada mas ignorada (use XLSX para dados de produtos)")
+                continue
 
             # Gerar etiqueta MESMO sem NF - usar identificador sintetico (incluir nome PDF para unicidade)
             if nf is None:
@@ -565,6 +645,10 @@ class ProcessadorEtiquetasShopee:
                 'dados_xml': dados_nf,
                 'tipo_especial': tipo_etiqueta if tipo_etiqueta != 'cnpj' else None,
             })
+
+        # Avisar sobre quadrantes não processados
+        if quadrantes_vazios > 0:
+            print(f"    Pag {pagina.number}: AVISO - {quadrantes_vazios} quadrante(s) vazio(s) ou ignorado(s)")
 
         return etiquetas
 
@@ -778,11 +862,14 @@ class ProcessadorEtiquetasShopee:
                         height=self.ALTURA_PT
                     )
                     # Cabecalho da continuacao
-                    pag_cont.insert_text(
-                        (self.MARGEM_ESQUERDA + 2, self.MARGEM_TOPO + 12),
-                        f"CONTINUACAO - NF: {nf}",
-                        fontsize=8, fontname="hebo", color=(0, 0, 0)
-                    )
+                    try:
+                        pag_cont.insert_text(
+                            (self.MARGEM_ESQUERDA + 2, self.MARGEM_TOPO + 12),
+                            f"CONTINUACAO - NF: {nf}",
+                            fontsize=8, fontname="hebo", color=(0, 0, 0)
+                        )
+                    except (AttributeError, RuntimeError):
+                        pass  # Bug PyMuPDF - skipar cabeçalho se der erro
                     pag_cont.draw_line(
                         (self.MARGEM_ESQUERDA, self.MARGEM_TOPO + 16),
                         (self.LARGURA_PT - self.MARGEM_DIREITA, self.MARGEM_TOPO + 16),
@@ -793,23 +880,30 @@ class ProcessadorEtiquetasShopee:
                         pag_cont, dados, self.MARGEM_TOPO + 20, prod_inicio=prox_prod
                     )
                     # Numero de ordem na continuacao
-                    pag_cont.insert_text(
-                        (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
-                        f"p.{numero_ordem} (cont.{cont_num})",
-                        fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
-                    )
+                    try:
+                        pag_cont.insert_text(
+                            (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                            f"p.{numero_ordem} (cont.{cont_num})",
+                            fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
+                        )
+                    except (AttributeError, RuntimeError):
+                        pass  # Bug PyMuPDF - skipar numero se der erro
                     cont_num += 1
             else:
                 sem_xml += 1
 
             # Numero de ordem (subido para nao cortar na impressao)
-            nova_pag.insert_text(
-                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
-                f"p.{numero_ordem}",
-                fontsize=9,
-                fontname="hebo",
-                color=(0.4, 0.4, 0.4)
-            )
+            try:
+                nova_pag.insert_text(
+                    (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                    f"p.{numero_ordem}",
+                    fontsize=9,
+                    fontname="hebo",
+                    color=(0.4, 0.4, 0.4)
+                )
+            except (AttributeError, RuntimeError):
+                # Bug PyMuPDF - skipar numero da pagina se der erro
+                pass
 
         # Fechar docs de entrada
         for doc in docs_abertos.values():
@@ -2565,9 +2659,10 @@ def main():
         if not os.path.exists(pasta_loja):
             os.makedirs(pasta_loja)
 
-        # Separar etiquetas regulares e CPF
-        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf',)]
+        # Separar etiquetas regulares, CPF e Retirada
+        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf', 'retirada')]
         etiq_cpf_loja = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
+        etiq_retirada = [e for e in etiquetas_loja if e.get('tipo_especial') == 'retirada']
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         total_pags = 0
@@ -2589,6 +2684,13 @@ def main():
             total_cpf = proc.gerar_pdf_cpf(etiq_cpf_loja, caminho_cpf_pdf)
             total_pags += total_cpf
             print(f"    PDF CPF: {total_cpf} paginas")
+
+        # Gerar PDF Retirada separado (formato 150x225mm, sem endereço)
+        if etiq_retirada:
+            caminho_retirada_pdf = os.path.join(pasta_loja, f"retirada_{nome_loja}_{timestamp}.pdf")
+            total_retirada = proc.gerar_pdf_cpf(etiq_retirada, caminho_retirada_pdf)  # Usa mesmo formato do CPF
+            total_pags += total_retirada
+            print(f"    PDF RETIRADA: {total_retirada} paginas (sem endereço - cliente retira na loja)")
 
         # Gerar XLSX (inclui regular + CPF)
         caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
