@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Modelos do banco de dados - SQLAlchemy + SQLite
+Inclui: Users, Sessions, Payments, WhatsAppContacts, Schedules, UpSellerConfig, ExecutionLog
 """
 
 import os
@@ -8,9 +9,24 @@ import uuid
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
+from cryptography.fernet import Fernet
 
 db = SQLAlchemy()
 bcrypt = Bcrypt()
+
+# Chave de criptografia para senhas do UpSeller (fixa para persistir entre reinícios)
+_FERNET_KEY = os.environ.get("FERNET_KEY", "cj6k4FwRMbZFA2X7s1vDGqm_UMdd1FWtM-KcTjs2g-k=")
+_fernet = Fernet(_FERNET_KEY.encode() if isinstance(_FERNET_KEY, str) else _FERNET_KEY)
+
+
+def encrypt_value(value: str) -> str:
+    """Encripta um valor sensivel (ex: senha UpSeller)."""
+    return _fernet.encrypt(value.encode()).decode()
+
+
+def decrypt_value(encrypted: str) -> str:
+    """Decripta um valor sensivel."""
+    return _fernet.decrypt(encrypted.encode()).decode()
 
 # Planos disponiveis
 PLANOS = {
@@ -190,3 +206,153 @@ class Payment(db.Model):
     valor = db.Column(db.Float, default=0.0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ============================================================
+# NOVAS TABELAS - Automacao (UpSeller + WhatsApp + Agendamento)
+# ============================================================
+
+class WhatsAppContact(db.Model):
+    """Contatos WhatsApp vinculados a lojas para envio automatico de etiquetas."""
+    __tablename__ = 'whatsapp_contacts'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    loja_cnpj = db.Column(db.String(20), nullable=False)    # CNPJ da loja
+    loja_nome = db.Column(db.String(200), nullable=False)    # Nome legivel da loja
+    telefone = db.Column(db.String(20), nullable=False)      # 5511999999999
+    nome_contato = db.Column(db.String(200), default='')     # Nome do destinatario
+    ativo = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('whatsapp_contacts', lazy=True))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "loja_cnpj": self.loja_cnpj,
+            "loja_nome": self.loja_nome,
+            "telefone": self.telefone,
+            "nome_contato": self.nome_contato,
+            "ativo": self.ativo,
+            "created_at": self.created_at.strftime("%d/%m/%Y %H:%M") if self.created_at else '',
+        }
+
+
+class Schedule(db.Model):
+    """Agendamentos de processamento automatico (UpSeller -> Beka -> WhatsApp)."""
+    __tablename__ = 'schedules'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    nome = db.Column(db.String(100), nullable=False)         # "Processamento Matutino"
+    hora = db.Column(db.String(5), nullable=False)            # "08:00"
+    minuto = db.Column(db.Integer, default=0)                 # Minuto extraido de hora
+    dias_semana = db.Column(db.String(50), default='todos')   # "seg,ter,qua,qui,sex" ou "todos"
+    ativo = db.Column(db.Boolean, default=True)
+
+    # Acoes do agendamento
+    baixar_upseller = db.Column(db.Boolean, default=True)
+    processar_etiquetas = db.Column(db.Boolean, default=True)
+    enviar_whatsapp = db.Column(db.Boolean, default=True)
+
+    # Controle interno
+    job_id = db.Column(db.String(100), nullable=True)         # ID do APScheduler
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    ultima_execucao = db.Column(db.DateTime, nullable=True)
+    ultimo_status = db.Column(db.String(20), default='')      # "sucesso" | "erro" | "parcial"
+
+    user = db.relationship('User', backref=db.backref('schedules', lazy=True))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "hora": self.hora,
+            "dias_semana": self.dias_semana,
+            "ativo": self.ativo,
+            "baixar_upseller": self.baixar_upseller,
+            "processar_etiquetas": self.processar_etiquetas,
+            "enviar_whatsapp": self.enviar_whatsapp,
+            "job_id": self.job_id or '',
+            "ultima_execucao": self.ultima_execucao.strftime("%d/%m/%Y %H:%M") if self.ultima_execucao else '',
+            "ultimo_status": self.ultimo_status or '',
+            "created_at": self.created_at.strftime("%d/%m/%Y %H:%M") if self.created_at else '',
+        }
+
+
+class UpSellerConfig(db.Model):
+    """Configuracao de acesso ao UpSeller por usuario."""
+    __tablename__ = 'upseller_config'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), unique=True, nullable=False)
+    email = db.Column(db.String(120), nullable=False)         # Login do UpSeller
+    password_encrypted = db.Column(db.Text, nullable=False)   # Senha encriptada (Fernet)
+    session_dir = db.Column(db.String(500), default='')       # Pasta do profile Playwright
+    headless = db.Column(db.Boolean, default=True)
+    ultima_sincronizacao = db.Column(db.DateTime, nullable=True)
+    status_conexao = db.Column(db.String(20), default='')     # "ok" | "erro" | "nao_testado"
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('upseller_config', uselist=False, lazy=True))
+
+    def set_password(self, password: str):
+        """Encripta e salva a senha do UpSeller."""
+        self.password_encrypted = encrypt_value(password)
+
+    def get_password(self) -> str:
+        """Retorna a senha decriptada."""
+        return decrypt_value(self.password_encrypted)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "email": self.email,
+            "headless": self.headless,
+            "status_conexao": self.status_conexao or 'nao_testado',
+            "ultima_sincronizacao": self.ultima_sincronizacao.strftime("%d/%m/%Y %H:%M") if self.ultima_sincronizacao else '',
+            # NUNCA retorna senha
+        }
+
+
+class ExecutionLog(db.Model):
+    """Log de execucoes do pipeline automatizado."""
+    __tablename__ = 'execution_logs'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    schedule_id = db.Column(db.Integer, db.ForeignKey('schedules.id'), nullable=True)
+    tipo = db.Column(db.String(20), nullable=False)           # "manual" | "agendado"
+    inicio = db.Column(db.DateTime, default=datetime.utcnow)
+    fim = db.Column(db.DateTime, nullable=True)
+    status = db.Column(db.String(20), default='executando')   # "sucesso" | "erro" | "parcial" | "executando"
+
+    # Contadores
+    etiquetas_baixadas = db.Column(db.Integer, default=0)
+    xmls_baixados = db.Column(db.Integer, default=0)
+    etiquetas_processadas = db.Column(db.Integer, default=0)
+    whatsapp_enviados = db.Column(db.Integer, default=0)
+    whatsapp_erros = db.Column(db.Integer, default=0)
+
+    # Detalhes completos em JSON
+    detalhes = db.Column(db.Text, default='{}')
+
+    user = db.relationship('User', backref=db.backref('execution_logs', lazy=True))
+    schedule = db.relationship('Schedule', backref=db.backref('execution_logs', lazy=True))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "schedule_id": self.schedule_id,
+            "tipo": self.tipo,
+            "inicio": self.inicio.strftime("%d/%m/%Y %H:%M:%S") if self.inicio else '',
+            "fim": self.fim.strftime("%d/%m/%Y %H:%M:%S") if self.fim else '',
+            "status": self.status,
+            "etiquetas_baixadas": self.etiquetas_baixadas,
+            "xmls_baixados": self.xmls_baixados,
+            "etiquetas_processadas": self.etiquetas_processadas,
+            "whatsapp_enviados": self.whatsapp_enviados,
+            "whatsapp_erros": self.whatsapp_erros,
+            "duracao_s": (self.fim - self.inicio).total_seconds() if self.fim and self.inicio else 0,
+        }

@@ -11,3 +11,8 @@ PyMuPDF
 python-barcode
 mercadopago
 google-auth
+# Automacao - UpSeller + WhatsApp + Agendamento
+playwright>=1.40.0
+APScheduler>=3.10.0
+cryptography>=41.0.0
+requests

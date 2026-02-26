@@ -22,9 +22,12 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from etiquetas_shopee import ProcessadorEtiquetasShopee
-from models import db, bcrypt, User, Session
+from models import (db, bcrypt, User, Session, WhatsAppContact, Schedule,
+                    UpSellerConfig, ExecutionLog, encrypt_value, decrypt_value)
 from auth import auth_bp
 from payments import payments_bp
+from scheduler import beka_scheduler
+from whatsapp_service import WhatsAppService
 
 # PyInstaller frozen path support
 if getattr(sys, 'frozen', False):
@@ -93,6 +96,9 @@ def _migrate_db():
 with app.app_context():
     _migrate_db()
     db.create_all()
+
+# Inicializar scheduler de automacao
+beka_scheduler.init_app(app)
 
 # Emails com acesso vitalicio (plano empresarial permanente)
 EMAILS_VITALICIO = [
@@ -1934,6 +1940,1008 @@ def _formatar_tamanho(bytes_val):
         return f"{bytes_val / 1024:.1f} KB"
     else:
         return f"{bytes_val / (1024 * 1024):.1f} MB"
+
+
+# ================================================================
+# AUTOMACAO: UpSeller + WhatsApp + Agendamentos
+# ================================================================
+
+# ----------------------------------------------------------------
+# ENDPOINTS - UPSELLER (sessao persistente, sem credenciais)
+# ----------------------------------------------------------------
+
+def _get_upseller_session_dir(user_id):
+    """Retorna diretorio de sessao do UpSeller para o usuario."""
+    d = os.path.join(os.path.expanduser("~"), ".upseller_sessions", str(user_id))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _get_or_create_upseller_config(user_id):
+    """Retorna ou cria config do UpSeller (sem precisar de email/senha)."""
+    config = UpSellerConfig.query.filter_by(user_id=user_id).first()
+    if not config:
+        config = UpSellerConfig(
+            user_id=user_id,
+            email="",
+            session_dir=_get_upseller_session_dir(user_id),
+        )
+        config.password_encrypted = ""
+        db.session.add(config)
+        db.session.commit()
+    # Corrigir session_dir antigo se necessario
+    if not config.session_dir or '/tmp/' in config.session_dir or '\\tmp\\' in config.session_dir:
+        config.session_dir = _get_upseller_session_dir(user_id)
+        db.session.commit()
+    return config
+
+
+# ----------------------------------------------------------------
+# GERENCIADOR GLOBAL DE SCRAPERS UPSELLER (mantém instância viva)
+# ----------------------------------------------------------------
+# Problema: UpSeller usa cookies de sessão (não-persistentes) que são
+# perdidos quando o Playwright fecha. Solução: manter o Playwright
+# rodando em background com o navegador minimizado.
+
+import asyncio as _asyncio_global
+import threading as _threading_global
+
+class _UpSellerManager:
+    """Gerencia instâncias do UpSellerScraper por usuário, mantendo-as vivas."""
+
+    def __init__(self):
+        self._scrapers = {}      # user_id -> scraper instance
+        self._loops = {}         # user_id -> asyncio event loop
+        self._threads = {}       # user_id -> thread running the loop
+        self._locks = {}         # user_id -> threading.Lock
+        self._global_lock = _threading_global.Lock()
+
+    def _get_lock(self, user_id):
+        with self._global_lock:
+            if user_id not in self._locks:
+                self._locks[user_id] = _threading_global.Lock()
+            return self._locks[user_id]
+
+    def _ensure_loop(self, user_id):
+        """Garante que existe um event loop rodando para o user_id."""
+        if user_id in self._loops and self._loops[user_id].is_running():
+            return self._loops[user_id]
+
+        loop = _asyncio_global.new_event_loop()
+
+        def _run_loop():
+            _asyncio_global.set_event_loop(loop)
+            loop.run_forever()
+
+        t = _threading_global.Thread(target=_run_loop, daemon=True, name=f"upseller-loop-{user_id}")
+        t.start()
+        self._loops[user_id] = loop
+        self._threads[user_id] = t
+        return loop
+
+    def _run_async(self, user_id, coro):
+        """Executa coroutine no loop do user_id e retorna resultado."""
+        loop = self._ensure_loop(user_id)
+        future = _asyncio_global.run_coroutine_threadsafe(coro, loop)
+        return future.result(timeout=300)  # 5 min max
+
+    def get_scraper(self, user_id):
+        """Retorna scraper existente ou None."""
+        return self._scrapers.get(user_id)
+
+    def is_alive(self, user_id):
+        """Verifica se o scraper do user_id está vivo e com página aberta."""
+        scraper = self._scrapers.get(user_id)
+        if not scraper or not scraper._page:
+            return False
+        try:
+            # Testa se a página ainda responde
+            self._run_async(user_id, scraper._page.evaluate("1+1"))
+            return True
+        except Exception:
+            return False
+
+    def is_logged_in(self, user_id):
+        """Verifica se o scraper está vivo E logado no UpSeller."""
+        scraper = self._scrapers.get(user_id)
+        if not scraper or not scraper._page:
+            return False
+        try:
+            return self._run_async(user_id, scraper._esta_logado())
+        except Exception:
+            return False
+
+    def criar_scraper(self, user_id, config_session_dir, download_dir, headless=False):
+        """Cria novo scraper, fechando o anterior se existir."""
+        from upseller_scraper import UpSellerScraper
+
+        lock = self._get_lock(user_id)
+        with lock:
+            # Fechar anterior se existir
+            self._fechar_interno(user_id)
+
+            scraper = UpSellerScraper({
+                "email": "",
+                "password": "",
+                "profile_dir": config_session_dir,
+                "headless": headless,
+                "download_dir": download_dir,
+            })
+            self._scrapers[user_id] = scraper
+
+            # Iniciar navegador
+            self._run_async(user_id, scraper._iniciar_navegador())
+            return scraper
+
+    def login_manual(self, user_id, timeout=180):
+        """Executa login_manual no scraper do user_id."""
+        scraper = self._scrapers.get(user_id)
+        if not scraper:
+            raise RuntimeError("Scraper não inicializado. Chame criar_scraper primeiro.")
+        return self._run_async(user_id, scraper.login_manual(timeout_seconds=timeout))
+
+    def listar_lojas(self, user_id):
+        """Executa listar_lojas_pendentes no scraper do user_id."""
+        scraper = self._scrapers.get(user_id)
+        if not scraper:
+            raise RuntimeError("Scraper não inicializado")
+        return self._run_async(user_id, scraper.listar_lojas_pendentes())
+
+    def esta_logado(self, user_id):
+        """Verifica login no scraper do user_id."""
+        scraper = self._scrapers.get(user_id)
+        if not scraper:
+            return False
+        try:
+            return self._run_async(user_id, scraper._esta_logado())
+        except Exception:
+            return False
+
+    def reconectar(self, user_id, config_session_dir, download_dir):
+        """
+        Tenta reconectar automaticamente:
+        1. Se scraper está vivo e logado → retorna True
+        2. Se scraper está vivo mas deslogado → tenta navegar de volta
+        3. Se scraper morreu → cria novo com headless=False para login manual
+        """
+        lock = self._get_lock(user_id)
+        with lock:
+            # 1. Scraper vivo e logado?
+            if self.is_alive(user_id):
+                try:
+                    logado = self._run_async(user_id, self._scrapers[user_id]._esta_logado())
+                    if logado:
+                        print(f"[UpSellerManager] User {user_id}: já está logado!")
+                        return True
+                except Exception:
+                    pass
+
+            # 2. Criar novo scraper headless e testar sessão persistente
+            try:
+                scraper = self.criar_scraper(user_id, config_session_dir, download_dir, headless=True)
+                logado = self._run_async(user_id, scraper._esta_logado())
+                if logado:
+                    print(f"[UpSellerManager] User {user_id}: sessão persistente reutilizada (headless)!")
+                    return True
+            except Exception as e:
+                print(f"[UpSellerManager] Erro tentando headless: {e}")
+
+            # 3. Sessão expirou → abrir visível para login manual
+            try:
+                self._fechar_interno(user_id)
+                scraper = self.criar_scraper(user_id, config_session_dir, download_dir, headless=False)
+                logado = self._run_async(user_id, scraper.login_manual(timeout_seconds=180))
+                if logado:
+                    # Minimizar janela após login bem-sucedido
+                    try:
+                        self._run_async(user_id, scraper._page.evaluate("""
+                            (() => { try { window.resizeTo(1,1); window.moveTo(-2000,-2000); } catch(e){} })()
+                        """))
+                    except Exception:
+                        pass
+                    print(f"[UpSellerManager] User {user_id}: login manual concluído, scraper mantido vivo!")
+                    return True
+                else:
+                    return False
+            except Exception as e:
+                print(f"[UpSellerManager] Erro no login manual: {e}")
+                return False
+
+    def _fechar_interno(self, user_id):
+        """Fecha scraper e loop sem lock (chamado internamente)."""
+        scraper = self._scrapers.pop(user_id, None)
+        loop = self._loops.get(user_id)
+        if scraper and loop and loop.is_running():
+            try:
+                future = _asyncio_global.run_coroutine_threadsafe(scraper.fechar(), loop)
+                future.result(timeout=10)
+            except Exception:
+                pass
+        # Parar o loop
+        if loop and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        self._loops.pop(user_id, None)
+        self._threads.pop(user_id, None)
+
+    def fechar(self, user_id):
+        """Fecha scraper do user_id (com lock)."""
+        lock = self._get_lock(user_id)
+        with lock:
+            self._fechar_interno(user_id)
+
+    def fechar_todos(self):
+        """Fecha todos os scrapers (para shutdown)."""
+        for uid in list(self._scrapers.keys()):
+            self.fechar(uid)
+
+
+# Instância global do gerenciador
+_upseller_mgr = _UpSellerManager()
+
+
+@app.route('/api/upseller/status', methods=['GET'])
+@jwt_required()
+def api_upseller_status():
+    """Retorna status da conexao UpSeller."""
+    user_id = int(get_jwt_identity())
+    config = UpSellerConfig.query.filter_by(user_id=user_id).first()
+    if config and config.status_conexao == "ok":
+        return jsonify({
+            "status": "ok",
+            "ultima_sincronizacao": config.ultima_sincronizacao.strftime("%d/%m/%Y %H:%M") if config.ultima_sincronizacao else ""
+        })
+    return jsonify({"status": "desconectado", "ultima_sincronizacao": ""})
+
+
+@app.route('/api/upseller/conectar', methods=['POST'])
+@jwt_required()
+def api_upseller_conectar():
+    """
+    Abre navegador VISIVEL para login manual no UpSeller.
+    MANTÉM o scraper vivo em background após login (cookies de sessão ficam na memória).
+    """
+    user_id = int(get_jwt_identity())
+    config = _get_or_create_upseller_config(user_id)
+
+    try:
+        user = db.session.get(User, user_id)
+        download_dir = user.get_pasta_entrada() if user else os.path.join(os.path.expanduser("~"), ".upseller_downloads")
+
+        # Verificar se já está logado (scraper vivo)
+        if _upseller_mgr.is_alive(user_id):
+            try:
+                logado = _upseller_mgr.esta_logado(user_id)
+                if logado:
+                    config.status_conexao = "ok"
+                    db.session.commit()
+                    return jsonify({"mensagem": "Já conectado ao UpSeller!", "status": "ok"})
+            except Exception:
+                pass
+
+        # Criar scraper VISÍVEL e fazer login manual
+        scraper = _upseller_mgr.criar_scraper(user_id, config.session_dir, download_dir, headless=False)
+        logado = _upseller_mgr.login_manual(user_id, timeout=180)
+
+        config.status_conexao = "ok" if logado else "erro"
+        db.session.commit()
+
+        if logado:
+            # NÃO fecha o scraper! Ele fica vivo em background.
+            return jsonify({"mensagem": "Conectado ao UpSeller! Navegador mantido em background.", "status": "ok"})
+
+        # Se não logou, fechar scraper
+        _upseller_mgr.fechar(user_id)
+        return jsonify({"erro": "Login nao concluido. Tente novamente.", "status": "erro"}), 400
+
+    except Exception as e:
+        print(f"[UpSeller] Erro ao conectar: {e}")
+        import traceback
+        traceback.print_exc()
+        _upseller_mgr.fechar(user_id)
+        return jsonify({"erro": str(e), "status": "erro"}), 500
+
+
+@app.route('/api/upseller/testar-conexao', methods=['POST'])
+@jwt_required()
+def api_upseller_testar():
+    """Verifica se scraper está vivo e logado no UpSeller."""
+    user_id = int(get_jwt_identity())
+    config = _get_or_create_upseller_config(user_id)
+
+    try:
+        # Verificar scraper vivo primeiro (sem criar novo)
+        if _upseller_mgr.is_alive(user_id):
+            logado = _upseller_mgr.esta_logado(user_id)
+            config.status_conexao = "ok" if logado else "erro"
+            db.session.commit()
+            if logado:
+                return jsonify({"mensagem": "Sessao ativa!", "status": "ok"})
+            return jsonify({"erro": "Sessao expirada. Clique em Reconectar.", "status": "erro"}), 400
+
+        # Scraper não está vivo
+        config.status_conexao = "desconectado"
+        db.session.commit()
+        return jsonify({"erro": "Navegador não está ativo. Clique em Conectar.", "status": "desconectado"}), 400
+
+    except Exception as e:
+        return jsonify({"erro": str(e), "status": "erro"}), 500
+
+
+@app.route('/api/upseller/reconectar', methods=['POST'])
+@jwt_required()
+def api_upseller_reconectar():
+    """
+    Reconexão automática ao UpSeller:
+    1. Se scraper vivo e logado → retorna OK imediatamente
+    2. Se scraper vivo mas deslogado → tenta reconectar
+    3. Se scraper morto → tenta criar headless (sessão persistente)
+    4. Se tudo falhou → abre navegador visível para login manual
+    """
+    user_id = int(get_jwt_identity())
+    config = _get_or_create_upseller_config(user_id)
+
+    try:
+        user = db.session.get(User, user_id)
+        download_dir = user.get_pasta_entrada() if user else os.path.join(os.path.expanduser("~"), ".upseller_downloads")
+
+        logado = _upseller_mgr.reconectar(user_id, config.session_dir, download_dir)
+
+        config.status_conexao = "ok" if logado else "erro"
+        db.session.commit()
+
+        if logado:
+            return jsonify({"mensagem": "Reconectado ao UpSeller!", "status": "ok"})
+        return jsonify({"erro": "Não foi possível reconectar. Tente Conectar novamente.", "status": "erro"}), 400
+
+    except Exception as e:
+        print(f"[UpSeller] Erro ao reconectar: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"erro": str(e), "status": "erro"}), 500
+
+
+@app.route('/api/upseller/sincronizar', methods=['POST'])
+@jwt_required()
+def api_upseller_sincronizar():
+    """
+    Sincronizar = APENAS ler pedidos pendentes do UpSeller e mostrar lojas.
+    NAO baixa nada, NAO processa nada. Rapido e leve.
+    """
+    user_id = int(get_jwt_identity())
+    config = _get_or_create_upseller_config(user_id)
+
+    if hasattr(app, '_sync_em_andamento') and app._sync_em_andamento.get(user_id):
+        return jsonify({"erro": "Sincronizacao ja em andamento"}), 409
+
+    def _sync_leitura():
+        if not hasattr(app, '_sync_em_andamento'):
+            app._sync_em_andamento = {}
+        app._sync_em_andamento[user_id] = True
+        if not hasattr(app, '_sync_status'):
+            app._sync_status = {}
+        app._sync_status[user_id] = {"etapa": "iniciando", "progresso": 0, "detalhes": "Conectando ao UpSeller..."}
+
+        with app.app_context():
+            try:
+                # Etapa 1: Verificar se scraper está vivo e logado
+                app._sync_status[user_id] = {"etapa": "login", "progresso": 20, "detalhes": "Verificando sessao UpSeller..."}
+
+                scraper_vivo = _upseller_mgr.is_alive(user_id)
+
+                if scraper_vivo:
+                    # Scraper vivo → verificar se logado
+                    logado = _upseller_mgr.esta_logado(user_id)
+                    if not logado:
+                        # Tentar reconectar automaticamente
+                        app._sync_status[user_id] = {"etapa": "reconectando", "progresso": 30, "detalhes": "Reconectando ao UpSeller..."}
+                        user = db.session.get(User, user_id)
+                        download_dir = user.get_pasta_entrada() if user else os.path.join(os.path.expanduser("~"), ".upseller_downloads")
+                        logado = _upseller_mgr.reconectar(user_id, config.session_dir, download_dir)
+                else:
+                    # Scraper morto → tentar reconectar automaticamente
+                    app._sync_status[user_id] = {"etapa": "reconectando", "progresso": 30, "detalhes": "Iniciando conexão ao UpSeller..."}
+                    user = db.session.get(User, user_id)
+                    download_dir = user.get_pasta_entrada() if user else os.path.join(os.path.expanduser("~"), ".upseller_downloads")
+                    logado = _upseller_mgr.reconectar(user_id, config.session_dir, download_dir)
+
+                if not logado:
+                    app._sync_status[user_id] = {
+                        "etapa": "erro", "progresso": 0,
+                        "detalhes": "Sessao expirada. Clique 'Conectar ao UpSeller' para fazer login."
+                    }
+                    config.status_conexao = "desconectado"
+                    db.session.commit()
+                    return
+
+                # Etapa 2: Ler pedidos pendentes usando scraper vivo
+                app._sync_status[user_id] = {"etapa": "lendo_pedidos", "progresso": 60, "detalhes": "Lendo pedidos pendentes..."}
+                resultado = _upseller_mgr.listar_lojas(user_id)
+
+                # NÃO fecha o scraper! Ele continua vivo para próximas operações.
+
+                # Atualizar config
+                config.ultima_sincronizacao = datetime.utcnow()
+                config.status_conexao = "ok"
+                db.session.commit()
+
+                # Concluir
+                if resultado.get("sucesso"):
+                    lojas = resultado.get("lojas", [])
+                    total = resultado.get("total_pedidos", 0)
+                    sidebar = resultado.get("sidebar_info", {})
+                    app._sync_status[user_id] = {
+                        "etapa": "concluido", "progresso": 100,
+                        "detalhes": f"{len(lojas)} lojas, {total} pedidos pendentes",
+                        "lojas_encontradas": lojas,
+                        "total_pedidos": total,
+                        "sidebar_info": sidebar,
+                    }
+                else:
+                    app._sync_status[user_id] = {
+                        "etapa": "erro", "progresso": 0,
+                        "detalhes": resultado.get("erro", "Erro ao ler pedidos")
+                    }
+
+            except Exception as e:
+                print(f"[Sync] Erro: {e}")
+                import traceback
+                traceback.print_exc()
+                app._sync_status[user_id] = {"etapa": "erro", "progresso": 0, "detalhes": str(e)}
+            finally:
+                app._sync_em_andamento[user_id] = False
+
+    thread = threading.Thread(target=_sync_leitura, daemon=True)
+    thread.start()
+    return jsonify({"mensagem": "Sincronizacao iniciada", "status": "iniciando"})
+
+
+@app.route('/api/upseller/gerar', methods=['POST'])
+@jwt_required()
+def api_upseller_gerar():
+    """
+    Pipeline completo de geracao (atualizado 2026-02-26):
+
+    Fluxo correto POR LOJA:
+    1. Verificar/reconectar sessao UpSeller
+    2. Para cada loja selecionada:
+       a. Filtrar por loja no UpSeller
+       b. Programar envio dos pedidos ("Para Programar")
+       c. Aguardar tracking numbers
+    3. Baixar etiquetas com DDC (Etiqueta Casada + Declaracao de Conteudo)
+       - Formato: Etiqueta Personalizada, PDF, 10x15cm
+    4. Extrair dados de pedidos → XLSX
+    5. Exportar XMLs de NF-e
+    6. Mover tudo para pasta_entrada
+    7. Processar etiquetas (DDC dados no rodape, organizar por SKU)
+
+    Body JSON (opcional):
+    {
+        "lojas": ["DAHIANE", "LOJA_X"],  // Lojas para processar (vazio = todas)
+    }
+    """
+    user_id = int(get_jwt_identity())
+    config = _get_or_create_upseller_config(user_id)
+
+    if hasattr(app, '_gerar_em_andamento') and app._gerar_em_andamento.get(user_id):
+        return jsonify({"erro": "Geracao ja em andamento"}), 409
+
+    # Extrair lojas selecionadas do request
+    data = request.get_json(silent=True) or {}
+    lojas_selecionadas = data.get("lojas", [])
+
+    def _gerar_pipeline():
+        if not hasattr(app, '_gerar_em_andamento'):
+            app._gerar_em_andamento = {}
+        app._gerar_em_andamento[user_id] = True
+        if not hasattr(app, '_gerar_status'):
+            app._gerar_status = {}
+        app._gerar_status[user_id] = {"etapa": "iniciando", "progresso": 0, "detalhes": "Iniciando geracao..."}
+
+        with app.app_context():
+            try:
+                user = db.session.get(User, user_id)
+                if not user:
+                    app._gerar_status[user_id] = {"etapa": "erro", "progresso": 0, "detalhes": "Usuario nao encontrado"}
+                    return
+
+                pasta_entrada = user.get_pasta_entrada()
+                download_dir = os.path.join(pasta_entrada, '_upseller_temp')
+                os.makedirs(download_dir, exist_ok=True)
+
+                resultado = {"pdfs": [], "xmls": [], "xlsx": "", "sucesso": False}
+
+                # === Etapa 1: Verificar/reconectar scraper ===
+                app._gerar_status[user_id] = {"etapa": "login", "progresso": 5, "detalhes": "Verificando sessao UpSeller..."}
+
+                if not _upseller_mgr.is_alive(user_id) or not _upseller_mgr.esta_logado(user_id):
+                    app._gerar_status[user_id] = {"etapa": "reconectando", "progresso": 8, "detalhes": "Reconectando ao UpSeller..."}
+                    logado = _upseller_mgr.reconectar(user_id, config.session_dir, download_dir)
+                    if not logado:
+                        app._gerar_status[user_id] = {
+                            "etapa": "erro", "progresso": 0,
+                            "detalhes": "Sessao expirada. Reconecte ao UpSeller."
+                        }
+                        return
+
+                scraper = _upseller_mgr.get_scraper(user_id)
+                if not scraper:
+                    app._gerar_status[user_id] = {"etapa": "erro", "progresso": 0, "detalhes": "Scraper nao disponivel"}
+                    return
+
+                # Atualizar download_dir do scraper
+                scraper.download_dir = download_dir
+                if download_dir:
+                    os.makedirs(download_dir, exist_ok=True)
+
+                # === Etapa 2: Programar envio (por loja ou todas) ===
+                total_programados = 0
+                if lojas_selecionadas:
+                    # Processar cada loja individualmente
+                    for i, loja in enumerate(lojas_selecionadas):
+                        pct = 10 + int((i / max(len(lojas_selecionadas), 1)) * 15)
+                        app._gerar_status[user_id] = {
+                            "etapa": "programando",
+                            "progresso": pct,
+                            "detalhes": f"Programando envio: {loja} ({i+1}/{len(lojas_selecionadas)})..."
+                        }
+                        try:
+                            prog_result = _upseller_mgr._run_async(
+                                user_id, scraper.programar_envio(filtro_loja=loja)
+                            )
+                            programados = prog_result.get("total_programados", 0)
+                            total_programados += programados
+                            print(f"[Gerar] Loja '{loja}': {programados} pedidos programados")
+                        except Exception as e:
+                            print(f"[Gerar] Erro programar envio loja '{loja}': {e}")
+                else:
+                    # Programar todas as lojas de uma vez (sem filtro)
+                    app._gerar_status[user_id] = {"etapa": "programando", "progresso": 15, "detalhes": "Programando envio dos pedidos..."}
+                    try:
+                        prog_result = _upseller_mgr._run_async(user_id, scraper.programar_envio())
+                        total_programados = prog_result.get("total_programados", 0)
+                    except Exception as e:
+                        print(f"[Gerar] Erro programar envio: {e}")
+
+                if total_programados > 0:
+                    app._gerar_status[user_id]["detalhes"] = f"{total_programados} pedidos programados"
+                else:
+                    app._gerar_status[user_id]["detalhes"] = "Nenhum pedido novo para programar"
+
+                # === Etapa 3: Aguardar tracking numbers ===
+                app._gerar_status[user_id] = {
+                    "etapa": "aguardando_tracking",
+                    "progresso": 30,
+                    "detalhes": "Aguardando tracking numbers do UpSeller..."
+                }
+
+                if total_programados > 0:
+                    # Aguardar tracking (poll a cada 10s, max 2 min)
+                    try:
+                        tracking_ok = _upseller_mgr._run_async(
+                            user_id, scraper._aguardar_tracking(timeout_segundos=120)
+                        )
+                        if tracking_ok:
+                            app._gerar_status[user_id]["detalhes"] = "Tracking numbers recebidos!"
+                        else:
+                            app._gerar_status[user_id]["detalhes"] = "Timeout aguardando tracking, tentando baixar mesmo assim..."
+                    except Exception as e:
+                        print(f"[Gerar] Erro ao aguardar tracking: {e}")
+                        app._gerar_status[user_id]["detalhes"] = "Continuando sem aguardar tracking..."
+                else:
+                    # Se nao programou nada, esperar um pouco apenas
+                    import time
+                    time.sleep(3)
+
+                # === Etapa 4: Baixar etiquetas com DDC ===
+                app._gerar_status[user_id] = {
+                    "etapa": "baixando_etiquetas",
+                    "progresso": 45,
+                    "detalhes": "Baixando etiquetas (Casada + DDC)..."
+                }
+
+                if lojas_selecionadas:
+                    # Baixar por loja (filtro no Para Imprimir)
+                    for i, loja in enumerate(lojas_selecionadas):
+                        pct = 45 + int((i / max(len(lojas_selecionadas), 1)) * 10)
+                        app._gerar_status[user_id] = {
+                            "etapa": "baixando_etiquetas",
+                            "progresso": pct,
+                            "detalhes": f"Baixando etiquetas: {loja} ({i+1}/{len(lojas_selecionadas)})..."
+                        }
+                        try:
+                            pdfs = _upseller_mgr._run_async(
+                                user_id, scraper.baixar_etiquetas(filtro_loja=loja)
+                            )
+                            resultado["pdfs"].extend(pdfs)
+                        except Exception as e:
+                            print(f"[Gerar] Erro baixar etiquetas loja '{loja}': {e}")
+                else:
+                    # Baixar todas (sem filtro)
+                    try:
+                        resultado["pdfs"] = _upseller_mgr._run_async(user_id, scraper.baixar_etiquetas())
+                    except Exception as e:
+                        print(f"[Gerar] Erro baixar etiquetas: {e}")
+
+                app._gerar_status[user_id]["detalhes"] = f"{len(resultado['pdfs'])} PDFs baixados"
+
+                # === Etapa 5: Extrair dados de pedidos → XLSX ===
+                app._gerar_status[user_id] = {"etapa": "extraindo_pedidos", "progresso": 60, "detalhes": "Extraindo dados de pedidos..."}
+                try:
+                    xlsx_path = _upseller_mgr._run_async(user_id, scraper.extrair_dados_pedidos())
+                    resultado["xlsx"] = xlsx_path
+                except Exception as e:
+                    print(f"[Gerar] Erro extrair pedidos: {e}")
+
+                # === Etapa 6: Exportar XMLs ===
+                app._gerar_status[user_id] = {"etapa": "exportando_xmls", "progresso": 68, "detalhes": "Exportando XMLs..."}
+                try:
+                    resultado["xmls"] = _upseller_mgr._run_async(user_id, scraper.exportar_xmls())
+                    app._gerar_status[user_id]["detalhes"] = f"{len(resultado['xmls'])} ZIPs de XML exportados"
+                except Exception as e:
+                    print(f"[Gerar] Erro exportar XMLs: {e}")
+
+                resultado["sucesso"] = True
+
+                # NÃO fecha o scraper - ele fica vivo!
+
+                # === Etapa 7: Mover arquivos para pasta_entrada ===
+                app._gerar_status[user_id] = {"etapa": "movendo", "progresso": 78, "detalhes": "Movendo arquivos..."}
+                resumo = scraper.mover_para_pasta_entrada(resultado, pasta_entrada)
+                detalhes_mov = f"{resumo['pdfs_movidos']} PDFs, {resumo['xmls_extraidos']} XMLs"
+                if resumo['xlsx_copiado']:
+                    detalhes_mov += ", XLSX"
+
+                # === Etapa 8: Processar etiquetas ===
+                app._gerar_status[user_id] = {"etapa": "processando", "progresso": 88, "detalhes": "Processando etiquetas + DDC + produtos..."}
+                try:
+                    _executar_processamento(user_id)
+                    app._gerar_status[user_id] = {
+                        "etapa": "concluido", "progresso": 100,
+                        "detalhes": f"Concluido! {detalhes_mov}",
+                        "processado": True,
+                    }
+                except Exception as e:
+                    print(f"[Gerar] Erro processamento: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    app._gerar_status[user_id] = {
+                        "etapa": "parcial", "progresso": 90,
+                        "detalhes": f"Download OK ({detalhes_mov}), erro no processamento: {e}",
+                        "processado": False,
+                    }
+
+                # Atualizar config
+                config.ultima_sincronizacao = datetime.utcnow()
+                config.status_conexao = "ok"
+                db.session.commit()
+
+                # Limpar pasta temp
+                try:
+                    import shutil
+                    shutil.rmtree(download_dir, ignore_errors=True)
+                except:
+                    pass
+
+            except Exception as e:
+                print(f"[Gerar] Erro geral: {e}")
+                import traceback
+                traceback.print_exc()
+                app._gerar_status[user_id] = {"etapa": "erro", "progresso": 0, "detalhes": str(e)}
+            finally:
+                app._gerar_em_andamento[user_id] = False
+
+    thread = threading.Thread(target=_gerar_pipeline, daemon=True)
+    thread.start()
+    return jsonify({"mensagem": "Geracao iniciada", "status": "iniciando"})
+
+
+@app.route('/api/upseller/sincronizar/status', methods=['GET'])
+@jwt_required()
+def api_upseller_sync_status():
+    """Retorna status da sincronizacao em andamento, incluindo lojas escaneadas quando concluido."""
+    user_id = int(get_jwt_identity())
+    if hasattr(app, '_sync_status') and user_id in app._sync_status:
+        status = dict(app._sync_status[user_id])
+        em_andamento = hasattr(app, '_sync_em_andamento') and app._sync_em_andamento.get(user_id, False)
+        status["em_andamento"] = em_andamento
+
+        # Quando concluido, incluir lojas escaneadas para o usuario escolher
+        if status.get("etapa") == "concluido":
+            # lojas_encontradas ja estao no status (set pelo pipeline)
+            if "lojas_encontradas" not in status:
+                status["lojas_encontradas"] = []
+            if "total_etiquetas_scan" not in status:
+                status["total_etiquetas_scan"] = 0
+
+        return jsonify(status)
+    return jsonify({"etapa": "idle", "progresso": 0, "detalhes": "", "em_andamento": False})
+
+
+@app.route('/api/upseller/gerar/status', methods=['GET'])
+@jwt_required()
+def api_upseller_gerar_status():
+    """Retorna status da geracao em andamento (separado do status de sincronizacao)."""
+    user_id = int(get_jwt_identity())
+    if hasattr(app, '_gerar_status') and user_id in app._gerar_status:
+        status = dict(app._gerar_status[user_id])
+        em_andamento = hasattr(app, '_gerar_em_andamento') and app._gerar_em_andamento.get(user_id, False)
+        status["em_andamento"] = em_andamento
+        return jsonify(status)
+    return jsonify({"etapa": "idle", "progresso": 0, "detalhes": "", "em_andamento": False})
+
+
+# ----------------------------------------------------------------
+# ENDPOINTS - WHATSAPP
+# ----------------------------------------------------------------
+
+@app.route('/api/whatsapp/status', methods=['GET'])
+@jwt_required()
+def api_whatsapp_status():
+    """Verifica status da conexao WhatsApp."""
+    wa = WhatsAppService()
+    return jsonify(wa.verificar_conexao())
+
+
+@app.route('/api/whatsapp/qr', methods=['GET'])
+@jwt_required()
+def api_whatsapp_qr():
+    """Retorna QR code para escanear."""
+    wa = WhatsAppService()
+    # Iniciar sessao se necessario
+    wa.iniciar_sessao()
+    return jsonify(wa.get_qr_code())
+
+
+@app.route('/api/whatsapp/contatos', methods=['GET'])
+@jwt_required()
+def api_whatsapp_contatos_listar():
+    """Lista contatos WhatsApp do usuario."""
+    user_id = int(get_jwt_identity())
+    contatos = WhatsAppContact.query.filter_by(user_id=user_id).order_by(WhatsAppContact.loja_nome).all()
+    return jsonify([c.to_dict() for c in contatos])
+
+
+@app.route('/api/whatsapp/contatos', methods=['POST'])
+@jwt_required()
+def api_whatsapp_contatos_salvar():
+    """Cadastra ou atualiza contato WhatsApp por loja."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+
+    if not data or not data.get("loja_cnpj") or not data.get("telefone"):
+        return jsonify({"erro": "CNPJ da loja e telefone sao obrigatorios"}), 400
+
+    # Verificar se ja existe contato para essa loja+telefone
+    contato = WhatsAppContact.query.filter_by(
+        user_id=user_id,
+        loja_cnpj=data["loja_cnpj"],
+        telefone=data["telefone"]
+    ).first()
+
+    if contato:
+        # Atualizar existente
+        contato.loja_nome = data.get("loja_nome", contato.loja_nome)
+        contato.nome_contato = data.get("nome_contato", contato.nome_contato)
+        contato.ativo = data.get("ativo", contato.ativo)
+    else:
+        # Criar novo
+        contato = WhatsAppContact(
+            user_id=user_id,
+            loja_cnpj=data["loja_cnpj"],
+            loja_nome=data.get("loja_nome", ""),
+            telefone=data["telefone"],
+            nome_contato=data.get("nome_contato", ""),
+            ativo=data.get("ativo", True),
+        )
+        db.session.add(contato)
+
+    db.session.commit()
+    return jsonify({"mensagem": "Contato salvo", **contato.to_dict()})
+
+
+@app.route('/api/whatsapp/contatos/<int:contato_id>', methods=['DELETE'])
+@jwt_required()
+def api_whatsapp_contatos_remover(contato_id):
+    """Remove um contato WhatsApp."""
+    user_id = int(get_jwt_identity())
+    contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=user_id).first()
+    if not contato:
+        return jsonify({"erro": "Contato nao encontrado"}), 404
+    db.session.delete(contato)
+    db.session.commit()
+    return jsonify({"mensagem": "Contato removido"})
+
+
+@app.route('/api/whatsapp/enviar-teste', methods=['POST'])
+@jwt_required()
+def api_whatsapp_enviar_teste():
+    """Envia mensagem de teste para um numero."""
+    data = request.get_json(force=True, silent=True) or {}
+    telefone = data.get("telefone", "")
+    if not telefone:
+        return jsonify({"success": False, "error": "Telefone obrigatorio"}), 400
+    try:
+        wa = WhatsAppService()
+        resultado = wa.enviar_mensagem(telefone, "Teste Beka MKT - Conexao WhatsApp OK!")
+        return jsonify(resultado)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route('/api/whatsapp/enviar-lote', methods=['POST'])
+@jwt_required()
+def api_whatsapp_enviar_lote():
+    """Envia PDFs de etiquetas para contatos cadastrados manualmente."""
+    user_id = int(get_jwt_identity())
+    estado = _get_estado(user_id)
+    resultado = estado.get("ultimo_resultado", {})
+    user = User.query.get(user_id)
+    pasta_saida = user.get_pasta_saida()
+
+    if not resultado or not resultado.get("lojas"):
+        return jsonify({"erro": "Nenhum resultado para enviar. Processe as etiquetas primeiro."}), 400
+
+    contatos = WhatsAppContact.query.filter_by(user_id=user_id, ativo=True).all()
+    if not contatos:
+        return jsonify({"erro": "Nenhum contato WhatsApp cadastrado"}), 400
+
+    # Montar lista de entregas
+    contatos_por_cnpj = {}
+    for c in contatos:
+        contatos_por_cnpj.setdefault(c.loja_cnpj, []).append(c)
+
+    entregas = []
+    for loja_info in resultado.get("lojas", []):
+        cnpj = loja_info.get("cnpj", "")
+        nome = loja_info.get("nome", "")
+        pdf_nome = loja_info.get("pdf", "")
+
+        if not pdf_nome or cnpj not in contatos_por_cnpj:
+            continue
+
+        pdf_path = os.path.join(pasta_saida, nome, pdf_nome)
+        if not os.path.exists(pdf_path):
+            continue
+
+        for contato in contatos_por_cnpj[cnpj]:
+            entregas.append({
+                "telefone": contato.telefone,
+                "pdf_path": pdf_path,
+                "loja": nome,
+                "caption": f"Etiquetas {nome} - {resultado.get('timestamp', '')}",
+            })
+
+    if not entregas:
+        return jsonify({"erro": "Nenhuma loja com contato e PDF encontrada"}), 400
+
+    # Enviar em background
+    def _enviar():
+        with app.app_context():
+            wa = WhatsAppService()
+            resultados = wa.enviar_lote(entregas)
+            # Registrar no log
+            log_exec = ExecutionLog(
+                user_id=user_id,
+                tipo="manual",
+                inicio=datetime.utcnow(),
+                fim=datetime.utcnow(),
+                status="sucesso" if all(r.get("success") for r in resultados) else "parcial",
+                whatsapp_enviados=sum(1 for r in resultados if r.get("success")),
+                whatsapp_erros=sum(1 for r in resultados if not r.get("success")),
+                detalhes=json.dumps({"entregas": len(entregas), "resultados": resultados}, ensure_ascii=False),
+            )
+            db.session.add(log_exec)
+            db.session.commit()
+
+    thread = threading.Thread(target=_enviar, daemon=True)
+    thread.start()
+    return jsonify({"mensagem": f"Enviando {len(entregas)} PDF(s) via WhatsApp em background..."})
+
+
+# ----------------------------------------------------------------
+# ENDPOINTS - AGENDAMENTOS
+# ----------------------------------------------------------------
+
+@app.route('/api/agendamentos', methods=['GET'])
+@jwt_required()
+def api_agendamentos_listar():
+    """Lista agendamentos do usuario."""
+    user_id = int(get_jwt_identity())
+    return jsonify(beka_scheduler.listar_agendamentos(user_id))
+
+
+@app.route('/api/agendamentos', methods=['POST'])
+@jwt_required()
+def api_agendamentos_criar():
+    """Cria novo agendamento."""
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+
+    if not data or not data.get("hora"):
+        return jsonify({"erro": "Horario obrigatorio"}), 400
+
+    schedule_id = beka_scheduler.adicionar_agendamento(user_id, data)
+    if schedule_id:
+        return jsonify({"mensagem": "Agendamento criado", "id": schedule_id})
+    return jsonify({"erro": "Erro ao criar agendamento"}), 500
+
+
+@app.route('/api/agendamentos/<int:schedule_id>', methods=['PUT'])
+@jwt_required()
+def api_agendamentos_atualizar(schedule_id):
+    """Atualiza agendamento existente."""
+    user_id = int(get_jwt_identity())
+    # Verificar propriedade
+    sched = Schedule.query.filter_by(id=schedule_id, user_id=user_id).first()
+    if not sched:
+        return jsonify({"erro": "Agendamento nao encontrado"}), 404
+
+    data = request.get_json()
+    if beka_scheduler.atualizar_agendamento(schedule_id, data):
+        return jsonify({"mensagem": "Agendamento atualizado"})
+    return jsonify({"erro": "Erro ao atualizar"}), 500
+
+
+@app.route('/api/agendamentos/<int:schedule_id>', methods=['DELETE'])
+@jwt_required()
+def api_agendamentos_remover(schedule_id):
+    """Remove agendamento."""
+    user_id = int(get_jwt_identity())
+    sched = Schedule.query.filter_by(id=schedule_id, user_id=user_id).first()
+    if not sched:
+        return jsonify({"erro": "Agendamento nao encontrado"}), 404
+
+    if beka_scheduler.remover_agendamento(schedule_id):
+        return jsonify({"mensagem": "Agendamento removido"})
+    return jsonify({"erro": "Erro ao remover"}), 500
+
+
+@app.route('/api/agendamentos/<int:schedule_id>/pausar', methods=['POST'])
+@jwt_required()
+def api_agendamentos_pausar(schedule_id):
+    """Pausa agendamento."""
+    user_id = int(get_jwt_identity())
+    sched = Schedule.query.filter_by(id=schedule_id, user_id=user_id).first()
+    if not sched:
+        return jsonify({"erro": "Agendamento nao encontrado"}), 404
+
+    if beka_scheduler.pausar_agendamento(schedule_id):
+        return jsonify({"mensagem": "Agendamento pausado"})
+    return jsonify({"erro": "Erro ao pausar"}), 500
+
+
+@app.route('/api/agendamentos/<int:schedule_id>/retomar', methods=['POST'])
+@jwt_required()
+def api_agendamentos_retomar(schedule_id):
+    """Retoma agendamento pausado."""
+    user_id = int(get_jwt_identity())
+    sched = Schedule.query.filter_by(id=schedule_id, user_id=user_id).first()
+    if not sched:
+        return jsonify({"erro": "Agendamento nao encontrado"}), 404
+
+    if beka_scheduler.retomar_agendamento(schedule_id):
+        return jsonify({"mensagem": "Agendamento retomado"})
+    return jsonify({"erro": "Erro ao retomar"}), 500
+
+
+@app.route('/api/agendamentos/historico', methods=['GET'])
+@jwt_required()
+def api_agendamentos_historico():
+    """Historico de execucoes."""
+    user_id = int(get_jwt_identity())
+    limite = request.args.get('limite', 20, type=int)
+    return jsonify(beka_scheduler.get_historico(user_id, limite))
+
+
+@app.route('/api/agendamentos/executar-agora', methods=['POST'])
+@jwt_required()
+def api_agendamentos_executar_agora():
+    """Executa pipeline completo manualmente (sem agendamento)."""
+    user_id = int(get_jwt_identity())
+    beka_scheduler.executar_agora(user_id)
+    return jsonify({"mensagem": "Pipeline iniciado em background"})
 
 
 # ----------------------------------------------------------------

@@ -830,8 +830,14 @@
     <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')">
         <i class="fas fa-dollar-sign"></i> Lucro
     </div>
+    <div class="nav-tab" data-tab="automacao" onclick="trocarTab('automacao')">
+        <i class="fas fa-robot"></i> Automacao
+    </div>
     <div class="nav-tab" data-tab="admin" onclick="trocarTab('admin')" id="navAdmin" style="display:none;">
         <i class="fas fa-shield-alt"></i> Admin
+    </div>
+    <div class="nav-tab" data-tab="shopee-expert" onclick="trocarTab('shopee-expert')" style="margin-left:auto;">
+        <i class="fas fa-magic"></i> Shopee Expert
     </div>
 </nav>
 
@@ -1134,6 +1140,217 @@
         <div id="resumoLucro" style="margin-bottom:24px;"></div>
     </div>
 
+    <!-- ==================== AUTOMACAO ==================== -->
+    <div class="tab-content" id="tab-automacao">
+        <h3 class="section-title"><i class="fas fa-robot"></i> Automacao - UpSeller + WhatsApp</h3>
+
+        <!-- UPSELLER CONFIG -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-plug"></i> Conexao UpSeller</span>
+                <span id="upsellerStatus" class="badge" style="font-size:11px;">Desconectado</span>
+            </div>
+            <div id="upsellerDesconectado" style="text-align:center; padding:15px 0;">
+                <p style="color:var(--text-secondary); font-size:13px; margin-bottom:15px;">
+                    Clique abaixo para abrir o UpSeller e fazer login.<br>
+                    <span style="font-size:11px; opacity:0.7;">A sessao fica salva por 14 dias automaticamente.</span>
+                </p>
+                <button onclick="conectarUpseller()" style="
+                    background: linear-gradient(135deg, #2196F3, #1565C0);
+                    color: white; border: none; padding: 14px 35px; border-radius: 10px;
+                    font-size: 15px; font-weight: 600; cursor: pointer;
+                    box-shadow: 0 4px 15px rgba(33,150,243,0.4);
+                    transition: all 0.3s ease; display:inline-flex; align-items:center; gap:10px;
+                " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px rgba(33,150,243,0.5)'"
+                   onmouseout="this.style.transform=''; this.style.boxShadow='0 4px 15px rgba(33,150,243,0.4)'">
+                    <i class="fas fa-sign-in-alt" style="font-size:18px;"></i> Conectar ao UpSeller
+                </button>
+            </div>
+            <div id="upsellerConectado" style="display:none; text-align:center; padding:10px 0;">
+                <p style="color:#25D366; font-size:14px; font-weight:600; margin-bottom:10px;">
+                    <i class="fas fa-check-circle"></i> Conectado ao UpSeller
+                </p>
+                <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+                    <button class="btn btn-secondary" onclick="testarUpsellerConexao()" style="font-size:12px;">
+                        <i class="fas fa-wifi"></i> Verificar Sessao
+                    </button>
+                    <button class="btn btn-secondary" onclick="reconectarUpseller()" style="font-size:12px;">
+                        <i class="fas fa-redo"></i> Reconectar
+                    </button>
+                    <button class="btn btn-primary" id="btnSincronizar" onclick="sincronizarUpseller()" style="font-size:12px;">
+                        <i class="fas fa-sync-alt"></i> Sincronizar Agora
+                    </button>
+                </div>
+                <!-- Barra de progresso da sincronizacao -->
+                <div id="syncProgressContainer" style="display:none; margin-top:12px; padding:0 10px;">
+                    <div style="background:var(--bg-tertiary); border-radius:8px; overflow:hidden; height:22px; position:relative;">
+                        <div id="syncProgressBar" style="
+                            height:100%; border-radius:8px; transition: width 0.5s ease;
+                            background: linear-gradient(90deg, #2196F3, #1565C0);
+                            width:0%; display:flex; align-items:center; justify-content:center;
+                        ">
+                            <span id="syncProgressPercent" style="color:white; font-size:10px; font-weight:600; text-shadow:0 1px 2px rgba(0,0,0,0.3);"></span>
+                        </div>
+                    </div>
+                    <p id="syncProgressText" style="font-size:11px; color:var(--text-secondary); margin-top:4px; text-align:center;"></p>
+                </div>
+            </div>
+            <p id="upsellerUltimaSync" style="font-size:11px; color:var(--text-secondary); margin-top:8px; text-align:center;"></p>
+        </div>
+
+        <!-- WHATSAPP CONFIG -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fab fa-whatsapp"></i> Conexao WhatsApp</span>
+                <span id="whatsappStatus" class="badge" style="font-size:11px;">Desconectado</span>
+            </div>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <button class="btn btn-success" onclick="verificarWhatsApp()" style="font-size:12px; background:#25D366;">
+                    <i class="fab fa-whatsapp"></i> Verificar Status
+                </button>
+                <button class="btn btn-secondary" onclick="mostrarQRWhatsApp()" style="font-size:12px;">
+                    <i class="fas fa-qrcode"></i> Ver QR Code
+                </button>
+                <div style="flex:1; min-width:200px; display:flex; gap:8px; align-items:center;">
+                    <input class="form-input" id="whatsappTesteTel" placeholder="5511999999999" style="font-size:12px;">
+                    <button class="btn btn-secondary" onclick="enviarTesteWhatsApp()" style="font-size:12px; white-space:nowrap;">
+                        <i class="fas fa-paper-plane"></i> Teste
+                    </button>
+                </div>
+            </div>
+            <div id="whatsappQRContainer" style="display:none; margin-top:15px; text-align:center;">
+                <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">Escaneie o QR code com seu WhatsApp:</p>
+                <img id="whatsappQRImage" style="max-width:280px; border-radius:8px; border:1px solid var(--border);">
+            </div>
+        </div>
+
+        <!-- CONTATOS POR LOJA -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-address-book"></i> Contatos por Loja</span>
+                <button class="btn btn-primary" onclick="mostrarFormContato()" style="font-size:11px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Adicionar
+                </button>
+            </div>
+            <!-- Formulario de adicionar -->
+            <div id="formContato" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
+                    <div class="form-group" style="flex:1; min-width:150px;">
+                        <label class="form-label">Loja (CNPJ)</label>
+                        <input class="form-input" id="contatoCNPJ" placeholder="12.345.678/0001-99" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:150px;">
+                        <label class="form-label">Nome da Loja</label>
+                        <input class="form-input" id="contatoLoja" placeholder="Loja Example" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:150px;">
+                        <label class="form-label">WhatsApp</label>
+                        <input class="form-input" id="contatoTel" placeholder="5511999999999" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:120px;">
+                        <label class="form-label">Nome Contato</label>
+                        <input class="form-input" id="contatoNome" placeholder="Joao" style="font-size:12px;">
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <button class="btn btn-primary" onclick="salvarContato()" style="font-size:11px;">
+                        <i class="fas fa-check"></i> Salvar
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('formContato').style.display='none'" style="font-size:11px;">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+            <!-- Tabela de contatos -->
+            <div id="tabelaContatos" style="overflow-x:auto;">
+                <p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>
+            </div>
+        </div>
+
+        <!-- AGENDAMENTOS -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-clock"></i> Agendamentos</span>
+                <button class="btn btn-primary" onclick="mostrarFormAgendamento()" style="font-size:11px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Novo
+                </button>
+            </div>
+            <!-- Formulario -->
+            <div id="formAgendamento" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
+                    <div class="form-group" style="flex:1; min-width:150px;">
+                        <label class="form-label">Nome</label>
+                        <input class="form-input" id="agendNome" placeholder="Processamento Matutino" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:0.5; min-width:80px;">
+                        <label class="form-label">Horario</label>
+                        <input class="form-input" id="agendHora" type="time" value="08:00" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:1.5; min-width:200px;">
+                        <label class="form-label">Dias da Semana</label>
+                        <div style="display:flex; gap:4px; flex-wrap:wrap; font-size:11px;">
+                            <label><input type="checkbox" class="agendDia" value="seg" checked> Seg</label>
+                            <label><input type="checkbox" class="agendDia" value="ter" checked> Ter</label>
+                            <label><input type="checkbox" class="agendDia" value="qua" checked> Qua</label>
+                            <label><input type="checkbox" class="agendDia" value="qui" checked> Qui</label>
+                            <label><input type="checkbox" class="agendDia" value="sex" checked> Sex</label>
+                            <label><input type="checkbox" class="agendDia" value="sab"> Sab</label>
+                            <label><input type="checkbox" class="agendDia" value="dom"> Dom</label>
+                        </div>
+                    </div>
+                </div>
+                <div style="display:flex; gap:12px; margin-top:10px; font-size:11px; color:var(--text-secondary);">
+                    <label><input type="checkbox" id="agendUpseller" checked> Baixar UpSeller</label>
+                    <label><input type="checkbox" id="agendProcessar" checked> Processar Etiquetas</label>
+                    <label><input type="checkbox" id="agendWhatsapp" checked> Enviar WhatsApp</label>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button class="btn btn-primary" onclick="salvarAgendamento()" style="font-size:11px;">
+                        <i class="fas fa-check"></i> Salvar
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('formAgendamento').style.display='none'" style="font-size:11px;">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+            <!-- Tabela -->
+            <div id="tabelaAgendamentos" style="overflow-x:auto;">
+                <p style="font-size:12px; color:var(--text-secondary);">Nenhum agendamento configurado.</p>
+            </div>
+        </div>
+
+        <!-- EXECUCAO MANUAL -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-play-circle"></i> Execucao Manual</span>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
+                Executa o pipeline completo: baixar do UpSeller → processar etiquetas → enviar via WhatsApp.
+            </p>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="executarPipelineAgora()" style="font-size:12px;">
+                    <i class="fas fa-rocket"></i> Executar Pipeline Completo
+                </button>
+                <button class="btn btn-secondary" onclick="enviarWhatsAppManual()" style="font-size:12px;">
+                    <i class="fab fa-whatsapp"></i> Enviar Ultimo Resultado via WhatsApp
+                </button>
+            </div>
+        </div>
+
+        <!-- HISTORICO -->
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-history"></i> Historico de Execucoes</span>
+                <button class="btn btn-secondary" onclick="carregarHistorico()" style="font-size:11px; padding:4px 10px;">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+            </div>
+            <div id="tabelaHistorico" style="overflow-x:auto;">
+                <p style="font-size:12px; color:var(--text-secondary);">Nenhuma execucao registrada.</p>
+            </div>
+        </div>
+    </div>
+
     <!-- ==================== ADMIN ==================== -->
     <div class="tab-content" id="tab-admin">
         <h3 class="section-title"><i class="fas fa-shield-alt"></i> Painel Administrativo</h3>
@@ -1184,6 +1401,11 @@
             </div>
             <div id="adminListaUsuarios" style="margin-top:12px; overflow-x:auto;"></div>
         </div>
+    </div>
+
+    <!-- ==================== SHOPEE EXPERT ==================== -->
+    <div class="tab-content" id="tab-shopee-expert">
+        <iframe src="http://localhost:8080" style="width:100%;height:calc(100vh - 120px);border:none;border-radius:var(--radius);background:var(--bg-card);"></iframe>
     </div>
 
 </div>
@@ -1442,6 +1664,7 @@ function trocarTab(tab) {
     if (tabEl) tabEl.classList.add('active');
     // Carregar lojas do Lucro independentemente (via XMLs da pasta_lucro)
     if (tab === 'lucro') carregarLojasLucro();
+    if (tab === 'automacao') carregarDadosAutomacao();
     if (tab === 'admin') adminCarregarUsuarios();
 }
 
@@ -2828,6 +3051,850 @@ async function adminRevogarAcesso() {
     } else {
         toast(res?.erro || 'Erro ao revogar acesso', 'error');
     }
+}
+
+// ================================================================
+// AUTOMACAO - UpSeller + WhatsApp + Agendamentos
+// ================================================================
+
+async function carregarDadosAutomacao() {
+    carregarUpsellerConfig();
+    verificarWhatsApp();
+    carregarContatos();
+    carregarAgendamentos();
+    carregarHistorico();
+}
+
+// --- UPSELLER ---
+async function carregarUpsellerConfig() {
+    const data = await fetchAPI('/api/upseller/status');
+    const statusEl = document.getElementById('upsellerStatus');
+    const syncEl = document.getElementById('upsellerUltimaSync');
+    const divOff = document.getElementById('upsellerDesconectado');
+    const divOn = document.getElementById('upsellerConectado');
+    if (data && data.status === 'ok') {
+        statusEl.textContent = 'Conectado';
+        statusEl.style.background = '#25D366';
+        divOff.style.display = 'none';
+        divOn.style.display = 'block';
+    } else {
+        statusEl.textContent = 'Desconectado';
+        statusEl.style.background = '#e74c3c';
+        divOff.style.display = 'block';
+        divOn.style.display = 'none';
+    }
+    if (data && data.ultima_sincronizacao) {
+        syncEl.textContent = 'Ultima sincronizacao: ' + data.ultima_sincronizacao;
+    } else {
+        syncEl.textContent = '';
+    }
+}
+
+async function conectarUpseller() {
+    toast('Abrindo UpSeller... Faca login na janela que vai aparecer.', 'info');
+    const res = await fetchAPI('/api/upseller/conectar', { method: 'POST' });
+    if (res && res.status === 'ok') {
+        toast(res.mensagem || 'Conectado ao UpSeller!', 'success');
+        carregarUpsellerConfig();
+    } else {
+        toast(res?.erro || 'Conexao nao concluida', 'error');
+    }
+}
+
+async function reconectarUpseller() {
+    toast('Reconectando ao UpSeller...', 'info');
+    const res = await fetchAPI('/api/upseller/reconectar', { method: 'POST' });
+    if (res && res.status === 'ok') {
+        toast(res.mensagem || 'Reconectado ao UpSeller!', 'success');
+        carregarUpsellerConfig();
+    } else {
+        toast(res?.erro || 'Nao foi possivel reconectar. Tente Conectar novamente.', 'warning');
+        carregarUpsellerConfig();
+    }
+}
+
+async function testarUpsellerConexao() {
+    toast('Verificando sessao do UpSeller...', 'info');
+    const res = await fetchAPI('/api/upseller/testar-conexao', { method: 'POST' });
+    if (res && res.status === 'ok') {
+        toast('Sessao ativa!', 'success');
+        carregarUpsellerConfig();
+    } else {
+        toast(res?.erro || 'Sessao expirada. Clique em "Reconectar".', 'warning');
+        carregarUpsellerConfig();
+    }
+}
+
+let _syncPollInterval = null;
+
+async function sincronizarUpseller() {
+    const btn = document.getElementById('btnSincronizar');
+    const progressContainer = document.getElementById('syncProgressContainer');
+    const progressBar = document.getElementById('syncProgressBar');
+    const progressPercent = document.getElementById('syncProgressPercent');
+    const progressText = document.getElementById('syncProgressText');
+
+    // Desabilitar botao
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sincronizando...';
+
+    // Mostrar barra de progresso
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '5%';
+    progressPercent.textContent = '';
+    progressText.textContent = 'Iniciando sincronizacao...';
+
+    const res = await fetchAPI('/api/upseller/sincronizar', { method: 'POST' });
+    if (!res || res.erro) {
+        toast(res?.erro || 'Erro ao iniciar sincronizacao', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sincronizar Agora';
+        progressContainer.style.display = 'none';
+        return;
+    }
+
+    toast('Sincronizacao iniciada!', 'info');
+
+    // Polling de progresso a cada 2 segundos
+    if (_syncPollInterval) clearInterval(_syncPollInterval);
+    _syncPollInterval = setInterval(async () => {
+        try {
+            const status = await fetchAPI('/api/upseller/sincronizar/status');
+            if (!status) return;
+
+            const progresso = status.progresso || 0;
+            progressBar.style.width = Math.max(progresso, 5) + '%';
+            progressPercent.textContent = progresso + '%';
+            progressText.textContent = status.detalhes || status.etapa || '';
+
+            // Mudar cor baseado na etapa
+            if (status.etapa === 'concluido') {
+                progressBar.style.background = 'linear-gradient(90deg, #25D366, #128C7E)';
+                progressText.textContent = '✅ ' + (status.detalhes || 'Concluido!');
+                _finalizarSync(btn, progressContainer, true);
+            } else if (status.etapa === 'erro') {
+                progressBar.style.background = 'linear-gradient(90deg, #e74c3c, #c0392b)';
+                progressText.textContent = '❌ ' + (status.detalhes || 'Erro');
+                _finalizarSync(btn, progressContainer, false);
+            } else if (status.etapa === 'parcial') {
+                progressBar.style.background = 'linear-gradient(90deg, #f39c12, #e67e22)';
+                progressText.textContent = '⚠️ ' + (status.detalhes || 'Parcial');
+                _finalizarSync(btn, progressContainer, false);
+            } else if (!status.em_andamento && progresso === 0 && status.etapa === 'idle') {
+                // Ja terminou antes do primeiro poll
+                _finalizarSync(btn, progressContainer, true);
+            }
+        } catch (e) {
+            console.error('Erro ao checar progresso:', e);
+        }
+    }, 2000);
+}
+
+async function _finalizarSync(btn, progressContainer, sucesso) {
+    if (_syncPollInterval) {
+        clearInterval(_syncPollInterval);
+        _syncPollInterval = null;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sincronizar Agora';
+
+    if (sucesso) {
+        toast('Sincronizacao concluida! Escolha as lojas para gerar envio.', 'success');
+        // Buscar resultado final com lojas pendentes
+        try {
+            const statusFinal = await fetchAPI('/api/upseller/sincronizar/status');
+            if (statusFinal) {
+                const lojas = statusFinal.lojas_encontradas || [];
+                const totalPedidos = statusFinal.total_pedidos || 0;
+                const sidebarInfo = statusFinal.sidebar_info || {};
+                _renderPainelLojas(lojas, totalPedidos, statusFinal.detalhes, sidebarInfo);
+            }
+        } catch (e) {
+            console.error('Erro ao buscar resultado final:', e);
+        }
+    }
+
+    // Esconder barra apos 3 segundos
+    setTimeout(() => {
+        progressContainer.style.display = 'none';
+        document.getElementById('syncProgressBar').style.background = 'linear-gradient(90deg, #2196F3, #1565C0)';
+    }, 3000);
+
+    // Atualizar status
+    carregarUpsellerConfig();
+}
+
+let _syncGruposAutomacao = []; // Grupos criados na aba automacao
+
+function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
+    // Remover painel anterior se existir
+    const existente = document.getElementById('syncResultadoPanel');
+    if (existente) existente.remove();
+
+    const totalLojas = lojas.length;
+    sidebarInfo = sidebarInfo || {};
+
+    // ===== CARDS DE ATALHOS DO UPSELLER (sidebar) =====
+    const atalhos = [
+        { key: 'Para Emitir',   icon: 'fa-file-invoice',  color: '#f39c12', bg: 'rgba(243,156,18,0.12)' },
+        { key: 'Para Enviar',   icon: 'fa-shipping-fast',  color: '#2196F3', bg: 'rgba(33,150,243,0.12)' },
+        { key: 'Para Imprimir', icon: 'fa-print',          color: '#25D366', bg: 'rgba(37,211,102,0.12)' },
+    ];
+    let atalhosHTML = atalhos.map(a => {
+        const valor = sidebarInfo[a.key] ?? '-';
+        const isActive = typeof valor === 'number' && valor > 0;
+        return `<div style="
+            flex:1; min-width:120px; padding:12px 14px; border-radius:10px;
+            background:${isActive ? a.bg : 'var(--bg-input)'};
+            border:1px solid ${isActive ? a.color + '44' : 'var(--border)'};
+            text-align:center; transition:all 0.2s;
+        ">
+            <div style="font-size:20px; color:${isActive ? a.color : 'var(--text-muted)'}; margin-bottom:4px;">
+                <i class="fas ${a.icon}"></i>
+            </div>
+            <div style="font-size:22px; font-weight:700; color:${isActive ? a.color : 'var(--text-muted)'};">${valor}</div>
+            <div style="font-size:10px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">${a.key}</div>
+        </div>`;
+    }).join('');
+
+    // Checkboxes de lojas
+    let lojasCheckHTML = '';
+    if (lojas.length > 0) {
+        lojasCheckHTML = lojas.map(l => {
+            const pedidos = l.pedidos || 0;
+            const nome = l.nome || 'Desconhecida';
+            const marketplace = l.marketplace || '';
+            return `<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background='transparent'">
+                <input type="checkbox" class="sync-loja-check" data-nome="${nome}" checked>
+                <i class="fas fa-store" style="color:var(--text-muted);"></i>
+                <span style="flex:1;font-weight:500;">${nome}</span>
+                ${marketplace ? `<span style="background:var(--bg-tertiary);color:var(--text-muted);padding:1px 4px;border-radius:4px;font-size:9px;">${marketplace}</span>` : ''}
+                <span style="background:#2196F3;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${pedidos} pedido${pedidos !== 1 ? 's' : ''}</span>
+            </label>`;
+        }).join('');
+    }
+
+    // Grupos salvos HTML
+    let gruposSalvosHTML = '';
+    if (_syncGruposAutomacao.length > 0) {
+        gruposSalvosHTML = _syncGruposAutomacao.map((g, i) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                <i class="fas fa-layer-group" style="color:var(--primary);"></i>
+                <div style="flex:1;">
+                    <div style="font-size:12px;font-weight:600;">${g.nome}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">${g.nomes_lojas.join(', ')}</div>
+                </div>
+                <button onclick="_removerGrupoSync(${i})" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;" title="Remover grupo"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'syncResultadoPanel';
+    panel.style.cssText = 'margin-top:15px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-primary);';
+    panel.innerHTML = `
+        <div style="background:linear-gradient(135deg, ${totalPedidos > 0 ? '#2196F3, #1565C0' : '#f39c12, #e67e22'}); color:#fff; padding:10px 15px; display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:13px;">
+                <i class="fas fa-${totalPedidos > 0 ? 'store' : 'exclamation-circle'}"></i>
+                ${totalPedidos > 0 ? `${totalLojas} Loja${totalLojas !== 1 ? 's' : ''} - ${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''} pendente${totalPedidos !== 1 ? 's' : ''}` : 'Nenhum pedido pendente encontrado'}
+            </span>
+            <button onclick="this.closest('#syncResultadoPanel').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;">&times;</button>
+        </div>
+
+        <!-- Atalhos do UpSeller (sidebar counts) -->
+        <div style="display:flex;gap:10px;padding:12px 15px;flex-wrap:wrap;">
+            ${atalhosHTML}
+        </div>
+
+        ${totalPedidos > 0 ? `
+        <div style="padding:0 15px 12px 15px;">
+            <!-- Lojas com checkboxes -->
+            <div style="margin-bottom:12px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <div style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">
+                        <i class="fas fa-check-square"></i> Selecione as lojas para processar:
+                    </div>
+                    <div style="display:flex;gap:6px;">
+                        <button onclick="_toggleTodasLojas(true)" style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;color:var(--text-secondary);">Todas</button>
+                        <button onclick="_toggleTodasLojas(false)" style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;color:var(--text-secondary);">Nenhuma</button>
+                    </div>
+                </div>
+                <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+                    ${lojasCheckHTML}
+                </div>
+            </div>
+
+            <!-- Agrupamento -->
+            <div style="margin-bottom:12px; border:1px solid var(--border); border-radius:6px; padding:10px;">
+                <div style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:6px;">
+                    <i class="fas fa-layer-group"></i> Agrupamento de Lojas (opcional)
+                </div>
+                <div id="syncGruposSalvos">${gruposSalvosHTML}</div>
+                <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">Selecione 2+ lojas acima e crie um grupo para gerar PDF unificado:</div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <input id="syncGrupoNome" class="form-input" type="text" placeholder="Nome do grupo" style="font-size:11px;flex:1;padding:4px 8px;">
+                    <button onclick="_adicionarGrupoSync()" class="btn btn-primary" style="font-size:11px;padding:4px 10px;white-space:nowrap;">
+                        <i class="fas fa-plus"></i> Criar Grupo
+                    </button>
+                </div>
+            </div>
+
+            <!-- Botao Gerar -->
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button onclick="_gerarEnvio()" class="btn btn-primary" style="font-size:13px;padding:8px 20px;flex:1;background:linear-gradient(135deg, #25D366, #128C7E);">
+                    <i class="fas fa-rocket"></i> Gerar Envio
+                </button>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:6px;text-align:center;">
+                ${detalhes || ''}
+            </div>
+        </div>
+        ` : `
+        <div style="padding:0 15px 12px 15px;">
+            <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px 12px;">
+                <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;">
+                    <i class="fas fa-check-circle" style="color:#25D366;"></i>
+                    <b>Nenhum pedido pendente no UpSeller.</b> Todos os pedidos ja foram processados ou nao ha novos pedidos.
+                </div>
+            </div>
+            <div style="font-size:10px;color:var(--text-muted);margin-top:6px;text-align:right;">${detalhes || ''}</div>
+        </div>
+        `}
+    `;
+
+    // Inserir painel
+    const upsellerCard = document.getElementById('upsellerConectado');
+    if (upsellerCard && upsellerCard.closest('.card')) {
+        upsellerCard.closest('.card').appendChild(panel);
+    }
+}
+
+function _toggleTodasLojas(marcar) {
+    document.querySelectorAll('.sync-loja-check').forEach(cb => cb.checked = marcar);
+}
+
+function _adicionarGrupoSync() {
+    const nome = document.getElementById('syncGrupoNome').value.trim();
+    const checked = document.querySelectorAll('.sync-loja-check:checked');
+    if (checked.length < 2) {
+        toast('Selecione 2 ou mais lojas para criar um grupo', 'warning');
+        return;
+    }
+    if (!nome) {
+        toast('Informe um nome para o grupo', 'warning');
+        return;
+    }
+
+    const cnpjs = Array.from(checked).map(c => c.dataset.cnpj);
+    const nomes_lojas = Array.from(checked).map(c => c.dataset.nome);
+
+    _syncGruposAutomacao.push({ nome, cnpjs, nomes_lojas });
+
+    // Salvar no backend (reusa o endpoint de agrupamentos)
+    fetchAPI('/api/agrupamentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
+    });
+
+    // Atualizar UI
+    document.getElementById('syncGrupoNome').value = '';
+    const container = document.getElementById('syncGruposSalvos');
+    if (container) {
+        container.innerHTML = _syncGruposAutomacao.map((g, i) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                <i class="fas fa-layer-group" style="color:var(--primary);"></i>
+                <div style="flex:1;">
+                    <div style="font-size:12px;font-weight:600;">${g.nome}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">${g.nomes_lojas.join(', ')}</div>
+                </div>
+                <button onclick="_removerGrupoSync(${i})" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;"><i class="fas fa-times"></i></button>
+            </div>
+        `).join('');
+    }
+    toast(`Grupo "${nome}" criado com ${cnpjs.length} lojas`, 'success');
+}
+
+function _removerGrupoSync(index) {
+    _syncGruposAutomacao.splice(index, 1);
+    fetchAPI('/api/agrupamentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
+    });
+    // Re-render
+    const panel = document.getElementById('syncResultadoPanel');
+    if (panel) {
+        const container = document.getElementById('syncGruposSalvos');
+        if (container) {
+            container.innerHTML = _syncGruposAutomacao.map((g, i) => `
+                <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                    <i class="fas fa-layer-group" style="color:var(--primary);"></i>
+                    <div style="flex:1;">
+                        <div style="font-size:12px;font-weight:600;">${g.nome}</div>
+                        <div style="font-size:10px;color:var(--text-muted);">${g.nomes_lojas.join(', ')}</div>
+                    </div>
+                    <button onclick="_removerGrupoSync(${i})" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;"><i class="fas fa-times"></i></button>
+                </div>
+            `).join('');
+        }
+    }
+}
+
+async function _gerarEnvio() {
+    // Salvar agrupamentos antes de gerar
+    if (_syncGruposAutomacao.length > 0) {
+        await fetchAPI('/api/agrupamentos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
+        });
+    }
+
+    // Coletar lojas selecionadas (checkboxes marcados)
+    const lojasChecked = document.querySelectorAll('.sync-loja-check:checked');
+    const lojasSelecionadas = Array.from(lojasChecked).map(cb => cb.dataset.nome);
+
+    if (lojasChecked.length === 0) {
+        toast('Selecione pelo menos uma loja para gerar envio', 'warning');
+        return;
+    }
+
+    // Chamar o pipeline com lojas selecionadas
+    const data = await fetchAPI('/api/upseller/gerar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lojas: lojasSelecionadas })
+    });
+    if (data && data.erro) {
+        toast(data.erro, 'warning');
+        return;
+    }
+
+    const lojasTexto = lojasSelecionadas.length > 3
+        ? `${lojasSelecionadas.slice(0,3).join(', ')}... (${lojasSelecionadas.length} lojas)`
+        : lojasSelecionadas.join(', ');
+    toast(`Geracao iniciada para: ${lojasTexto}`, 'info');
+
+    // NÃO remove o painel de lojas - ele persiste para referência
+    // Apenas esconder temporariamente durante a geração
+    const panel = document.getElementById('syncResultadoPanel');
+    if (panel) panel.style.opacity = '0.5';
+
+    // Remover painel de resultado anterior se existir
+    const oldProc = document.getElementById('syncProcessandoPanel');
+    if (oldProc) oldProc.remove();
+
+    // Mostrar progresso inline
+    const progressDiv = document.createElement('div');
+    progressDiv.id = 'syncProcessandoPanel';
+    progressDiv.style.cssText = 'margin-top:15px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-primary);';
+    progressDiv.innerHTML = `
+        <div style="background:linear-gradient(135deg, #25D366, #128C7E);color:#fff;padding:10px 15px;">
+            <span style="font-weight:600;font-size:13px;"><i class="fas fa-spinner fa-spin"></i> Gerando envio...</span>
+        </div>
+        <div style="padding:12px 15px;">
+            <div id="syncGerarProgress" style="margin-bottom:8px;">
+                <div style="background:var(--bg-tertiary);border-radius:8px;overflow:hidden;height:22px;position:relative;">
+                    <div id="syncGerarBar" style="height:100%;border-radius:8px;transition:width 0.5s ease;background:linear-gradient(90deg, #25D366, #128C7E);width:5%;display:flex;align-items:center;justify-content:center;">
+                        <span id="syncGerarPercent" style="color:white;font-size:10px;font-weight:600;">5%</span>
+                    </div>
+                </div>
+                <p id="syncGerarText" style="font-size:11px;color:var(--text-secondary);margin-top:4px;text-align:center;">Iniciando...</p>
+            </div>
+        </div>
+    `;
+    const upsellerCard = document.getElementById('upsellerConectado');
+    if (upsellerCard && upsellerCard.closest('.card')) {
+        upsellerCard.closest('.card').appendChild(progressDiv);
+    }
+
+    // Polling de status da geracao (endpoint SEPARADO do sync)
+    const pollGeracao = setInterval(async () => {
+        try {
+            const status = await fetchAPI('/api/upseller/gerar/status');
+            if (!status) return;
+
+            // Atualizar barra de progresso
+            const bar = document.getElementById('syncGerarBar');
+            const pct = document.getElementById('syncGerarPercent');
+            const txt = document.getElementById('syncGerarText');
+            if (bar && status.progresso) {
+                bar.style.width = Math.max(status.progresso, 5) + '%';
+                if (pct) pct.textContent = status.progresso + '%';
+            }
+            if (txt && status.detalhes) txt.textContent = status.detalhes;
+
+            // Verificar se terminou
+            if (status.etapa === 'concluido' || status.etapa === 'parcial') {
+                clearInterval(pollGeracao);
+
+                // Restaurar opacidade do painel de lojas
+                const syncPanel = document.getElementById('syncResultadoPanel');
+                if (syncPanel) syncPanel.style.opacity = '1';
+
+                // Buscar resultado do processamento
+                const statusFinal = await fetchAPI('/api/status');
+                const procDiv = document.getElementById('syncProcessandoPanel');
+
+                if (procDiv && statusFinal && statusFinal.ultimo_resultado) {
+                    const resultado = statusFinal.ultimo_resultado;
+                    const lojas = resultado.lojas || [];
+                    procDiv.innerHTML = `
+                        <div style="background:linear-gradient(135deg, #25D366, #128C7E);color:#fff;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;">
+                            <span style="font-weight:600;font-size:13px;"><i class="fas fa-check-circle"></i> Envio Gerado com Sucesso!</span>
+                            <button onclick="this.closest('#syncProcessandoPanel').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;">&times;</button>
+                        </div>
+                        <div style="padding:12px 15px;">
+                            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:12px;">
+                                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                                    <div style="font-size:18px;font-weight:700;color:#25D366;">${resultado.total_etiquetas || 0}</div>
+                                    <div style="font-size:10px;color:var(--text-secondary);">Etiquetas</div>
+                                </div>
+                                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                                    <div style="font-size:18px;font-weight:700;color:var(--primary);">${resultado.total_lojas || 0}</div>
+                                    <div style="font-size:10px;color:var(--text-secondary);">Lojas</div>
+                                </div>
+                                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                                    <div style="font-size:18px;font-weight:700;color:var(--text-muted);">${resultado.duracao_s || 0}s</div>
+                                    <div style="font-size:10px;color:var(--text-secondary);">Duracao</div>
+                                </div>
+                            </div>
+                            ${lojas.length > 0 ? `
+                            <div style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;margin-bottom:12px;">
+                                ${lojas.map(l => `<div style="display:flex;justify-content:space-between;padding:4px 10px;border-bottom:1px solid var(--border);font-size:12px;">
+                                    <span>${l.nome || l.loja || '?'}</span>
+                                    <span style="color:#25D366;font-weight:600;">${l.etiquetas || 0} etiquetas</span>
+                                </div>`).join('')}
+                            </div>` : ''}
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                                <button class="btn btn-success" onclick="enviarWhatsAppManual()" style="font-size:11px;padding:6px 12px;">
+                                    <i class="fab fa-whatsapp"></i> Enviar via WhatsApp
+                                </button>
+                                <button class="btn btn-secondary" onclick="baixarArquivo('/api/download-todos','Etiquetas_prontas.zip')" style="font-size:11px;padding:6px 12px;">
+                                    <i class="fas fa-download"></i> Baixar ZIP
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                } else if (procDiv) {
+                    procDiv.innerHTML = `
+                        <div style="background:linear-gradient(135deg, #f39c12, #e67e22);color:#fff;padding:10px 15px;">
+                            <span style="font-weight:600;font-size:13px;"><i class="fas fa-exclamation-circle"></i> ${status.detalhes || 'Geracao concluida com avisos'}</span>
+                        </div>
+                    `;
+                }
+
+                toast(status.etapa === 'concluido' ? 'Envio gerado com sucesso!' : status.detalhes, status.etapa === 'concluido' ? 'success' : 'warning');
+
+            } else if (status.etapa === 'erro') {
+                clearInterval(pollGeracao);
+                toast(status.detalhes || 'Erro na geracao', 'error');
+                const procDiv = document.getElementById('syncProcessandoPanel');
+                if (procDiv) procDiv.remove();
+                // Restaurar opacidade do painel de lojas
+                const syncPanel2 = document.getElementById('syncResultadoPanel');
+                if (syncPanel2) syncPanel2.style.opacity = '1';
+            }
+        } catch (e) {
+            console.error('Erro polling geracao:', e);
+        }
+    }, 2000);
+}
+
+// --- WHATSAPP ---
+let _whatsappQRPolling = null;
+
+async function verificarWhatsApp() {
+    const data = await fetchAPI('/api/whatsapp/status');
+    const statusEl = document.getElementById('whatsappStatus');
+    const qrContainer = document.getElementById('whatsappQRContainer');
+    if (data && data.connected) {
+        statusEl.textContent = `Conectado (${data.phone || ''})`;
+        statusEl.style.background = '#25D366';
+        // Esconder QR code quando conectado
+        if (qrContainer) qrContainer.style.display = 'none';
+        // Parar polling se estiver ativo
+        _pararPollingQR();
+    } else {
+        statusEl.textContent = 'Desconectado';
+        statusEl.style.background = '#e74c3c';
+    }
+    return data;
+}
+
+function _pararPollingQR() {
+    if (_whatsappQRPolling) {
+        clearInterval(_whatsappQRPolling);
+        _whatsappQRPolling = null;
+    }
+}
+
+async function mostrarQRWhatsApp() {
+    const container = document.getElementById('whatsappQRContainer');
+
+    // Se ja esta conectado, nao mostra QR
+    const statusCheck = await fetchAPI('/api/whatsapp/status');
+    if (statusCheck && statusCheck.connected) {
+        toast('WhatsApp ja esta conectado!', 'success');
+        container.style.display = 'none';
+        verificarWhatsApp();
+        return;
+    }
+
+    container.style.display = container.style.display === 'none' ? 'block' : 'none';
+    if (container.style.display === 'block') {
+        toast('Obtendo QR code... Escaneie com seu WhatsApp', 'info');
+        const data = await fetchAPI('/api/whatsapp/qr');
+        if (data && data.qr) {
+            document.getElementById('whatsappQRImage').src = data.qr;
+            // Iniciar polling automatico para detectar conexao
+            _iniciarPollingQRWhatsApp();
+        } else if (data && data.message && data.message.includes('conectado')) {
+            toast('WhatsApp ja esta conectado!', 'success');
+            container.style.display = 'none';
+            verificarWhatsApp();
+        } else {
+            // Tentar iniciar sessao automaticamente
+            toast('Iniciando sessao WhatsApp...', 'info');
+            await fetchAPI('/api/whatsapp/qr'); // Trigger session start
+            setTimeout(async () => {
+                const retry = await fetchAPI('/api/whatsapp/qr');
+                if (retry && retry.qr) {
+                    document.getElementById('whatsappQRImage').src = retry.qr;
+                    _iniciarPollingQRWhatsApp();
+                } else {
+                    toast(retry?.error || 'Erro ao obter QR code. Verifique se o servico Baileys esta rodando.', 'error');
+                    container.style.display = 'none';
+                }
+            }, 3000);
+        }
+    } else {
+        _pararPollingQR();
+    }
+}
+
+function _iniciarPollingQRWhatsApp() {
+    _pararPollingQR(); // Limpar polling anterior
+    let tentativas = 0;
+    const maxTentativas = 60; // 2 minutos (60 x 2s)
+
+    _whatsappQRPolling = setInterval(async () => {
+        tentativas++;
+        if (tentativas > maxTentativas) {
+            _pararPollingQR();
+            toast('Tempo esgotado. Clique em "Ver QR Code" novamente.', 'warning');
+            document.getElementById('whatsappQRContainer').style.display = 'none';
+            return;
+        }
+
+        try {
+            // Verificar se conectou
+            const status = await fetchAPI('/api/whatsapp/status');
+            if (status && status.connected) {
+                _pararPollingQR();
+                document.getElementById('whatsappQRContainer').style.display = 'none';
+                toast('WhatsApp conectado com sucesso!', 'success');
+                verificarWhatsApp();
+                return;
+            }
+
+            // Atualizar QR code a cada 10s (pode mudar)
+            if (tentativas % 5 === 0) {
+                const qrData = await fetchAPI('/api/whatsapp/qr');
+                if (qrData && qrData.qr) {
+                    document.getElementById('whatsappQRImage').src = qrData.qr;
+                }
+            }
+        } catch (e) {
+            console.error('Erro no polling QR WhatsApp:', e);
+        }
+    }, 2000);
+}
+
+async function enviarTesteWhatsApp() {
+    const tel = document.getElementById('whatsappTesteTel').value;
+    if (!tel) { toast('Informe um numero', 'warning'); return; }
+    const res = await fetchAPI('/api/whatsapp/enviar-teste', {
+        method: 'POST', body: JSON.stringify({ telefone: tel })
+    });
+    if (res && res.success) toast('Mensagem de teste enviada!', 'success');
+    else toast(res?.error || 'Erro ao enviar teste', 'error');
+}
+
+// --- CONTATOS ---
+function mostrarFormContato() {
+    document.getElementById('formContato').style.display = 'block';
+    document.getElementById('contatoCNPJ').value = '';
+    document.getElementById('contatoLoja').value = '';
+    document.getElementById('contatoTel').value = '';
+    document.getElementById('contatoNome').value = '';
+}
+
+async function salvarContato() {
+    const cnpj = document.getElementById('contatoCNPJ').value;
+    const loja = document.getElementById('contatoLoja').value;
+    const tel = document.getElementById('contatoTel').value;
+    const nome = document.getElementById('contatoNome').value;
+    if (!cnpj || !tel) { toast('CNPJ e telefone obrigatorios', 'warning'); return; }
+    const res = await fetchAPI('/api/whatsapp/contatos', {
+        method: 'POST',
+        body: JSON.stringify({ loja_cnpj: cnpj, loja_nome: loja, telefone: tel, nome_contato: nome })
+    });
+    if (res && !res.erro) {
+        toast('Contato salvo!', 'success');
+        document.getElementById('formContato').style.display = 'none';
+        carregarContatos();
+    } else toast(res?.erro || 'Erro', 'error');
+}
+
+async function carregarContatos() {
+    const data = await fetchAPI('/api/whatsapp/contatos');
+    const container = document.getElementById('tabelaContatos');
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>';
+        return;
+    }
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
+    html += '<th>Loja</th><th>CNPJ</th><th>WhatsApp</th><th>Contato</th><th>Ativo</th><th></th>';
+    html += '</tr></thead><tbody>';
+    data.forEach(c => {
+        html += `<tr>
+            <td>${c.loja_nome}</td>
+            <td style="font-size:11px;">${c.loja_cnpj}</td>
+            <td>${c.telefone}</td>
+            <td>${c.nome_contato}</td>
+            <td>${c.ativo ? '<span style="color:#25D366;">&#10003;</span>' : '<span style="color:#e74c3c;">&#10007;</span>'}</td>
+            <td><button class="btn btn-secondary" onclick="removerContato(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button></td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function removerContato(id) {
+    if (!confirm('Remover este contato?')) return;
+    const res = await fetchAPI(`/api/whatsapp/contatos/${id}`, { method: 'DELETE' });
+    if (res && !res.erro) { toast('Contato removido', 'success'); carregarContatos(); }
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+// --- AGENDAMENTOS ---
+function mostrarFormAgendamento() {
+    document.getElementById('formAgendamento').style.display = 'block';
+    document.getElementById('agendNome').value = '';
+    document.getElementById('agendHora').value = '08:00';
+}
+
+async function salvarAgendamento() {
+    const nome = document.getElementById('agendNome').value || 'Agendamento';
+    const hora = document.getElementById('agendHora').value;
+    const dias = Array.from(document.querySelectorAll('.agendDia:checked')).map(cb => cb.value).join(',') || 'todos';
+    const res = await fetchAPI('/api/agendamentos', {
+        method: 'POST',
+        body: JSON.stringify({
+            nome, hora, dias_semana: dias,
+            baixar_upseller: document.getElementById('agendUpseller').checked,
+            processar_etiquetas: document.getElementById('agendProcessar').checked,
+            enviar_whatsapp: document.getElementById('agendWhatsapp').checked,
+        })
+    });
+    if (res && !res.erro) {
+        toast('Agendamento criado!', 'success');
+        document.getElementById('formAgendamento').style.display = 'none';
+        carregarAgendamentos();
+    } else toast(res?.erro || 'Erro', 'error');
+}
+
+async function carregarAgendamentos() {
+    const data = await fetchAPI('/api/agendamentos');
+    const container = document.getElementById('tabelaAgendamentos');
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum agendamento configurado.</p>';
+        return;
+    }
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
+    html += '<th>Nome</th><th>Horario</th><th>Dias</th><th>Proxima</th><th>Ultimo</th><th>Status</th><th></th>';
+    html += '</tr></thead><tbody>';
+    data.forEach(s => {
+        const statusColor = s.ultimo_status === 'sucesso' ? '#25D366' : s.ultimo_status === 'erro' ? '#e74c3c' : s.ultimo_status === 'parcial' ? '#f39c12' : 'var(--text-secondary)';
+        const ativoIcon = s.ativo ? '&#9654;' : '&#9646;&#9646;';
+        html += `<tr>
+            <td>${s.nome}</td>
+            <td>${s.hora}</td>
+            <td style="font-size:10px;">${s.dias_semana}</td>
+            <td style="font-size:10px;">${s.proxima_execucao || '-'}</td>
+            <td style="font-size:10px;">${s.ultima_execucao || '-'}</td>
+            <td><span style="color:${statusColor}; font-weight:bold;">${s.ultimo_status || '-'}</span></td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-secondary" onclick="${s.ativo ? `pausarAgendamento(${s.id})` : `retomarAgendamento(${s.id})`}" style="font-size:10px; padding:2px 6px;" title="${s.ativo ? 'Pausar' : 'Retomar'}">${ativoIcon}</button>
+                <button class="btn btn-secondary" onclick="removerAgendamento(${s.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button>
+            </td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function pausarAgendamento(id) {
+    const res = await fetchAPI(`/api/agendamentos/${id}/pausar`, { method: 'POST' });
+    if (res && !res.erro) { toast('Agendamento pausado', 'info'); carregarAgendamentos(); }
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+async function retomarAgendamento(id) {
+    const res = await fetchAPI(`/api/agendamentos/${id}/retomar`, { method: 'POST' });
+    if (res && !res.erro) { toast('Agendamento retomado', 'success'); carregarAgendamentos(); }
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+async function removerAgendamento(id) {
+    if (!confirm('Remover este agendamento?')) return;
+    const res = await fetchAPI(`/api/agendamentos/${id}`, { method: 'DELETE' });
+    if (res && !res.erro) { toast('Agendamento removido', 'success'); carregarAgendamentos(); }
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+// --- EXECUCAO MANUAL ---
+async function executarPipelineAgora() {
+    if (!confirm('Executar pipeline completo agora? (UpSeller → Processar → WhatsApp)')) return;
+    const res = await fetchAPI('/api/agendamentos/executar-agora', { method: 'POST' });
+    if (res && !res.erro) toast('Pipeline iniciado em background!', 'success');
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+async function enviarWhatsAppManual() {
+    if (!confirm('Enviar ultimo resultado via WhatsApp para todos os contatos?')) return;
+    const res = await fetchAPI('/api/whatsapp/enviar-lote', { method: 'POST' });
+    if (res && !res.erro) toast(res.mensagem || 'Enviando...', 'success');
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+// --- HISTORICO ---
+async function carregarHistorico() {
+    const data = await fetchAPI('/api/agendamentos/historico');
+    const container = document.getElementById('tabelaHistorico');
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhuma execucao registrada.</p>';
+        return;
+    }
+    let html = '<table style="width:100%; font-size:11px;"><thead><tr>';
+    html += '<th>Data</th><th>Tipo</th><th>Etiq.</th><th>WA Env.</th><th>WA Err.</th><th>Duracao</th><th>Status</th>';
+    html += '</tr></thead><tbody>';
+    data.forEach(l => {
+        const statusColor = l.status === 'sucesso' ? '#25D366' : l.status === 'erro' ? '#e74c3c' : l.status === 'parcial' ? '#f39c12' : 'var(--text-secondary)';
+        html += `<tr>
+            <td>${l.inicio}</td>
+            <td><span class="badge" style="font-size:9px; padding:1px 5px;">${l.tipo}</span></td>
+            <td>${l.etiquetas_processadas}</td>
+            <td style="color:#25D366;">${l.whatsapp_enviados}</td>
+            <td style="color:#e74c3c;">${l.whatsapp_erros}</td>
+            <td>${l.duracao_s ? l.duracao_s.toFixed(0) + 's' : '-'}</td>
+            <td><span style="color:${statusColor}; font-weight:bold;">${l.status}</span></td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
 }
 </script>
 </body>
