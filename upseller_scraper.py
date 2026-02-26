@@ -977,8 +977,13 @@ class UpSellerScraper:
 
     async def _filtrar_por_loja(self, nome_loja: str) -> bool:
         """
-        Filtra pedidos por loja no dropdown de filtro do UpSeller.
-        O UpSeller tem um dropdown "Loja" no topo da pagina de pedidos.
+        Filtra pedidos por loja no dropdown multi-checkbox do UpSeller.
+
+        O UpSeller usa um componente customizado (nao ant-select padrao):
+        - Trigger: .select_multiple_box > .inp_box com texto "Todas Lojas"
+        - Popup: .my_select_dropdown_wrap com search, checkboxes, Cancelar/Salvar
+        - Cada loja: label.ant-checkbox-wrapper dentro de .option_list
+        - Confirmacao: div "Salvar" dentro de .option_action
 
         Args:
             nome_loja: Nome da loja para filtrar (ex: "DAHIANE")
@@ -991,122 +996,139 @@ class UpSellerScraper:
         logger.info(f"[UpSeller] Filtrando por loja: '{nome_loja}'")
 
         try:
-            # Estrategia 1: Encontrar o dropdown/select de filtro por loja
-            # UpSeller usa ant-select para filtros. O filtro de loja geralmente
-            # tem placeholder "Loja" ou "Todas as Lojas" ou "Selecione a loja"
-            filtrou = await self._page.evaluate("""
-                (nomeLoja) => {
-                    // Buscar selects/dropdowns com placeholder ou label "Loja"
-                    const selectors = [
-                        '.ant-select',
-                        '[class*="filter"] .ant-select',
-                        '[class*="search"] .ant-select',
-                        'div[class*="filter"]'
-                    ];
-
-                    for (const sel of selectors) {
-                        const elements = document.querySelectorAll(sel);
-                        for (const el of elements) {
-                            const text = (el.textContent || '').trim().toLowerCase();
-                            const placeholder = el.querySelector('.ant-select-selection-placeholder, .ant-select-selection__placeholder');
-                            const placeholderText = placeholder ? (placeholder.textContent || '').trim().toLowerCase() : '';
-
-                            // Verificar se e o filtro de loja
-                            if (text.includes('loja') || text.includes('todas as lojas') ||
-                                text.includes('store') || placeholderText.includes('loja') ||
-                                placeholderText.includes('todas') || placeholderText.includes('store')) {
-
-                                // Clicar no select para abrir dropdown
-                                const clickTarget = el.querySelector('.ant-select-selector, .ant-select-selection') || el;
-                                clickTarget.click();
-                                return { found: true, type: 'ant-select', text: text.substring(0, 50) };
-                            }
+            # 1. Abrir o popup clicando no trigger "Todas Lojas"
+            abriu = await self._page.evaluate("""
+                (() => {
+                    // Buscar o trigger do multi-select de lojas
+                    const triggers = document.querySelectorAll('.inp_box.ant-select-selection, .select_multiple_box .inp_box');
+                    for (const trigger of triggers) {
+                        const text = (trigger.textContent || '').trim();
+                        if (text.includes('Todas Lojas') || text.includes('Todas as Lojas') || text.includes('Loja')) {
+                            trigger.click();
+                            return { found: true, text: text.substring(0, 50) };
                         }
                     }
-
-                    // Estrategia 2: Buscar por label/texto "Loja" proximo a um select
-                    const labels = document.querySelectorAll('label, span, div');
-                    for (const label of labels) {
-                        const lt = (label.textContent || '').trim();
-                        if (/^Loja$/i.test(lt) || /^Store$/i.test(lt) || /^Filtrar por loja$/i.test(lt)) {
-                            // Encontrar o select mais proximo
-                            const parent = label.closest('div') || label.parentElement;
-                            if (parent) {
-                                const select = parent.querySelector('.ant-select, select, [class*="select"]');
-                                if (select) {
-                                    const clickTarget = select.querySelector('.ant-select-selector') || select;
-                                    clickTarget.click();
-                                    return { found: true, type: 'near-label', label: lt };
-                                }
-                            }
-                        }
+                    // Fallback: buscar por classe do container
+                    const selectBox = document.querySelector('.select_multiple_box');
+                    if (selectBox) {
+                        const inp = selectBox.querySelector('.inp_box');
+                        if (inp) { inp.click(); return { found: true, text: 'select_multiple_box fallback' }; }
                     }
-
                     return { found: false };
-                }
-            """, nome_loja)
+                })()
+            """)
 
-            if not filtrou or not filtrou.get("found"):
-                logger.warning(f"[UpSeller] Dropdown de loja nao encontrado, tentando filtro via URL")
-                # Fallback: Alguns sistemas permitem filtro via URL query param
+            if not abriu or not abriu.get("found"):
+                logger.warning("[UpSeller] Trigger 'Todas Lojas' nao encontrado")
                 return False
 
-            await self._page.wait_for_timeout(1000)
+            logger.info(f"[UpSeller] Popup de lojas aberto: {abriu}")
+            await self._page.wait_for_timeout(800)
 
-            # Agora o dropdown esta aberto, selecionar a loja
+            # 2. Desmarcar "Tudo" se estiver marcado (queremos apenas 1 loja)
+            await self._page.evaluate("""
+                (() => {
+                    const wrap = document.querySelector('.my_select_dropdown_wrap');
+                    if (!wrap) return;
+                    const allCheck = wrap.querySelector('.all_check label.ant-checkbox-wrapper');
+                    if (allCheck && allCheck.classList.contains('ant-checkbox-wrapper-checked')) {
+                        allCheck.click(); // Desmarcar "Tudo"
+                    }
+                })()
+            """)
+            await self._page.wait_for_timeout(300)
+
+            # 3. Desmarcar todas as lojas que possam estar selecionadas
+            await self._page.evaluate("""
+                (() => {
+                    const wrap = document.querySelector('.my_select_dropdown_wrap');
+                    if (!wrap) return;
+                    const checked = wrap.querySelectorAll('.option_list label.ant-checkbox-wrapper-checked');
+                    for (const cb of checked) { cb.click(); }
+                })()
+            """)
+            await self._page.wait_for_timeout(300)
+
+            # 4. Usar o campo de busca para filtrar (facilita encontrar a loja)
+            search_input = await self._page.query_selector('.my_select_dropdown_wrap .option_search input.ant-input')
+            if search_input:
+                await search_input.fill(nome_loja)
+                await self._page.wait_for_timeout(500)
+                logger.info(f"[UpSeller] Buscou '{nome_loja}' no campo de pesquisa")
+
+            # 5. Selecionar a loja desejada pelo nome
             selecionou = await self._page.evaluate("""
                 (nomeLoja) => {
-                    // Buscar opcoes do dropdown aberto
-                    const options = document.querySelectorAll(
-                        '.ant-select-dropdown .ant-select-item, ' +
-                        '.ant-select-dropdown-menu-item, ' +
-                        '.ant-select-dropdown li, ' +
-                        '.rc-virtual-list .ant-select-item, ' +
-                        '[class*="dropdown"] [class*="option"], ' +
-                        '[class*="dropdown"] li'
-                    );
+                    const wrap = document.querySelector('.my_select_dropdown_wrap');
+                    if (!wrap) return { selected: false, error: 'wrap not found' };
 
+                    const labels = wrap.querySelectorAll('.option_list label.ant-checkbox-wrapper');
                     const normalizar = (s) => s.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
                     const target = normalizar(nomeLoja);
 
-                    for (const opt of options) {
-                        const optText = (opt.textContent || '').trim();
-                        const normalOpt = normalizar(optText);
-
-                        // Match exato ou contem o nome da loja
-                        if (normalOpt === target || normalOpt.includes(target) || target.includes(normalOpt)) {
-                            opt.click();
-                            return { selected: true, text: optText };
+                    // Match exato primeiro
+                    for (const label of labels) {
+                        const text = normalizar(label.textContent || '');
+                        if (text === target) {
+                            if (!label.classList.contains('ant-checkbox-wrapper-checked')) {
+                                label.click();
+                            }
+                            return { selected: true, text: label.textContent.trim(), method: 'exact' };
                         }
                     }
 
-                    // Fallback: match parcial mais flexivel
-                    for (const opt of options) {
-                        const optText = (opt.textContent || '').trim();
-                        const normalOpt = normalizar(optText);
-                        const words = target.split(/\\s+/);
-                        if (words.every(w => normalOpt.includes(w))) {
-                            opt.click();
-                            return { selected: true, text: optText, method: 'partial' };
+                    // Match parcial (contem)
+                    for (const label of labels) {
+                        const text = normalizar(label.textContent || '');
+                        if (text.includes(target) || target.includes(text)) {
+                            if (!label.classList.contains('ant-checkbox-wrapper-checked')) {
+                                label.click();
+                            }
+                            return { selected: true, text: label.textContent.trim(), method: 'partial' };
                         }
                     }
 
-                    return { selected: false, options: Array.from(options).slice(0, 10).map(o => o.textContent.trim()) };
+                    return {
+                        selected: false,
+                        available: Array.from(labels).map(l => l.textContent.trim())
+                    };
                 }
             """, nome_loja)
 
-            if selecionou and selecionou.get("selected"):
-                logger.info(f"[UpSeller] Loja selecionada: {selecionou.get('text')}")
-                await self._page.wait_for_timeout(2000)  # Esperar tabela recarregar
-                await self.screenshot(f"filtro_loja_{nome_loja[:20]}")
-                return True
-            else:
-                opcoes = selecionou.get("options", []) if selecionou else []
-                logger.warning(f"[UpSeller] Loja '{nome_loja}' nao encontrada. Opcoes disponiveis: {opcoes}")
-                # Fechar dropdown clicando fora
-                await self._page.evaluate("document.body.click()")
+            if not selecionou or not selecionou.get("selected"):
+                lojas_disp = selecionou.get("available", []) if selecionou else []
+                logger.warning(f"[UpSeller] Loja '{nome_loja}' nao encontrada. Disponiveis: {lojas_disp}")
+                # Cancelar e fechar popup
+                await self._page.evaluate("""
+                    (() => {
+                        const cancel = document.querySelector('.my_select_dropdown_wrap .option_action .d_ib');
+                        if (cancel && cancel.textContent.trim() === 'Cancelar') cancel.click();
+                    })()
+                """)
                 await self._page.wait_for_timeout(500)
                 return False
+
+            logger.info(f"[UpSeller] Loja '{selecionou.get('text')}' marcada ({selecionou.get('method')})")
+
+            # 6. Clicar em "Salvar" para aplicar o filtro
+            await self._page.evaluate("""
+                (() => {
+                    const wrap = document.querySelector('.my_select_dropdown_wrap');
+                    if (!wrap) return;
+                    const actionDivs = wrap.querySelectorAll('.option_action .d_ib, .option_action div');
+                    for (const div of actionDivs) {
+                        if (div.textContent.trim() === 'Salvar') {
+                            div.click();
+                            return;
+                        }
+                    }
+                })()
+            """)
+
+            await self._page.wait_for_timeout(2000)  # Esperar tabela recarregar
+            await self.screenshot(f"filtro_loja_{nome_loja[:20]}")
+            logger.info(f"[UpSeller] Filtro por loja '{nome_loja}' aplicado e salvo")
+            return True
 
         except Exception as e:
             logger.error(f"[UpSeller] Erro ao filtrar por loja: {e}")
@@ -1114,172 +1136,22 @@ class UpSellerScraper:
 
     async def _configurar_formato_etiqueta(self) -> bool:
         """
-        Configura o formato da etiqueta no UpSeller para:
+        Verifica se a configuracao de etiqueta ja esta salva no UpSeller.
+
+        As configuracoes de etiqueta sao salvas globalmente em:
+        UpSeller > Configuracoes > Configuracoes de Envio > Shopee
         - Tipo: Etiqueta de Envio Personalizada
         - Formato: PDF
         - Tamanho: 10x15cm
-        - Opcao: Imprimir Etiqueta Casada + DDC (Declaracao de Conteudo)
+        - Lista de Separacao: Habilitada (SKU + Variante)
 
-        Deve ser chamado na pagina "Para Imprimir" antes de baixar.
-        Retorna: True se configurou com sucesso
+        Como as configs ja estao salvas, este metodo apenas loga confirmacao.
+        Se precisar configurar no futuro, acessar /pt/settings/shipping-shopee.
+
+        Retorna: True (configs ja salvas no UpSeller)
         """
-        logger.info("[UpSeller] Configurando formato de etiqueta (Personalizada + DDC 10x15cm)...")
-
-        try:
-            # Passo 1: Encontrar e clicar no botao/link de configuracao de etiqueta
-            # Geralmente ha um icone de engrenagem ou link "Configurar" proximo a "Imprimir Etiquetas"
-            config_abriu = await self._page.evaluate("""
-                (() => {
-                    // Buscar botao de configuracao (engrenagem, "Configurar", "Config.", etc)
-                    const candidates = document.querySelectorAll(
-                        'a, button, span, div, [class*="setting"], [class*="config"]'
-                    );
-                    for (const el of candidates) {
-                        const text = (el.textContent || '').trim().toLowerCase();
-                        const hasIcon = el.querySelector('[class*="setting"], [class*="gear"], [class*="cog"]');
-
-                        if (text.includes('configurar etiqueta') || text.includes('config') && text.includes('etiqueta') ||
-                            text === 'configurar' || text === 'configuração' ||
-                            hasIcon && el.closest('[class*="print"], [class*="label"]')) {
-                            el.click();
-                            return { found: true, text: text.substring(0, 50) };
-                        }
-                    }
-
-                    // Alternativa: O dropdown "Imprimir Etiquetas" pode ter a opcao de configuracao
-                    // Buscar dentro de dropdowns abertos
-                    const menuItems = document.querySelectorAll(
-                        '.ant-dropdown-menu-item, .ant-menu-item, [class*="dropdown"] li'
-                    );
-                    for (const item of menuItems) {
-                        const text = (item.textContent || '').trim().toLowerCase();
-                        if (text.includes('configurar') || text.includes('personalizar') ||
-                            text.includes('config')) {
-                            item.click();
-                            return { found: true, text: text.substring(0, 50), type: 'dropdown' };
-                        }
-                    }
-
-                    return { found: false };
-                })()
-            """)
-
-            if config_abriu and config_abriu.get("found"):
-                logger.info(f"[UpSeller] Configuracao aberta: {config_abriu}")
-                await self._page.wait_for_timeout(2000)
-            else:
-                logger.info("[UpSeller] Botao de configuracao nao encontrado, tentando via modal de impressao")
-                # A configuracao pode aparecer DENTRO do modal de impressao
-                # Nesse caso, sera configurada quando o modal abrir
-
-            # Passo 2: Selecionar "Etiqueta de Envio Personalizada"
-            await self._page.evaluate("""
-                (() => {
-                    const options = document.querySelectorAll(
-                        'label, div, span, .ant-radio-wrapper, .ant-select-item, [class*="option"], [class*="radio"]'
-                    );
-                    for (const opt of options) {
-                        const text = (opt.textContent || '').trim().toLowerCase();
-                        if (text.includes('personalizada') || text.includes('envio personalizada')) {
-                            const radio = opt.querySelector('input[type="radio"]') || opt;
-                            radio.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                })()
-            """)
-            await self._page.wait_for_timeout(500)
-
-            # Passo 3: Selecionar PDF como formato
-            await self._page.evaluate("""
-                (() => {
-                    const options = document.querySelectorAll(
-                        'label, .ant-radio-wrapper, .ant-select-item, [class*="option"]'
-                    );
-                    for (const opt of options) {
-                        const text = (opt.textContent || '').trim().toUpperCase();
-                        if (text === 'PDF' || text.includes('PDF')) {
-                            const radio = opt.querySelector('input[type="radio"]') || opt;
-                            radio.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                })()
-            """)
-            await self._page.wait_for_timeout(500)
-
-            # Passo 4: Selecionar 10x15cm
-            await self._page.evaluate("""
-                (() => {
-                    const options = document.querySelectorAll(
-                        'label, .ant-radio-wrapper, .ant-select-item, [class*="option"], [class*="size"]'
-                    );
-                    for (const opt of options) {
-                        const text = (opt.textContent || '').trim();
-                        if (text.includes('10x15') || text.includes('10 x 15') || text.includes('100x150')) {
-                            const radio = opt.querySelector('input[type="radio"]') || opt;
-                            radio.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                })()
-            """)
-            await self._page.wait_for_timeout(500)
-
-            # Passo 5: Selecionar "Imprimir Etiqueta Casada + DDC"
-            selecionou_ddc = await self._page.evaluate("""
-                (() => {
-                    const options = document.querySelectorAll(
-                        'label, .ant-radio-wrapper, .ant-checkbox-wrapper, ' +
-                        '.ant-select-item, [class*="option"], button, div, span'
-                    );
-                    for (const opt of options) {
-                        const text = (opt.textContent || '').trim().toLowerCase();
-                        if (text.includes('casada') && text.includes('ddc') ||
-                            text.includes('etiqueta casada') ||
-                            text.includes('etiqueta + declaração') ||
-                            text.includes('etiqueta + declaracao') ||
-                            text.includes('casada + ddc')) {
-                            const clickable = opt.querySelector('input[type="radio"], input[type="checkbox"]') || opt;
-                            clickable.click();
-                            return { selected: true, text: text.substring(0, 80) };
-                        }
-                    }
-                    return { selected: false };
-                })()
-            """)
-
-            if selecionou_ddc and selecionou_ddc.get("selected"):
-                logger.info(f"[UpSeller] DDC selecionado: {selecionou_ddc.get('text')}")
-            else:
-                logger.warning("[UpSeller] Opcao 'Etiqueta Casada + DDC' nao encontrada no modal")
-
-            # Passo 6: Confirmar/Salvar configuracao (se houver botao)
-            await self._page.evaluate("""
-                (() => {
-                    const btns = document.querySelectorAll('button.ant-btn-primary, button');
-                    for (const btn of btns) {
-                        const text = (btn.textContent || '').trim().toLowerCase();
-                        if (text === 'salvar' || text === 'confirmar' || text === 'ok' || text === 'aplicar') {
-                            btn.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                })()
-            """)
-            await self._page.wait_for_timeout(1000)
-
-            await self.screenshot("config_etiqueta_ddc")
-            logger.info("[UpSeller] Configuracao de etiqueta concluida")
-            return True
-
-        except Exception as e:
-            logger.error(f"[UpSeller] Erro ao configurar formato de etiqueta: {e}")
-            return False
+        logger.info("[UpSeller] Formato de etiqueta ja configurado no UpSeller (Personalizada + Lista Sep. 10x15cm)")
+        return True
 
     async def _aguardar_tracking(self, timeout_segundos: int = 120) -> bool:
         """
@@ -1643,18 +1515,19 @@ class UpSellerScraper:
 
     async def baixar_etiquetas(self, filtro_loja: str = None) -> List[str]:
         """
-        Navega para Pedidos > Para Imprimir (/pt/order/in-process) e baixa PDFs.
+        Navega para pagina "Para Enviar" e usa "Imprimir em Massa" para baixar PDFs.
 
-        Fluxo CORRETO (atualizado 2026-02-26):
+        O UpSeller ja esta configurado globalmente para:
+        - Etiqueta de Envio Personalizada, PDF, 10x15cm
+        - Imprimir Lista de Separacao (SKU + Variante, ordenado por Nome)
+        Portanto o "Imprimir em Massa" gera o PDF com etiqueta+lista ja intercalados.
+
+        Fluxo (atualizado 2026-02-26):
           1. Navega para /pt/order/in-process (Para Imprimir)
           2. FILTRA POR LOJA se especificado
-          3. Clica sub-aba "Etiqueta nao impressa"
-          4. Seleciona todos os pedidos
-          5. Clica em "Imprimir Etiquetas" (dropdown trigger)
-          6. No dropdown, seleciona "Imprimir Etiqueta Casada + DDC"
-             (gera etiqueta + Declaracao de Conteudo no mesmo PDF)
-          7. CONFIGURA formato: Etiqueta Personalizada, PDF, 10x15cm
-          8. Confirma e baixa o PDF
+          3. Seleciona todos os pedidos
+          4. Clica em "Imprimir em Massa" (botao dropdown na barra de acoes)
+          5. Aguarda download do PDF (as configs ja estao salvas globalmente)
 
         Args:
             filtro_loja: Filtrar por nome de loja (opcional)
@@ -1688,61 +1561,15 @@ class UpSellerScraper:
                 else:
                     logger.warning(f"[UpSeller] Nao filtrou por loja '{filtro_loja}' em Para Imprimir")
 
-            # Verificar se ha pedidos para imprimir (Total 0 = nada para fazer)
+            # Verificar se ha pedidos para imprimir
             page_text = await self._page.evaluate("document.body.innerText")
             if "Nenhum Dado" in page_text or "Total 0" in page_text:
-                count_text = await self._page.evaluate("""
-                    (() => {
-                        const items = document.querySelectorAll('li.ant-menu-item');
-                        for (const item of items) {
-                            if (item.textContent.includes('Para Imprimir')) {
-                                const match = item.textContent.match(/(\\d+)/);
-                                return match ? match[1] : '0';
-                            }
-                        }
-                        return '0';
-                    })()
-                """)
-                if count_text == '0':
-                    logger.info("[UpSeller] Para Imprimir tem 0 pedidos, pulando download de etiquetas.")
-                    return []
+                logger.info("[UpSeller] Para Imprimir tem 0 pedidos, pulando download de etiquetas.")
+                return []
 
             await self.screenshot("etiquetas_01_para_imprimir")
 
-            # 3. Clicar sub-aba "Etiqueta nao impressa" (se existir)
-            try:
-                clicou_aba = await self._page.evaluate("""
-                    (() => {
-                        const candidates = document.querySelectorAll(
-                            '[role="tab"], .ant-tabs-tab, [class*="tab"], span, div'
-                        );
-                        for (const el of candidates) {
-                            const text = (el.textContent || '').trim();
-                            if (/Etiqueta (não|nao) impressa/i.test(text) ||
-                                /nao impressa/i.test(text) ||
-                                /não impressa/i.test(text)) {
-                                // Evitar container pai
-                                const rect = el.getBoundingClientRect();
-                                if (rect.width > 5 && rect.width < 500 && rect.height < 100) {
-                                    el.click();
-                                    return { clicked: true, text: text };
-                                }
-                            }
-                        }
-                        return { clicked: false };
-                    })()
-                """)
-                if clicou_aba and clicou_aba.get("clicked"):
-                    logger.info(f"[UpSeller] Clicou aba: {clicou_aba.get('text')}")
-                    await self._page.wait_for_timeout(1500)
-                else:
-                    logger.info("[UpSeller] Sub-aba 'Etiqueta nao impressa' nao encontrada, usando aba atual")
-            except Exception:
-                logger.info("[UpSeller] Erro ao buscar sub-aba, usando aba atual")
-
-            await self.screenshot("etiquetas_02_aba_nao_impressa")
-
-            # 4. Selecionar todos os pedidos
+            # 3. Selecionar todos os pedidos
             try:
                 select_all = await self._page.wait_for_selector(
                     'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
@@ -1754,7 +1581,7 @@ class UpSellerScraper:
                 await self._page.wait_for_timeout(1000)
                 logger.info("[UpSeller] Checkbox 'selecionar todos' clicado")
             except Exception:
-                logger.warning("[UpSeller] Checkbox nao encontrado - pode nao ter pedidos visiveis")
+                logger.warning("[UpSeller] Checkbox 'selecionar todos' nao encontrado, tentando individuais")
                 has_data = await self._page.query_selector('tr.row, tr.top_row, tbody tr')
                 if not has_data:
                     logger.info("[UpSeller] Nenhuma linha de pedido encontrada, pulando.")
@@ -1768,163 +1595,121 @@ class UpSellerScraper:
                     except:
                         pass
 
-            await self.screenshot("etiquetas_03_selecionados")
+            await self.screenshot("etiquetas_02_selecionados")
 
-            # 5. Clicar em "Imprimir Etiquetas" (dropdown trigger)
+            # 4. Clicar em "Imprimir em Massa" (dropdown trigger na barra de acoes)
+            # Este botao e: a.ant-btn.ant-btn-link.my_btn.ant-dropdown-trigger
+            # O download acontece DIRETAMENTE ao clicar, pois as configs ja estao salvas
             try:
-                btn_imprimir = await self._page.wait_for_selector(
-                    'a:has-text("Imprimir Etiquetas"), '
-                    'a.ant-dropdown-trigger:has-text("Imprimir"), '
-                    'button:has-text("Imprimir Etiquetas"), '
-                    'span:has-text("Imprimir Etiquetas")',
-                    timeout=5000
-                )
-                await btn_imprimir.click()
-                await self._page.wait_for_timeout(1500)
-                logger.info("[UpSeller] Clicou em 'Imprimir Etiquetas' (dropdown)")
-            except Exception as e:
-                logger.error(f"[UpSeller] Botao 'Imprimir Etiquetas' nao encontrado: {e}")
-                await self.screenshot("etiquetas_sem_botao_imprimir")
-                return []
-
-            await self.screenshot("etiquetas_04_dropdown_aberto")
-
-            # 6. No dropdown, selecionar "Imprimir Etiqueta Casada + DDC"
-            # O dropdown do UpSeller mostra opcoes como:
-            #   - Imprimir (etiqueta simples)
-            #   - Imprimir Etiqueta Casada + DDC
-            #   - Configurar etiqueta
-            selecionou_ddc = await self._page.evaluate("""
-                (() => {
-                    // Buscar opcoes no dropdown aberto
-                    const items = document.querySelectorAll(
-                        '.ant-dropdown-menu-item, .ant-dropdown li, ' +
-                        '.ant-dropdown:not(.ant-dropdown-hidden) li, ' +
-                        '.ant-menu-item, [class*="dropdown-menu"] li, ' +
-                        '[class*="dropdown"] [class*="item"]'
-                    );
-
-                    // Prioridade 1: "Etiqueta Casada + DDC" ou similar
-                    for (const item of items) {
-                        const text = (item.textContent || '').trim().toLowerCase();
-                        if ((text.includes('casada') && text.includes('ddc')) ||
-                            (text.includes('etiqueta') && text.includes('declaração')) ||
-                            (text.includes('etiqueta') && text.includes('declaracao')) ||
-                            text.includes('casada + ddc') ||
-                            text.includes('etiqueta casada')) {
-                            item.click();
-                            return { selected: true, text: item.textContent.trim(), type: 'ddc' };
-                        }
-                    }
-
-                    // Prioridade 2: Se nao encontrou DDC, buscar "Imprimir" generico
-                    // MAS primeiro vamos verificar se existe opcao DDC com outro texto
-                    for (const item of items) {
-                        const text = (item.textContent || '').trim().toLowerCase();
-                        if (text.includes('ddc') || text.includes('conteudo') || text.includes('conteúdo')) {
-                            item.click();
-                            return { selected: true, text: item.textContent.trim(), type: 'ddc_alt' };
-                        }
-                    }
-
-                    // Fallback: "Imprimir" simples (caso DDC nao exista)
-                    for (const item of items) {
-                        const text = (item.textContent || '').trim().toLowerCase();
-                        if (text === 'imprimir' || text.includes('imprimir etiqueta') && !text.includes('configurar')) {
-                            item.click();
-                            return { selected: true, text: item.textContent.trim(), type: 'simples' };
-                        }
-                    }
-
-                    // Lista opcoes encontradas para debug
-                    return {
-                        selected: false,
-                        options: Array.from(items).slice(0, 10).map(i => i.textContent.trim())
-                    };
-                })()
-            """)
-
-            if selecionou_ddc and selecionou_ddc.get("selected"):
-                tipo = selecionou_ddc.get("type", "?")
-                logger.info(f"[UpSeller] Opcao selecionada: '{selecionou_ddc.get('text')}' (tipo: {tipo})")
-                if tipo == 'simples':
-                    logger.warning("[UpSeller] AVISO: Usou 'Imprimir' simples, opcao DDC nao encontrada")
-            else:
-                opcoes = selecionou_ddc.get("options", []) if selecionou_ddc else []
-                logger.warning(f"[UpSeller] Nenhuma opcao de impressao encontrada. Opcoes: {opcoes}")
-                # Tentar clicar em qualquer opcao visivel
-                try:
-                    opcao = await self._page.wait_for_selector(
-                        '.ant-dropdown:not(.ant-dropdown-hidden) li',
-                        timeout=3000
-                    )
-                    await opcao.click()
-                except Exception:
-                    pass
-
-            await self._page.wait_for_timeout(2000)
-            await self.screenshot("etiquetas_05_apos_selecao_ddc")
-
-            # 7. CONFIGURAR formato no modal/painel que aparece
-            # O UpSeller abre um modal/painel de configuracao com:
-            #   - Tipo de etiqueta (Personalizada vs Padrao)
-            #   - Formato (PDF vs Imagem)
-            #   - Tamanho (10x15cm, A4, etc)
-            await self._configurar_formato_etiqueta()
-
-            await self.screenshot("etiquetas_06_configurado")
-
-            # 8. Confirmar e baixar o PDF
-            # Apos configurar, o UpSeller pode ter um botao "Imprimir" ou "Baixar" final
-            try:
-                async with self._page.expect_download(timeout=60000) as download_info:
-                    # Clicar no botao final de confirmacao/download
-                    # Pode ser "Imprimir", "Baixar", "Confirmar", "Download" etc
-                    confirm_btn = await self._page.evaluate("""
+                async with self._page.expect_download(timeout=120000) as download_info:
+                    # Clicar "Imprimir em Massa"
+                    clicou = await self._page.evaluate("""
                         (() => {
+                            // Buscar o botao "Imprimir em Massa" na barra de acoes
                             const btns = document.querySelectorAll(
-                                '.ant-modal button.ant-btn-primary, ' +
-                                'button.ant-btn-primary, ' +
-                                'button:not(.ant-btn-default)'
+                                'a.ant-btn.ant-btn-link, a.ant-dropdown-trigger, ' +
+                                'button.ant-btn-link, span'
                             );
                             for (const btn of btns) {
-                                const text = (btn.textContent || '').trim().toLowerCase();
-                                if (text.includes('imprimir') || text.includes('baixar') ||
-                                    text.includes('download') || text.includes('confirmar') ||
-                                    text.includes('gerar') || text === 'ok') {
-                                    // Verificar se esta visivel
+                                const text = (btn.textContent || '').trim();
+                                if (text === 'Imprimir em Massa' || text.includes('Imprimir em Massa')) {
                                     const rect = btn.getBoundingClientRect();
-                                    if (rect.width > 0 && rect.height > 0) {
+                                    // Garantir que esta na barra de acoes (topo da pagina)
+                                    if (rect.width > 30 && rect.y < 400) {
                                         btn.click();
-                                        return { clicked: true, text: text };
+                                        return { clicked: true, text: text, y: Math.round(rect.y) };
                                     }
-                                }
-                            }
-                            // Fallback: qualquer primary button visivel no modal
-                            for (const btn of btns) {
-                                const rect = btn.getBoundingClientRect();
-                                if (rect.width > 30 && rect.height > 20) {
-                                    btn.click();
-                                    return { clicked: true, text: (btn.textContent || '').trim(), method: 'fallback' };
                                 }
                             }
                             return { clicked: false };
                         })()
                     """)
-                    if confirm_btn:
-                        logger.info(f"[UpSeller] Botao de download clicado: {confirm_btn}")
+
+                    if not clicou or not clicou.get("clicked"):
+                        # Fallback: Playwright locator
+                        logger.warning("[UpSeller] JS nao encontrou 'Imprimir em Massa', tentando locator")
+                        btn_massa = self._page.locator('a:has-text("Imprimir em Massa")').first
+                        if await btn_massa.count() > 0:
+                            await btn_massa.click(timeout=5000)
+                            logger.info("[UpSeller] Clicou 'Imprimir em Massa' via locator")
+                        else:
+                            logger.error("[UpSeller] Botao 'Imprimir em Massa' nao encontrado")
+                            await self.screenshot("etiquetas_sem_botao_imprimir")
+                            return []
                     else:
-                        logger.warning("[UpSeller] Nenhum botao de confirmacao encontrado, aguardando download...")
+                        logger.info(f"[UpSeller] Clicou 'Imprimir em Massa': {clicou}")
+
+                    await self._page.wait_for_timeout(2000)
+                    await self.screenshot("etiquetas_03_apos_imprimir_massa")
+
+                    # O "Imprimir em Massa" pode abrir um dropdown com sub-opcoes
+                    # ou iniciar o download direto. Verificar se ha dropdown aberto.
+                    dropdown_items = await self._page.evaluate("""
+                        (() => {
+                            const items = document.querySelectorAll(
+                                '.ant-dropdown:not(.ant-dropdown-hidden) li, ' +
+                                '.ant-dropdown-menu-item'
+                            );
+                            if (items.length === 0) return { hasDropdown: false };
+                            const options = Array.from(items).map(i => i.textContent.trim());
+                            return { hasDropdown: true, options: options };
+                        })()
+                    """)
+
+                    if dropdown_items and dropdown_items.get("hasDropdown"):
+                        logger.info(f"[UpSeller] Dropdown aberto com opcoes: {dropdown_items.get('options')}")
+                        # Clicar na primeira opcao (Imprimir Etiquetas ou similar)
+                        await self._page.evaluate("""
+                            (() => {
+                                const items = document.querySelectorAll(
+                                    '.ant-dropdown:not(.ant-dropdown-hidden) li'
+                                );
+                                for (const item of items) {
+                                    const text = (item.textContent || '').trim().toLowerCase();
+                                    // Priorizar opcao com DDC/casada
+                                    if (text.includes('casada') || text.includes('ddc')) {
+                                        item.click();
+                                        return text;
+                                    }
+                                }
+                                // Fallback: primeira opcao de impressao
+                                for (const item of items) {
+                                    const text = (item.textContent || '').trim().toLowerCase();
+                                    if (text.includes('imprimir') || text.includes('etiqueta')) {
+                                        item.click();
+                                        return text;
+                                    }
+                                }
+                                // Clicar na primeira opcao
+                                if (items.length > 0) { items[0].click(); return items[0].textContent.trim(); }
+                                return null;
+                            })()
+                        """)
+                        await self._page.wait_for_timeout(2000)
+
+                    # Se aparece modal de confirmacao, clicar no botao primario
+                    try:
+                        modal_btn = await self._page.wait_for_selector(
+                            '.ant-modal button.ant-btn-primary',
+                            timeout=5000
+                        )
+                        if modal_btn:
+                            btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
+                            logger.info(f"[UpSeller] Modal encontrado, botao: '{btn_text}'")
+                            await modal_btn.click()
+                            await self._page.wait_for_timeout(2000)
+                    except Exception:
+                        logger.info("[UpSeller] Sem modal de confirmacao, aguardando download direto...")
 
                 download = await download_info.value
-                filename = download.suggested_filename or f"etiquetas_ddc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                filename = download.suggested_filename or f"etiquetas_{filtro_loja or 'todas'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
                 save_path = os.path.join(self.download_dir, filename)
                 await download.save_as(save_path)
                 pdfs_baixados.append(save_path)
-                logger.info(f"[UpSeller] PDF baixado (DDC): {save_path}")
+                logger.info(f"[UpSeller] PDF baixado: {save_path}")
 
             except Exception as e:
-                logger.warning(f"[UpSeller] Download de etiquetas nao capturado via expect_download: {e}")
+                logger.warning(f"[UpSeller] Download nao capturado via expect_download: {e}")
                 # Fallback: verificar filesystem por downloads recentes
                 await self._page.wait_for_timeout(5000)
                 downloads_novos = self._verificar_downloads_novos("*.pdf")
@@ -1932,21 +1717,9 @@ class UpSellerScraper:
                     pdfs_baixados.extend(downloads_novos)
                     logger.info(f"[UpSeller] PDFs encontrados via filesystem: {len(downloads_novos)}")
                 else:
-                    # Ultimo fallback: tentar clicar em botoes restantes
-                    logger.warning("[UpSeller] Tentando fallback: clicar botoes restantes")
-                    try:
-                        modal_btn = await self._page.query_selector('.ant-modal button.ant-btn-primary')
-                        if modal_btn:
-                            async with self._page.expect_download(timeout=30000) as dl:
-                                await modal_btn.click()
-                            download2 = await dl.value
-                            fn2 = download2.suggested_filename or f"etiquetas_ddc_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                            sp2 = os.path.join(self.download_dir, fn2)
-                            await download2.save_as(sp2)
-                            pdfs_baixados.append(sp2)
-                            logger.info(f"[UpSeller] PDF baixado (fallback): {sp2}")
-                    except Exception as e2:
-                        logger.error(f"[UpSeller] Fallback download tambem falhou: {e2}")
+                    logger.error("[UpSeller] Nenhum PDF baixado por nenhum metodo")
+
+            await self.screenshot("etiquetas_04_finalizado")
 
         except Exception as e:
             logger.error(f"[UpSeller] Erro ao baixar etiquetas: {e}")
