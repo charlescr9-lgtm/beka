@@ -19,8 +19,9 @@ import shutil
 import logging
 import asyncio
 import zipfile
+import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Any
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,8 @@ UPSELLER_PEDIDOS = f"{UPSELLER_BASE}/order/to-ship"
 UPSELLER_PEDIDOS_TODOS = f"{UPSELLER_BASE}/order/all-orders"
 UPSELLER_PARA_IMPRIMIR = f"{UPSELLER_BASE}/pt/order/in-process"
 UPSELLER_NFE = f"{UPSELLER_BASE}/order/invoice-manage/brazil-nf-e/issued/recent"
+UPSELLER_PARA_EMITIR = f"{UPSELLER_BASE}/pt/order/pending-invoice"
+UPSELLER_PRINT_SETTING = f"{UPSELLER_BASE}/pt/settings/order/print-setting"
 
 
 class UpSellerScraper:
@@ -69,6 +72,48 @@ class UpSellerScraper:
         self._browser = None
         self._context = None
         self._page = None
+        self._ultima_config_etiqueta_ts = None
+        self._ultimo_check_ordenacao = 0  # timestamp do ultimo check de dropdown ordenacao
+
+    @staticmethod
+    def _arquivo_tabulado_valido(caminho_arquivo: str) -> bool:
+        """Valida rapidamente se um arquivo e planilha/csv real (nao HTML da SPA)."""
+        try:
+            if not caminho_arquivo or not os.path.exists(caminho_arquivo):
+                return False
+
+            ext = os.path.splitext(caminho_arquivo)[1].lower()
+            with open(caminho_arquivo, "rb") as f:
+                head = f.read(4096)
+
+            if not head:
+                return False
+
+            head_strip = head.lstrip()
+            head_low = head_strip.lower()
+
+            # UpSeller SPA retornando HTML com extensao .xlsx/.csv
+            if head_low.startswith(b"<!doctype html") or head_low.startswith(b"<html"):
+                return False
+            if b"<title>upseller" in head_low[:700]:
+                return False
+
+            if ext in (".xlsx", ".xlsm", ".xltx", ".xltm"):
+                return head.startswith(b"PK\x03\x04")
+            if ext == ".xls":
+                return head.startswith(b"\xD0\xCF\x11\xE0")
+
+            if ext == ".csv":
+                txt = head.decode("utf-8", errors="ignore")
+                return ("\n" in txt or "\r" in txt) and ("," in txt or ";" in txt or "\t" in txt)
+
+            # Fallback permissivo para extensoes nao padrao, mas com assinatura conhecida.
+            if head.startswith(b"PK\x03\x04") or head.startswith(b"\xD0\xCF\x11\xE0"):
+                return True
+            txt = head.decode("utf-8", errors="ignore")
+            return ("\n" in txt or "\r" in txt) and ("," in txt or ";" in txt or "\t" in txt)
+        except Exception:
+            return False
 
     async def _iniciar_navegador(self):
         """Inicia Playwright com contexto persistente."""
@@ -137,19 +182,55 @@ class UpSellerScraper:
         """Verifica se ja esta logado no UpSeller."""
         try:
             await self._page.goto(UPSELLER_BASE, wait_until="domcontentloaded", timeout=15000)
-            # Se redirecionou para login, nao esta logado
-            url_atual = self._page.url
+            await self._page.wait_for_timeout(1200)
+
+            # Se redirecionou para login, nao esta logado.
+            url_atual = (self._page.url or "").lower()
             if "/login" in url_atual or "/sign" in url_atual:
                 return False
-            # Verificar se tem elemento de dashboard/menu
-            try:
-                await self._page.wait_for_selector(
-                    'nav, .sidebar, .menu, [class*="sidebar"], [class*="menu"]',
-                    timeout=5000
-                )
-                return True
-            except:
+
+            # Guard-rail: evitar falso positivo quando ainda esta na tela de login.
+            eh_tela_login = await self._page.evaluate("""
+                (() => {
+                    const txt = (document.body?.innerText || '').toLowerCase();
+                    const hasPwd = !!document.querySelector('input[type="password"]');
+                    const hasCaptcha = txt.includes('captcha');
+                    const hasLoginBtn = Array.from(document.querySelectorAll('button, a, span, div'))
+                        .some((el) => {
+                            const t = (el.textContent || '').trim().toLowerCase();
+                            return t === 'login' || t === 'entrar';
+                        });
+                    const hasLoginHints =
+                        txt.includes('esqueci minha senha') ||
+                        txt.includes('cadastre-se') ||
+                        txt.includes('mantenha-me conectado');
+                    return hasPwd && (hasCaptcha || hasLoginBtn || hasLoginHints);
+                })()
+            """)
+            if eh_tela_login:
                 return False
+
+            # Verificar marcadores de app autenticado (menus/telas internas).
+            app_auth_ok = await self._page.evaluate("""
+                (() => {
+                    const hasSelectors = !!(
+                        document.querySelector('a[href*="/order/"], a[href*="/pt/order/"]') ||
+                        document.querySelector('.my_layout_l, .ant-layout-sider, .ant-menu-item') ||
+                        document.querySelector('[class*="sidebar"], [class*="menu"]')
+                    );
+                    if (hasSelectors) return true;
+                    const txt = (document.body?.innerText || '').toLowerCase();
+                    const keys = [
+                        'pedidos', 'compras', 'estoque', 'sac', 'analises', 'financeiro',
+                        'para enviar', 'para emitir', 'para imprimir'
+                    ];
+                    return keys.some((k) => txt.includes(k));
+                })()
+            """)
+
+            if not app_auth_ok:
+                return False
+            return True
         except Exception as e:
             logger.warning(f"[UpSeller] Erro verificando login: {e}")
             return False
@@ -323,60 +404,102 @@ class UpSellerScraper:
             except Exception:
                 pass
 
+            # ---- Estrategia 1b: remover overlay/tutorial do driver.js ----
+            # Esse overlay intercepta ponteiro e bloqueia clique no filtro de loja.
+            try:
+                removed_driver = await self._page.evaluate("""
+                    (() => {
+                        let count = 0;
+                        const selectors = [
+                            'svg.driver-overlay',
+                            '.driver-overlay',
+                            '.driver-popover',
+                            '.driver-stage',
+                            '.driver-highlighted-element',
+                            '.driver-active-element',
+                            '[class*="driver-overlay"]',
+                            '[class*="driver-popover"]'
+                        ];
+                        for (const sel of selectors) {
+                            for (const el of document.querySelectorAll(sel)) {
+                                try {
+                                    el.style.pointerEvents = 'none';
+                                    el.style.display = 'none';
+                                } catch (e) {}
+                                try { el.remove(); } catch (e) {}
+                                count++;
+                            }
+                        }
+                        try {
+                            document.body.classList.remove(
+                                'driver-active',
+                                'driver-open',
+                                'driver-fix-stacking',
+                                'driver-no-interaction'
+                            );
+                        } catch (e) {}
+                        return count;
+                    })()
+                """)
+                if removed_driver and removed_driver > 0:
+                    popup_encontrado = True
+                    logger.info(f"[UpSeller] Overlay driver removido ({removed_driver})")
+            except Exception:
+                pass
+
             # ---- Estrategia 2: Popup tutorial "Introducao de Controle de Pedidos" ----
             # Esse popup tem um X no canto superior direito e contem video YouTube
             try:
                 fechou_tutorial = await self._page.evaluate("""
                     (() => {
-                        // Buscar popup que contem "Introdução" ou "Controle de Pedidos" ou video YouTube
-                        const allEls = document.querySelectorAll('div, section, aside, [class*="modal"], [class*="popup"], [class*="dialog"], [class*="tutorial"], [class*="intro"]');
-                        for (const el of allEls) {
-                            const text = el.textContent || '';
-                            const hasYoutube = el.querySelector('iframe[src*="youtube"], iframe[src*="youtu.be"]');
-                            const isTutorial = text.includes('Introdução') || text.includes('Controle de Pedidos') || text.includes('Ver mais vídeos tutoriais') || hasYoutube;
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const st = window.getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+                            return st.display !== 'none' && st.visibility !== 'hidden' && r.width > 120 && r.height > 80;
+                        };
+                        const txtNorm = (s) => (s || '').toLowerCase();
 
-                            if (isTutorial && el.offsetWidth > 200 && el.offsetHeight > 100) {
-                                // Encontrou popup tutorial! Buscar botao fechar
-                                // 1. Buscar X explicito (botao ou span com × ou X)
-                                const closeSelectors = [
-                                    'button[class*="close"]', 'span[class*="close"]', 'a[class*="close"]',
-                                    'button[aria-label="Close"]', 'button[aria-label="Fechar"]',
-                                    '.ant-modal-close', '.close-btn', '[class*="close-icon"]',
-                                    'svg[class*="close"]'
-                                ];
-                                for (const sel of closeSelectors) {
-                                    const btn = el.querySelector(sel);
-                                    if (btn) { btn.click(); return 'close_btn'; }
-                                }
+                        // Apenas contêineres realmente de modal/tutorial.
+                        const roots = Array.from(document.querySelectorAll(
+                            '#myNav, .my_nav_bg, .ant-modal-wrap, .ant-popover, ' +
+                            '[class*="tutorial"], [class*="intro"], [class*="guide"], [class*="popup"]'
+                        ));
 
-                                // 2. Buscar qualquer elemento pequeno no topo-direito que pareca X
-                                const children = el.querySelectorAll('*');
-                                for (const child of children) {
-                                    const t = (child.textContent || '').trim();
-                                    if ((t === '×' || t === 'X' || t === 'x' || t === '✕' || t === '✖') && child.offsetWidth < 60) {
-                                        child.click();
-                                        return 'x_char';
-                                    }
-                                }
+                        for (const el of roots) {
+                            if (!isVisible(el)) continue;
+                            const text = txtNorm(el.textContent || '');
+                            const hasYoutube = !!el.querySelector('iframe[src*="youtube"], iframe[src*="youtu.be"]');
+                            const isTutorial =
+                                hasYoutube ||
+                                text.includes('introdu') ||
+                                text.includes('controle de pedidos') ||
+                                text.includes('videos tutoriais') ||
+                                text.includes('ignorar') ||
+                                text.includes('pular');
+                            if (!isTutorial) continue;
 
-                                // 3. Buscar SVG close icon
-                                const svgs = el.querySelectorAll('svg');
-                                for (const svg of svgs) {
-                                    const rect = svg.getBoundingClientRect();
-                                    // SVG pequeno no canto superior direito = provavel close button
-                                    if (rect.width < 30 && rect.width > 5) {
-                                        const parent = svg.closest('button, a, span, div');
-                                        if (parent) { parent.click(); return 'svg_close'; }
-                                        svg.click();
-                                        return 'svg_click';
-                                    }
-                                }
-
-                                // 4. Ultima tentativa: remover o popup inteiro via DOM
-                                el.style.display = 'none';
-                                el.remove();
-                                return 'removed';
+                            // Fechamento seguro: apenas botões/ações explícitas.
+                            const explicitClose = el.querySelector(
+                                '.ant-modal-close, button[aria-label="Close"], button[aria-label="Fechar"], .ant-popover-close, .close-btn'
+                            );
+                            if (explicitClose) {
+                                explicitClose.click();
+                                return 'close_safe';
                             }
+
+                            const textButtons = Array.from(el.querySelectorAll('button, a, span, div'));
+                            for (const node of textButtons) {
+                                const t = txtNorm(node.textContent || '').trim();
+                                if (t === 'ignorar' || t === 'pular' || t === 'fechar' || t === 'cancelar') {
+                                    node.click();
+                                    return 'close_text';
+                                }
+                            }
+
+                            // Fallback seguro: esconder apenas o root do tutorial visível.
+                            el.style.display = 'none';
+                            return 'hidden_safe';
                         }
                         return null;
                     })()
@@ -496,15 +619,18 @@ class UpSellerScraper:
                 pass
 
             # ---- Estrategia 4: Seletores CSS diretos para X/fechar ----
+            # IMPORTANTE: evitar seletores genéricos de "close", pois podem
+            # clicar no "x" de filtros (ex.: chip da loja) e remover o filtro.
             if not popup_encontrado:
                 for selector in [
                     # X do popup tutorial (baseado no screenshot)
                     'div:has(iframe[src*="youtube"]) ~ *:has-text("×")',
                     'div:has(iframe[src*="youtube"]) ~ button',
-                    '[class*="close"]:visible',
-                    'button[aria-label="Close"]',
-                    'button[aria-label="Fechar"]',
-                    'a[aria-label="Close"]',
+                    '.ant-modal-wrap .ant-modal-close',
+                    '.ant-drawer .ant-drawer-close',
+                    '.ant-popover .ant-popover-close',
+                    '.ant-modal-wrap button[aria-label="Close"]',
+                    '.ant-modal-wrap button[aria-label="Fechar"]',
                 ]:
                     try:
                         btn = await self._page.query_selector(selector)
@@ -558,10 +684,121 @@ class UpSellerScraper:
                     // Esconder overlays
                     const nav = document.getElementById('myNav');
                     if (nav) nav.style.display = 'none';
+
+                    // Remover overlays do driver.js que bloqueiam clique
+                    const sels = [
+                        'svg.driver-overlay',
+                        '.driver-overlay',
+                        '.driver-popover',
+                        '.driver-stage',
+                        '.driver-highlighted-element',
+                        '.driver-active-element',
+                        '[class*="driver-overlay"]',
+                        '[class*="driver-popover"]'
+                    ];
+                    for (const sel of sels) {
+                        document.querySelectorAll(sel).forEach((el) => {
+                            try {
+                                el.style.pointerEvents = 'none';
+                                el.style.display = 'none';
+                            } catch (e) {}
+                            try { el.remove(); } catch (e) {}
+                        });
+                    }
+                    try {
+                        document.body.classList.remove(
+                            'driver-active',
+                            'driver-open',
+                            'driver-fix-stacking',
+                            'driver-no-interaction'
+                        );
+                    } catch (e) {}
                 })()
             """)
         except Exception:
             pass
+        # Alguns layouts deixam o menu de ordenacao ("Order") aberto.
+        # Isso bloqueia cliques no filtro de loja; fechamos aqui por seguranca.
+        try:
+            await self._fechar_dropdown_ordenacao()
+        except Exception:
+            pass
+
+    async def _fechar_dropdown_ordenacao(self, max_tentativas: int = 3, force: bool = False) -> bool:
+        """
+        Fecha menu de ordenacao (ex.: "Order" com opcoes "Hora do Pagamento")
+        quando estiver aberto e interferindo no fluxo.
+        Cooldown de 5s para evitar loop de re-verificacoes.
+        """
+        if not self._page:
+            return False
+        import time as _time
+        agora = _time.time()
+        if not force and (agora - self._ultimo_check_ordenacao) < 5:
+            return True  # Ja verificado recentemente, pular
+        self._ultimo_check_ordenacao = agora
+        try:
+            detector_js = """
+                () => {
+                    const norm = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const st = window.getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return st.display !== 'none' && st.visibility !== 'hidden' &&
+                            r.width > 140 && r.height > 90 && r.width < 560 && r.height < 620;
+                    };
+                    const nodes = Array.from(document.querySelectorAll('div, ul, section, aside'));
+                    for (const n of nodes) {
+                        if (!isVisible(n)) continue;
+                        const t = norm(n.textContent || '');
+                        if (!t) continue;
+                        const hasSort =
+                            t.includes('hora do pagamento') &&
+                            t.includes('expira em') &&
+                            (t.includes('anuncio/sku') || t.includes('anuncio / sku') || t.includes('sku (armazem)'));
+                        if (hasSort) return true;
+                    }
+                    return false;
+                }
+            """
+
+            fechou_algum = False
+            aberto = bool(await self._page.evaluate(detector_js))
+            if not aberto:
+                return True
+
+            # Fechar via JS clicando em area neutra do body (evita clicar em botoes)
+            fechou_algum = True
+            try:
+                await self._page.evaluate("""
+                    (() => {
+                        // Fechar dropdown clicando em area neutra
+                        const overlay = document.querySelector('.ant-dropdown-trigger, .ant-select-open');
+                        if (overlay) overlay.click();
+                        // Fallback: click no body em area segura
+                        document.body.click();
+                    })()
+                """)
+            except Exception:
+                pass
+            try:
+                await self._page.keyboard.press("Escape")
+            except Exception:
+                pass
+            await self._page.wait_for_timeout(300)
+
+            aberto = bool(await self._page.evaluate(detector_js))
+            if not aberto:
+                logger.info("[UpSeller] Dropdown de ordenacao fechado automaticamente")
+            return not aberto
+        except Exception:
+            return False
 
     async def listar_lojas_pendentes(self) -> dict:
         """
@@ -777,6 +1014,20 @@ class UpSellerScraper:
                 except Exception:
                     pass
 
+            # Sempre iniciar leitura global sem filtro de loja ativo.
+            # Evita subcontagem quando a sessao ficou presa em uma loja especifica.
+            try:
+                await self._limpar_filtro_loja()
+                await self._page.wait_for_timeout(500)
+            except Exception:
+                pass
+            # Contagem base deve usar a sub-aba "Para Programar" (escopo real de Gerar Pedidos).
+            try:
+                await self._abrir_subaba_para_programar()
+                await self._page.wait_for_timeout(700)
+            except Exception:
+                pass
+
             await self.screenshot("listar_01_para_enviar")
 
             # ===== EXTRAIR contagem do texto da pagina =====
@@ -792,186 +1043,2125 @@ class UpSellerScraper:
                     resultado["total_pedidos"] = 0
                     return resultado
 
-            # ===== EXTRAIR lojas ITERANDO por todas as sub-abas com pedidos =====
-            # Sub-abas dentro de "Para Enviar": Para Programar, Programando, Falha, etc.
-            # Precisamos ler de TODAS para nao perder pedidos
-            lojas_dict = {}  # {loja_nome: {marketplace, orders: set()}}
+            para_programar_count = 0
+            try:
+                para_programar_count = int(await self._ler_contagem_para_programar() or 0)
+            except Exception:
+                para_programar_count = 0
+            logger.info(
+                f"[UpSeller] Contagem da sub-aba Para Programar: {para_programar_count} "
+                f"(sidebar Para Enviar={para_enviar_count})"
+            )
 
-            # Identificar sub-abas com pedidos > 0
-            sub_tabs_info = await self._page.evaluate("""
-                (() => {
-                    const tabs = [];
-                    const candidates = document.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="ant-tabs-tab"]');
-                    for (const el of candidates) {
-                        const text = (el.textContent || '').trim();
-                        const match = text.match(/^(.+?)\\s+(\\d+)$/);
-                        if (match) {
-                            const name = match[1].trim();
-                            const count = parseInt(match[2]);
-                            if (count > 0) {
-                                const rect = el.getBoundingClientRect();
-                                tabs.push({ name, count, y: Math.round(rect.y), w: Math.round(rect.width) });
-                            }
-                        }
-                    }
-                    return tabs;
-                })()
-            """)
-            logger.info(f"[UpSeller] Sub-abas com pedidos: {sub_tabs_info}")
+            # ===== EXTRAIR contagem por loja (metodo manual agregado, blindado) =====
+            # Regras:
+            # - contagem na sub-aba "Para Programar"
+            # - mapeamento de loja por igualdade normalizada (sem contains), para nao misturar BEKA/Beka Shein
+            # - sempre incluir todas as lojas do dropdown com 0
+            lojas_agregadas = await self._contar_lojas_via_pedidos(
+                url=UPSELLER_PEDIDOS,
+                nome_aba="Para Programar",
+                clicar_para_enviar=True
+            )
+            nomes_lojas = await self._listar_nomes_lojas_filtro()
+            logger.info(
+                f"[UpSeller] Lojas dropdown={len(nomes_lojas)} | lojas agregadas={len(lojas_agregadas or [])}"
+            )
 
-            # Lista de abas para iterar (priorizar Para Programar, depois outras)
-            abas_para_ler = []
-            if sub_tabs_info:
-                for tab in sub_tabs_info:
-                    abas_para_ler.append(tab)
-            else:
-                # Fallback: ler da aba atual
-                abas_para_ler.append({"name": "atual", "count": 0})
+            def _norm_nome(v):
+                return re.sub(r"\s+", " ", (v or "").strip()).casefold()
 
-            for tab_info in abas_para_ler:
-                tab_name = tab_info.get("name", "atual")
-                tab_count = tab_info.get("count", 0)
-
-                # Clicar na sub-aba (se nao for a primeira que ja esta ativa)
-                if tab_name != "atual" and len(abas_para_ler) > 1:
-                    try:
-                        clicou_aba = await self._page.evaluate("""
-                            (tabName) => {
-                                const candidates = document.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="ant-tabs-tab"]');
-                                for (const el of candidates) {
-                                    const text = (el.textContent || '').trim();
-                                    if (text.startsWith(tabName)) {
-                                        el.click();
-                                        return true;
-                                    }
-                                }
-                                return false;
-                            }
-                        """, tab_name)
-                        if clicou_aba:
-                            await self._page.wait_for_timeout(1500)
-                            logger.info(f"[UpSeller] Clicou sub-aba '{tab_name}' ({tab_count})")
-                    except Exception:
-                        logger.debug(f"[UpSeller] Erro ao clicar aba {tab_name}")
-                        continue
-
-                # Ler TODAS as paginas (paginacao: 50/pagina)
-                pagina_atual = 1
-                max_paginas = 20  # Limite de seguranca
-                while pagina_atual <= max_paginas:
-                    # Scroll para carregar todas as rows desta pagina
-                    await self._scroll_carregar_todos(max_scrolls=10)
-
-                    # Extrair lojas da tabela atual
-                    await self._extrair_lojas_da_tabela(lojas_dict)
-
-                    # Verificar se tem proxima pagina
-                    tem_proxima = await self._page.evaluate("""
-                        (() => {
-                            // Botao ">" de proxima pagina (ant-pagination)
-                            const nextBtn = document.querySelector(
-                                '.ant-pagination-next:not(.ant-pagination-disabled), ' +
-                                'li.ant-pagination-next:not(.ant-pagination-disabled) button, ' +
-                                'button.ant-pagination-item-link[aria-label="next"]'
-                            );
-                            if (nextBtn && !nextBtn.closest('.ant-pagination-disabled')) {
-                                // Verificar texto "X/Y" para saber se tem mais
-                                const pageInfo = document.body.innerText.match(/(\\d+)\\/(\\d+)/);
-                                if (pageInfo) {
-                                    const current = parseInt(pageInfo[1]);
-                                    const total = parseInt(pageInfo[2]);
-                                    if (current < total) {
-                                        nextBtn.click();
-                                        return { clicked: true, page: current + 1, totalPages: total };
-                                    }
-                                    return { clicked: false, reason: 'last_page' };
-                                }
-                                // Sem info de pagina, tentar clicar e ver se funciona
-                                nextBtn.click();
-                                return { clicked: true, page: 'unknown' };
-                            }
-                            return { clicked: false, reason: 'no_button' };
-                        })()
-                    """)
-                    logger.info(f"[UpSeller] Paginacao pagina {pagina_atual}: {tem_proxima}")
-
-                    if not tem_proxima or not tem_proxima.get('clicked'):
-                        break  # Ultima pagina
-
-                    pagina_atual += 1
-                    await self._page.wait_for_timeout(2000)  # Esperar proxima pagina carregar
-                    await self._page.evaluate("window.scrollTo(0, 0)")  # Voltar ao topo
-
-            # Se nenhuma loja encontrada nas sub-abas, tentar JS generico
-            if not lojas_dict:
+            mapa_agregado = {}
+            for item in (lojas_agregadas or []):
+                nome_item = (item.get("nome") or "").strip()
+                if not nome_item:
+                    continue
+                key = _norm_nome(nome_item)
+                if not key:
+                    continue
                 try:
-                    lojas_js = await self._page.evaluate("""
-                        (() => {
-                            const lojas = {};
-                            const rows = document.querySelectorAll('tr.top_row, tr[class*="top_row"]');
-                            rows.forEach((row, idx) => {
-                                let loja = 'Desconhecida';
-                                let mp = '';
-                                const spans = row.querySelectorAll('span');
-                                for (const span of spans) {
-                                    const t = (span.textContent || '').trim();
-                                    if (['Shopee', 'Shein', 'Mercado Livre', 'TikTok', 'Amazon', 'Magalu', 'Kwai'].includes(t)) {
-                                        mp = t;
-                                    } else if (t.length > 2 && t.length < 50 && !t.startsWith('#') && !t.includes('NF-e') && !t.match(/^\\d/) && !t.match(/^(Combinado|Pendente)/)) {
-                                        loja = t;
-                                    }
-                                }
-                                if (!lojas[loja]) lojas[loja] = { marketplace: mp, count: 0 };
-                                lojas[loja].count++;
-                            });
-                            return lojas;
-                        })()
-                    """)
-                    if lojas_js and isinstance(lojas_js, dict) and len(lojas_js) > 0:
-                        for nome, info in lojas_js.items():
-                            lojas_dict[nome] = {
-                                'marketplace': info.get('marketplace', ''),
-                                'orders': set([f'_js_{i}' for i in range(info.get('count', 1))])
-                            }
-                        logger.info(f"[UpSeller] Estrategia JS fallback: {len(lojas_dict)} lojas")
+                    pedidos_item = max(0, int(item.get("pedidos", 0) or 0))
                 except Exception:
-                    pass
+                    pedidos_item = 0
+                cur = mapa_agregado.get(key)
+                if (not cur) or (pedidos_item > int(cur.get("pedidos", 0) or 0)):
+                    mapa_agregado[key] = {
+                        "nome": nome_item,
+                        "marketplace": (item.get("marketplace") or "").strip(),
+                        "pedidos": pedidos_item,
+                    }
 
-            # Fallback generico se ainda vazio
-            if not lojas_dict and total_efetivo > 0:
-                lojas_dict['Todas as Lojas'] = {
-                    'marketplace': '',
-                    'orders': set([f'_pedido_{i}' for i in range(total_efetivo)])
-                }
-                logger.info(f"[UpSeller] Fallback generico: {total_efetivo} pedidos")
+            lojas_consolidadas = []
+            vistos = set()
 
-            # Montar resultado
-            resultado["lojas"] = [
-                {
-                    "nome": nome,
-                    "marketplace": info['marketplace'],
-                    "pedidos": len(info['orders']),
-                    "orders": list(info['orders'])[:50],
-                }
-                for nome, info in sorted(lojas_dict.items())
-            ]
-            total_lojas = sum(l["pedidos"] for l in resultado["lojas"])
+            # Primeiro: lojas conhecidas no dropdown (lista persistente)
+            for nome in (nomes_lojas or []):
+                nome_ref = (nome or "").strip()
+                if not nome_ref:
+                    continue
+                key = _norm_nome(nome_ref)
+                if not key or key in vistos:
+                    continue
+                base = mapa_agregado.get(key) or {}
+                lojas_consolidadas.append({
+                    "nome": nome_ref,
+                    "marketplace": (base.get("marketplace") or "").strip(),
+                    "pedidos": int(base.get("pedidos", 0) or 0),
+                    "orders": [],
+                })
+                vistos.add(key)
 
-            # Sempre usar o MAIOR entre tabela e sidebar
-            resultado["total_pedidos"] = max(total_lojas, para_enviar_count)
+            # Depois: lojas detectadas que nao existem no dropdown (seguranca)
+            for key, base in mapa_agregado.items():
+                if key in vistos:
+                    continue
+                lojas_consolidadas.append({
+                    "nome": (base.get("nome") or "").strip() or "Desconhecida",
+                    "marketplace": (base.get("marketplace") or "").strip(),
+                    "pedidos": int(base.get("pedidos", 0) or 0),
+                    "orders": [],
+                })
+                vistos.add(key)
+
+            resultado["lojas"] = sorted(
+                lojas_consolidadas,
+                key=lambda x: (-(int(x.get("pedidos", 0) or 0)), (x.get("nome") or "").lower())
+            )
+
+            total_lojas = sum(int(l.get("pedidos", 0) or 0) for l in (resultado.get("lojas") or []))
+            total_ref_pedidos = para_programar_count
+            if total_ref_pedidos <= 0 and para_enviar_count > 0 and total_lojas == 0:
+                # fallback de conexao em caso de contagem da sub-aba indisponivel
+                total_ref_pedidos = para_enviar_count
+            resultado["total_pedidos"] = max(total_lojas, total_ref_pedidos)
             resultado["sucesso"] = True
 
-            logger.info(f"[UpSeller] {len(resultado['lojas'])} lojas, {resultado['total_pedidos']} pedidos (tabela={total_lojas}, sidebar={para_enviar_count})")
+            logger.info(
+                f"[UpSeller] Consolidado Para Programar: lojas={len(resultado['lojas'])}, "
+                f"soma_lojas={total_lojas}, total_ref={total_ref_pedidos}, total_final={resultado['total_pedidos']}"
+            )
 
             # Incluir info do sidebar no resultado para o frontend
             resultado["sidebar_info"] = sidebar_info if isinstance(sidebar_info, dict) else {}
+
+            # Completar com TODAS as lojas cadastradas no UpSeller (inclusive com 0 pedidos).
+            # Isso garante lista persistente completa no backend.
+            try:
+                nomes_todas = await self._listar_nomes_lojas_filtro()
+                if nomes_todas:
+                    def _norm(s):
+                        return (s or "").strip().casefold()
+
+                    # Base de fallback (scrape agregado) para lojas onde filtro individual falhar.
+                    mapa_pendentes = {_norm(l.get("nome", "")): l for l in resultado["lojas"] if l.get("nome")}
+
+                    nomes_unicos = []
+                    vistos_nomes = set()
+                    for nome in nomes_todas:
+                        key = _norm(nome)
+                        if key and key not in vistos_nomes:
+                            vistos_nomes.add(key)
+                            nomes_unicos.append(nome)
+
+                    lojas_completas = []
+                    vistos = set()
+                    for nome in nomes_unicos:
+                        key = _norm(nome)
+                        if not key or key in vistos:
+                            continue
+
+                        # Fonte unica: mapa agregado da extracao completa.
+                        # O filtro loja-a-loja do UpSeller esta instavel e pode contaminar contagens.
+                        item_base = mapa_pendentes.get(key) or {}
+                        marketplace = (item_base.get("marketplace") or "").strip()
+                        if not marketplace:
+                            marketplace = ((mapa_pendentes.get(key) or {}).get("marketplace") or "").strip()
+                        try:
+                            pedidos = int(item_base.get("pedidos", 0) or 0)
+                        except Exception:
+                            pedidos = 0
+
+                        lojas_completas.append({
+                            "nome": nome,
+                            "marketplace": marketplace,
+                            "pedidos": max(0, pedidos),
+                            "orders": [],
+                        })
+                        vistos.add(key)
+
+                    # Inclui lojas pendentes que nao apareceram no dropdown (fallback de seguranca).
+                    for item in resultado["lojas"]:
+                        key = _norm(item.get("nome", ""))
+                        if key and key not in vistos:
+                            try:
+                                pedidos_item = int(item.get("pedidos", 0) or 0)
+                            except Exception:
+                                pedidos_item = 0
+                            lojas_completas.append({
+                                "nome": item.get("nome", ""),
+                                "marketplace": item.get("marketplace", ""),
+                                "pedidos": max(0, pedidos_item),
+                                "orders": [],
+                            })
+                            vistos.add(key)
+
+                    resultado["lojas"] = sorted(
+                        lojas_completas,
+                        key=lambda x: (-(int(x.get("pedidos", 0) or 0)), (x.get("nome") or "").lower())
+                    )
+                    total_merge = sum(int(l.get("pedidos", 0) or 0) for l in resultado["lojas"])
+                    resultado["total_pedidos"] = max(
+                        total_merge,
+                        int(locals().get("total_ref_pedidos", 0) or 0)
+                    )
+                    logger.info(
+                        f"[UpSeller] Lista completa consolidada: "
+                        f"{len(resultado['lojas'])} lojas, total={resultado['total_pedidos']} "
+                        f"(merge={total_merge}, ref={int(locals().get('total_ref_pedidos', 0) or 0)})"
+                    )
+            except Exception as e_merge:
+                logger.warning(f"[UpSeller] Nao foi possivel mesclar lista completa de lojas: {e_merge}")
 
         except Exception as e:
             logger.error(f"[UpSeller] Erro ao listar lojas pendentes: {e}")
             resultado["erro"] = str(e)
             await self.screenshot("listar_erro")
 
+        # === Coletar contagens per-status por loja ===
+        # Regras:
+        # - Notas pendentes = Para Emitir + Falha na Emissao + Falha ao subir
+        # - Etiquetas pendentes = Etiqueta para Impressao (in-process)
+        def _norm_nome_local(v):
+            return re.sub(r"\s+", " ", (v or "").strip()).casefold()
+
+        def _somar_contagens(*maps):
+            soma = {}
+            nome_ref = {}
+            for mp in maps:
+                if not isinstance(mp, dict):
+                    continue
+                for nome, val in mp.items():
+                    nome_limpo = (nome or "").strip()
+                    if not nome_limpo:
+                        continue
+                    key = _norm_nome_local(nome_limpo)
+                    if not key:
+                        continue
+                    try:
+                        qtd = max(0, int(val or 0))
+                    except Exception:
+                        qtd = 0
+                    if key not in nome_ref:
+                        nome_ref[key] = nome_limpo
+                    soma[key] = int(soma.get(key, 0) or 0) + qtd
+            return {nome_ref[k]: int(v or 0) for k, v in soma.items()}
+
+        # Emitir: somar abas de falha tambem.
+        try:
+            logger.info("[UpSeller] Coletando contagens de NF-e por loja (Para Emitir + falhas)...")
+            cont_emitir = {}
+            cont_falha_emissao = {}
+            cont_falha_subir = {}
+
+            # Leitura rapida dos contadores para evitar varrer abas zeradas.
+            cont_tabs_nfe = {}
+            try:
+                await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+                await self._page.wait_for_timeout(1500)
+                await self._fechar_popups()
+                cont_tabs_nfe = await self._ler_contadores_tabs_nfe()
+            except Exception:
+                cont_tabs_nfe = {}
+
+            qtd_emitir = int((cont_tabs_nfe or {}).get("para_emitir", 0) or 0)
+            qtd_falha_emissao = int((cont_tabs_nfe or {}).get("falha_na_emissao", 0) or 0)
+            qtd_falha_subir = int((cont_tabs_nfe or {}).get("falha_ao_subir", 0) or 0)
+            logger.info(
+                "[UpSeller] Contadores NF-e (snapshot): "
+                f"para_emitir={qtd_emitir}, falha_emissao={qtd_falha_emissao}, falha_subir={qtd_falha_subir}"
+            )
+
+            if qtd_emitir > 0:
+                cont_emitir = await self._contar_lojas_em_pagina(
+                    UPSELLER_PARA_EMITIR, nome_aba="Para Emitir", exigir_aba=True
+                )
+                if not cont_emitir:
+                    cont_emitir = await self._contar_lojas_em_pagina(
+                        UPSELLER_PARA_EMITIR, nome_aba="Para Emitir", exigir_aba=False
+                    )
+            else:
+                logger.info("[UpSeller] Aba 'Para Emitir' zerada; pulando contagem por loja.")
+
+            if qtd_falha_emissao > 0:
+                cont_falha_emissao = await self._contar_lojas_em_pagina(
+                    UPSELLER_PARA_EMITIR, nome_aba="Falha na Emissão", exigir_aba=True
+                )
+                if not cont_falha_emissao:
+                    cont_falha_emissao = await self._contar_lojas_em_pagina(
+                        UPSELLER_PARA_EMITIR, nome_aba="Falha na Emissao", exigir_aba=True
+                    )
+            else:
+                logger.info("[UpSeller] Aba 'Falha na Emissao' zerada; pulando contagem por loja.")
+
+            if qtd_falha_subir > 0:
+                cont_falha_subir = await self._contar_lojas_em_pagina(
+                    UPSELLER_PARA_EMITIR, nome_aba="Falha ao subir", exigir_aba=True
+                )
+            else:
+                logger.info("[UpSeller] Aba 'Falha ao subir' zerada; pulando contagem por loja.")
+
+            contagem_emitir = _somar_contagens(cont_emitir, cont_falha_emissao, cont_falha_subir)
+            resultado["contagem_para_emitir"] = contagem_emitir
+            logger.info(
+                f"[UpSeller] NF-e por loja: base={sum(cont_emitir.values())}, "
+                f"falha_emissao={sum(cont_falha_emissao.values())}, "
+                f"falha_subir={sum(cont_falha_subir.values())}, "
+                f"total={sum(contagem_emitir.values())}"
+            )
+        except Exception as e:
+            logger.warning(f"[UpSeller] Falha ao contar NF-e por loja: {e}")
+            resultado["contagem_para_emitir"] = {}
+
+        try:
+            logger.info("[UpSeller] Coletando contagens de etiquetas por loja...")
+            contagem_imprimir = {}
+            sidebar_local = resultado.get("sidebar_info", {}) if isinstance(resultado.get("sidebar_info", {}), dict) else {}
+            tem_chave_imprimir = "Para Imprimir" in sidebar_local
+            qtd_para_imprimir = int(sidebar_local.get("Para Imprimir", 0) or 0) if tem_chave_imprimir else -1
+            if tem_chave_imprimir and qtd_para_imprimir <= 0:
+                logger.info("[UpSeller] Sidebar 'Para Imprimir' zerado; pulando contagem de etiquetas por loja.")
+            else:
+                for aba in ["Etiqueta para Impressão", "Etiqueta para Impressao", "Para Imprimir"]:
+                    cont_tmp = await self._contar_lojas_em_pagina(
+                        UPSELLER_PARA_IMPRIMIR, nome_aba=aba, exigir_aba=True
+                    )
+                    if cont_tmp:
+                        contagem_imprimir = cont_tmp
+                        break
+                if not contagem_imprimir:
+                    contagem_imprimir = await self._contar_lojas_em_pagina(
+                        UPSELLER_PARA_IMPRIMIR, nome_aba=None, exigir_aba=False
+                    )
+            resultado["contagem_para_imprimir"] = contagem_imprimir
+        except Exception as e:
+            logger.warning(f"[UpSeller] Falha ao contar etiquetas por loja: {e}")
+            resultado["contagem_para_imprimir"] = {}
+
+        # Adicionar contagens per-status a cada loja do resultado, com match normalizado.
+        map_emitir_norm = {
+            _norm_nome_local(nome): int(val or 0)
+            for nome, val in (resultado.get("contagem_para_emitir", {}) or {}).items()
+        }
+        map_imprimir_norm = {
+            _norm_nome_local(nome): int(val or 0)
+            for nome, val in (resultado.get("contagem_para_imprimir", {}) or {}).items()
+        }
+        for loja in resultado.get("lojas", []):
+            nome = (loja.get("nome") or "").strip()
+            key = _norm_nome_local(nome)
+            loja["notas_pendentes"] = int(map_emitir_norm.get(key, 0) or 0)
+            loja["etiquetas_pendentes"] = int(map_imprimir_norm.get(key, 0) or 0)
+
         return resultado
+
+    async def _contar_lojas_em_pagina(
+        self, url: str, nome_aba: str = None, exigir_aba: bool = False
+    ) -> Dict[str, int]:
+        """
+        Navega para uma pagina do UpSeller (ex: Para Emitir, Para Imprimir)
+        e conta lojas de forma agregada na tabela (sem filtrar loja por loja).
+
+        Retorna: {nome_loja: quantidade}
+        """
+        contagem = {}
+        try:
+            lojas = await self._contar_lojas_via_pedidos(
+                url=url,
+                nome_aba=nome_aba,
+                clicar_para_enviar=False,
+                exigir_aba=exigir_aba
+            )
+            for item in lojas or []:
+                nome = (item.get("nome") or "").strip()
+                if not nome:
+                    continue
+                try:
+                    contagem[nome] = max(0, int(item.get("pedidos", 0) or 0))
+                except Exception:
+                    contagem[nome] = 0
+            logger.info(f"[UpSeller] Contagem agregada '{nome_aba or url}': {contagem}")
+        except Exception as e:
+            logger.warning(f"[UpSeller] Erro ao contar lojas em '{nome_aba or url}' (agregado): {e}")
+        return contagem
+
+    async def _ler_total_sub_abas(self) -> int:
+        """
+        Le os numeros de TODAS as sub-abas visiveis (ex: "Para Programar 4", "Programando 0")
+        e retorna a SOMA. Usado apos filtrar por loja para obter a contagem exata.
+        """
+        try:
+            total = await self._page.evaluate("""
+                (() => {
+                    let soma = 0;
+                    const candidates = document.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="ant-tabs-tab"]');
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').trim();
+                        const match = text.match(/(\d+)\s*$/);
+                        if (match) {
+                            soma += parseInt(match[1]);
+                        }
+                    }
+                    return soma;
+                })()
+            """)
+            return int(total) if isinstance(total, (int, float)) else 0
+        except Exception as e:
+            logger.debug(f"[UpSeller] Erro ao ler total sub-abas: {e}")
+            return 0
+
+    async def _limpar_filtro_loja(self):
+        """
+        Remove todos os filtros de loja selecionados (clica nos X dos chips).
+        Restaura a visao de 'todas as lojas'.
+        """
+        try:
+            for _ in range(20):
+                removed = await self._page.evaluate("""
+                    (() => {
+                        const boxes = document.querySelectorAll('.select_multiple_box');
+                        for (const box of boxes) {
+                            const closeBtn = box.querySelector(
+                                '.tag_item .anticon-close, ' +
+                                'i[aria-label="icon: close"], ' +
+                                '.ant-select-selection-item-remove, ' +
+                                '.icon_clear.icon_item.anticon-close-circle'
+                            );
+                            if (closeBtn) {
+                                closeBtn.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    })()
+                """)
+                if not removed:
+                    break
+                await self._page.wait_for_timeout(300)
+            await self._page.wait_for_timeout(1500)
+            logger.info("[UpSeller] Filtro de loja limpo (todas as lojas)")
+        except Exception as e:
+            logger.warning(f"[UpSeller] Erro ao limpar filtro de loja: {e}")
+
+    async def _listar_nomes_lojas_filtro(self) -> List[str]:
+        """
+        Le o dropdown customizado de lojas e retorna TODOS os nomes cadastrados.
+        Nao altera selecoes; abre o dropdown, coleta e fecha.
+        """
+        nomes = []
+        try:
+            abriu = await self._page.evaluate("""
+                (() => {
+                    const trigger =
+                        document.querySelector('.select_multiple_box .inp_box') ||
+                        document.querySelector('.inp_box.ant-select-selection');
+                    if (!trigger) return false;
+                    trigger.click();
+                    return true;
+                })()
+            """)
+            if not abriu:
+                return []
+
+            await self._page.wait_for_timeout(800)
+
+            nomes = await self._page.evaluate("""
+                (() => {
+                    const out = new Set();
+                    const wrap = document.querySelector('.my_select_dropdown_wrap');
+                    if (!wrap) return [];
+
+                    const normalize = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+
+                    const lerVisiveis = () => {
+                        const labels = wrap.querySelectorAll('.option_list label.ant-checkbox-wrapper, label.ant-checkbox-wrapper');
+                        for (const lb of labels) {
+                            const txt = normalize(lb.textContent || '');
+                            if (!txt) continue;
+                            const low = txt.toLowerCase();
+                            if (low === 'tudo' || low.includes('selecionar tudo')) continue;
+                            out.add(txt);
+                        }
+                    };
+
+                    // Algumas listas sao virtualizadas; rolar para coletar todos os itens.
+                    const scrollBox = wrap.querySelector('.option_list') || wrap;
+                    let prevTop = -1;
+                    for (let i = 0; i < 30; i++) {
+                        lerVisiveis();
+                        if (!scrollBox || scrollBox.scrollHeight <= scrollBox.clientHeight) break;
+                        if (scrollBox.scrollTop === prevTop) break;
+                        prevTop = scrollBox.scrollTop;
+                        scrollBox.scrollTop = Math.min(scrollBox.scrollTop + scrollBox.clientHeight, scrollBox.scrollHeight);
+                    }
+                    scrollBox.scrollTop = 0;
+                    lerVisiveis();
+
+                    return Array.from(out);
+                })()
+            """)
+
+        except Exception as e:
+            logger.warning(f"[UpSeller] Erro ao listar lojas do filtro: {e}")
+        finally:
+            # Fechar dropdown sem alterar estado.
+            try:
+                fechou = await self._page.evaluate("""
+                    (() => {
+                        const wrap = document.querySelector('.my_select_dropdown_wrap');
+                        if (!wrap) return true;
+                        const cancel = Array.from(wrap.querySelectorAll('.option_action .d_ib, .option_action button, .option_action a, .option_action div'))
+                            .find(el => ((el.textContent || '').trim().toLowerCase() === 'cancelar'));
+                        if (cancel) {
+                            cancel.click();
+                            return true;
+                        }
+                        return false;
+                    })()
+                """)
+                if not fechou:
+                    await self._page.keyboard.press("Escape")
+                    await self._page.wait_for_timeout(150)
+            except Exception:
+                pass
+
+        return nomes or []
+
+    async def _abrir_subaba_para_programar(self) -> None:
+        """Garante que a sub-aba 'Para Programar' esta ativa."""
+        try:
+            clicou_tab = await self._page.evaluate("""
+                (() => {
+                    const candidates = document.querySelectorAll(
+                        '[role="tab"], .ant-tabs-tab, [class*="tab"], span, div, a'
+                    );
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').trim();
+                        if (/^Para Programar(\\s+\\d+)?$/.test(text)) {
+                            if (text.includes('Programando') || text.includes('Enviado')) continue;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 5 && rect.width < 500 && rect.height < 100) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                })()
+            """)
+            if not clicou_tab:
+                tab_loc = self._page.locator('div[role="tab"]:has-text("Para Programar")').first
+                if await tab_loc.count() > 0:
+                    await tab_loc.click(timeout=5000)
+            await self._page.wait_for_timeout(900)
+        except Exception:
+            pass
+
+    async def _ler_contagem_para_programar(self) -> int:
+        """Le a contagem da aba 'Para Programar' de forma robusta."""
+        try:
+            count = await self._page.evaluate("""
+                (() => {
+                    const parseNum = (t) => {
+                        const m1 = (t || '').match(/Para Programar\\s*\\(?\\s*(\\d+)\\s*\\)?/i);
+                        if (m1) return parseInt(m1[1], 10);
+                        return null;
+                    };
+
+                    const candidates = document.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="ant-tabs-tab"], span, div, a');
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').trim();
+                        if (!/Para Programar/i.test(text)) continue;
+                        const n = parseNum(text);
+                        if (n !== null) return n;
+                    }
+
+                    const body = (document.body && document.body.innerText) || '';
+                    const nBody = parseNum(body);
+                    if (nBody !== null) return nBody;
+
+                    const rows = document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item');
+                    return rows ? rows.length : 0;
+                })()
+            """)
+            return int(count or 0)
+        except Exception:
+            return 0
+
+    async def _ler_marketplace_primeira_linha(self) -> str:
+        """Tenta ler marketplace da primeira linha visivel da tabela."""
+        try:
+            mp = await self._page.evaluate("""
+                (() => {
+                    const row = document.querySelector('tr.top_row, tr[class*="top_row"], .order_item');
+                    if (!row) return '';
+                    const txt = (row.textContent || '').toLowerCase();
+                    if (txt.includes('shopee')) return 'Shopee';
+                    if (txt.includes('shein')) return 'Shein';
+                    if (txt.includes('mercado livre') || txt.includes('mercado')) return 'Mercado Livre';
+                    if (txt.includes('tiktok')) return 'TikTok';
+                    if (txt.includes('amazon')) return 'Amazon';
+                    if (txt.includes('magalu')) return 'Magalu';
+                    if (txt.includes('kwai')) return 'Kwai';
+                    return '';
+                })()
+            """)
+            return (mp or '').strip()
+        except Exception:
+            return ''
+
+    async def _ler_sidebar_info(self) -> dict:
+        """Le contadores do sidebar (Para Enviar, Para Emitir, etc.)."""
+        try:
+            info = await self._page.evaluate("""
+                (() => {
+                    const out = {};
+                    const allEls = document.querySelectorAll('li, a, div, span');
+                    const patterns = [
+                        /^(Para (?:Reservar|Emitir|Enviar|Imprimir|Retirada))\\s+(\\d+)$/i,
+                        /^(Para (?:Reservar|Emitir|Enviar|Imprimir|Retirada))\\s*[(\\[]\\s*(\\d+)/i,
+                        /^(Programando|Enviado|Fatura Pendente)\\s+(\\d+)$/i,
+                    ];
+                    for (const el of allEls) {
+                        const text = (el.textContent || '').trim();
+                        for (const p of patterns) {
+                            const m = text.match(p);
+                            if (!m) continue;
+                            const key = (m[1] || '').replace(/\\s+/g, ' ').trim();
+                            const val = parseInt(m[2] || '0', 10) || 0;
+                            if (!out[key] || val > out[key]) out[key] = val;
+                            break;
+                        }
+                    }
+                    return out;
+                })()
+            """)
+            return info if isinstance(info, dict) else {}
+        except Exception:
+            return {}
+
+    async def _ler_total_subabas(self) -> int:
+        """Soma os contadores das sub-abas de pedidos (ex.: Para Programar, Programando, etc.)."""
+        try:
+            total = await self._page.evaluate("""
+                (() => {
+                    let sum = 0;
+                    const tabs = document.querySelectorAll('[role="tab"], .ant-tabs-tab, [class*="ant-tabs-tab"]');
+                    for (const el of tabs) {
+                        const text = (el.textContent || '').trim();
+                        const m = text.match(/^(.+?)\\s+(\\d+)$/);
+                        if (!m) continue;
+                        const nome = (m[1] || '').toLowerCase();
+                        if (nome.includes('para enviar') || nome.includes('para imprimir') || nome.includes('para emitir')) {
+                            continue;
+                        }
+                        sum += parseInt(m[2] || '0', 10) || 0;
+                    }
+                    return sum;
+                })()
+            """)
+            return int(total or 0)
+        except Exception:
+            return 0
+
+    async def _ler_contadores_programacao_envio(self) -> Dict[str, int]:
+        """
+        Le contadores das sub-abas da tela de programacao de envio:
+        - Para Programar
+        - Programando
+        - Falha na Programacao
+        - Obtendo N° de Rastreio
+        - Erro ao Obter N° de Rastreio
+        """
+        base = {
+            "para_programar": 0,
+            "programando": 0,
+            "falha_na_programacao": 0,
+            "obtendo_rastreio": 0,
+            "erro_obter_rastreio": 0,
+        }
+        try:
+            data = await self._page.evaluate("""
+                (() => {
+                    const out = {
+                        para_programar: 0,
+                        programando: 0,
+                        falha_na_programacao: 0,
+                        obtendo_rastreio: 0,
+                        erro_obter_rastreio: 0
+                    };
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const setMax = (k, v) => {
+                        const n = parseInt(v || 0, 10) || 0;
+                        if (n > (out[k] || 0)) out[k] = n;
+                    };
+                    const nodes = document.querySelectorAll('[role="tab"], .ant-tabs-tab, .ant-tabs-tab-btn, span, div, a, li');
+                    for (const el of nodes) {
+                        const txtRaw = (el.textContent || '').trim();
+                        if (!txtRaw) continue;
+                        const txt = normalize(txtRaw);
+                        const m = txt.match(/(\\d+)\\s*$/);
+                        if (!m) continue;
+                        const count = parseInt(m[1] || '0', 10) || 0;
+
+                        if (txt.startsWith('para programar')) {
+                            setMax('para_programar', count);
+                            continue;
+                        }
+                        if (txt.startsWith('programando')) {
+                            setMax('programando', count);
+                            continue;
+                        }
+                        if (txt.startsWith('falha na programacao') || txt.includes('falha na programacao')) {
+                            setMax('falha_na_programacao', count);
+                            continue;
+                        }
+                        if (txt.startsWith('obtendo n') && txt.includes('rastreio')) {
+                            setMax('obtendo_rastreio', count);
+                            continue;
+                        }
+                        if (txt.startsWith('erro ao obter n') && txt.includes('rastreio')) {
+                            setMax('erro_obter_rastreio', count);
+                            continue;
+                        }
+                    }
+                    return out;
+                })()
+            """)
+            if isinstance(data, dict):
+                for k in list(base.keys()):
+                    try:
+                        base[k] = int(data.get(k, 0) or 0)
+                    except Exception:
+                        base[k] = 0
+            return base
+        except Exception as e:
+            logger.debug(f"[UpSeller] Erro ao ler contadores da programacao: {e}")
+            return base
+
+    async def _aguardar_conclusao_programacao(self, timeout_segundos: int = 240) -> Dict[str, int]:
+        """
+        Aguarda finalizar filas transitorias apos "Programar Envio":
+        Programando / Obtendo rastreio / Erro obter rastreio.
+        """
+        inicio = datetime.now()
+        ultimo = {
+            "para_programar": 0,
+            "programando": 0,
+            "falha_na_programacao": 0,
+            "obtendo_rastreio": 0,
+            "erro_obter_rastreio": 0,
+        }
+        while (datetime.now() - inicio).total_seconds() < max(20, int(timeout_segundos or 240)):
+            cont = await self._ler_contadores_programacao_envio()
+            if isinstance(cont, dict):
+                ultimo = cont
+            transientes = int(ultimo.get("programando", 0) or 0) + int(ultimo.get("obtendo_rastreio", 0) or 0)
+            if transientes <= 0:
+                return ultimo
+            await self._page.wait_for_timeout(7000)
+            try:
+                await self._page.reload(wait_until="domcontentloaded")
+                await self._page.wait_for_timeout(1200)
+                await self._fechar_popups()
+                await self._abrir_subaba_para_programar()
+            except Exception:
+                pass
+        return ultimo
+
+    async def _status_subaba_etiquetas(self, alvo: str = "nao_impressa") -> Dict[str, Any]:
+        """
+        Le o estado da sub-aba de etiquetas (Todos / Etiqueta nao impressa / Etiqueta impressa).
+        """
+        base = {
+            "exists": False,
+            "active": False,
+            "active_text": "",
+            "target_text": "",
+            "target_count": 0,
+        }
+        try:
+            data = await self._page.evaluate(
+                """
+                (alvoTab) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const alvo = normalize(alvoTab || 'nao_impressa');
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const st = window.getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return st.display !== 'none' && st.visibility !== 'hidden' &&
+                            r.width > 12 && r.height > 8 && r.y >= 0 && r.y < (window.innerHeight - 20);
+                    };
+                    const eAlvo = (txt) => {
+                        if (!txt) return false;
+                        if (alvo.includes('nao_impressa') || alvo.includes('nao')) {
+                            return txt.includes('etiqueta nao impressa') || txt.startsWith('nao impressa');
+                        }
+                        if (alvo.includes('impressa') && !alvo.includes('nao')) {
+                            return txt.includes('etiqueta impressa') || txt.startsWith('impressa');
+                        }
+                        if (alvo.includes('todos')) {
+                            return txt.startsWith('todos');
+                        }
+                        return false;
+                    };
+                    const uniq = [];
+                    const seen = new Set();
+                    const nodes = document.querySelectorAll('.ant-tabs-tab, [role="tab"], .ant-tabs-tab-btn');
+                    for (const n of nodes) {
+                        const root = n.closest('.ant-tabs-tab, [role="tab"]') || n;
+                        if (!root || seen.has(root)) continue;
+                        seen.add(root);
+                        if (!isVisible(root)) continue;
+                        uniq.push(root);
+                    }
+
+                    const out = {
+                        exists: false,
+                        active: false,
+                        active_text: '',
+                        target_text: '',
+                        target_count: 0,
+                    };
+
+                    for (const tab of uniq) {
+                        const raw = (tab.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (!raw) continue;
+                        const txt = normalize(raw);
+                        const m = raw.match(/(\\d+)\\s*$/);
+                        const c = m ? (parseInt(m[1], 10) || 0) : 0;
+                        const isActive = tab.classList.contains('ant-tabs-tab-active') ||
+                            tab.getAttribute('aria-selected') === 'true' ||
+                            !!tab.querySelector('[aria-selected="true"]');
+                        if (isActive) {
+                            out.active_text = raw;
+                        }
+                        if (eAlvo(txt)) {
+                            out.exists = true;
+                            out.target_text = raw;
+                            if (c > out.target_count) out.target_count = c;
+                            if (isActive) out.active = true;
+                        }
+                    }
+                    return out;
+                }
+                """,
+                (alvo or "nao_impressa"),
+            )
+            if isinstance(data, dict):
+                base.update(data)
+            return base
+        except Exception:
+            return base
+
+    async def _ativar_subaba_etiquetas(
+        self,
+        alvo: str = "nao_impressa",
+        tentativas: int = 3,
+        estrito: bool = False
+    ) -> bool:
+        """
+        Tenta ativar uma sub-aba de etiquetas e confirma se ela ficou ativa.
+        """
+        try:
+            alvo_txt = (alvo or "nao_impressa")
+            tentativas = max(1, int(tentativas or 1))
+            for _ in range(tentativas):
+                status = await self._status_subaba_etiquetas(alvo_txt)
+                if status.get("active"):
+                    return True
+                if not status.get("exists"):
+                    return False
+
+                clicou = await self._page.evaluate(
+                    """
+                    (alvoTab) => {
+                        const normalize = (s) => (s || '')
+                            .toLowerCase()
+                            .normalize('NFD')
+                            .replace(/[\\u0300-\\u036f]/g, '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        const alvo = normalize(alvoTab || 'nao_impressa');
+                        const isVisible = (el) => {
+                            if (!el) return false;
+                            const st = window.getComputedStyle(el);
+                            const r = el.getBoundingClientRect();
+                            return st.display !== 'none' && st.visibility !== 'hidden' &&
+                                r.width > 12 && r.height > 8 && r.y >= 0 && r.y < (window.innerHeight - 20);
+                        };
+                        const eAlvo = (txt) => {
+                            if (!txt) return false;
+                            if (alvo.includes('nao_impressa') || alvo.includes('nao')) {
+                                return txt.includes('etiqueta nao impressa') || txt.startsWith('nao impressa');
+                            }
+                            if (alvo.includes('impressa') && !alvo.includes('nao')) {
+                                return txt.includes('etiqueta impressa') || txt.startsWith('impressa');
+                            }
+                            if (alvo.includes('todos')) {
+                                return txt.startsWith('todos');
+                            }
+                            return false;
+                        };
+                        const clickNode = (el) => {
+                            if (!el) return false;
+                            try {
+                                el.click();
+                                return true;
+                            } catch (_) {}
+                            try {
+                                ['mouseover', 'mouseenter', 'mousedown', 'mouseup', 'click'].forEach(ev =>
+                                    el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window }))
+                                );
+                                return true;
+                            } catch (_) {}
+                            return false;
+                        };
+                        const seen = new Set();
+                        const nodes = document.querySelectorAll('.ant-tabs-tab, [role="tab"], .ant-tabs-tab-btn');
+                        for (const n of nodes) {
+                            const root = n.closest('.ant-tabs-tab, [role="tab"]') || n;
+                            if (!root || seen.has(root)) continue;
+                            seen.add(root);
+                            if (!isVisible(root)) continue;
+                            const raw = (root.textContent || '').replace(/\\s+/g, ' ').trim();
+                            const txt = normalize(raw);
+                            if (!eAlvo(txt)) continue;
+                            const btn = root.querySelector('.ant-tabs-tab-btn, [role="tab"]') || root;
+                            if (clickNode(btn) || clickNode(root)) {
+                                return { clicked: true, text: raw };
+                            }
+                        }
+                        return { clicked: false, text: '' };
+                    }
+                    """,
+                    alvo_txt,
+                )
+                await self._page.wait_for_timeout(900)
+                if isinstance(clicou, dict) and clicou.get("clicked"):
+                    status2 = await self._status_subaba_etiquetas(alvo_txt)
+                    if status2.get("active"):
+                        return True
+            status_fim = await self._status_subaba_etiquetas(alvo_txt)
+            if estrito and status_fim.get("exists") and not status_fim.get("active"):
+                logger.error(
+                    "[UpSeller] Nao foi possivel ativar sub-aba de etiquetas '%s' (ativa atual: '%s')",
+                    alvo_txt, status_fim.get("active_text", "")
+                )
+            return bool(status_fim.get("active"))
+        except Exception as e:
+            if estrito:
+                logger.error(f"[UpSeller] Falha ao ativar sub-aba de etiquetas '{alvo}': {e}")
+            return False
+
+    async def _ler_contadores_tabs_nfe(self) -> Dict[str, int]:
+        """
+        Le contadores das sub-abas de NF-e na tela /pending-invoice.
+
+        Retorna sempre as chaves:
+        - para_emitir
+        - emitindo
+        - falha_na_emissao
+        - subindo
+        - falha_ao_subir
+        """
+        base = {
+            "para_emitir": 0,
+            "emitindo": 0,
+            "falha_na_emissao": 0,
+            "subindo": 0,
+            "falha_ao_subir": 0,
+        }
+        try:
+            info = await self._page.evaluate("""
+                (() => {
+                    const out = {
+                        para_emitir: 0,
+                        emitindo: 0,
+                        falha_na_emissao: 0,
+                        subindo: 0,
+                        falha_ao_subir: 0,
+                    };
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const isVisible = (el) => {
+                        if (!el) return false;
+                        const st = window.getComputedStyle(el);
+                        const r = el.getBoundingClientRect();
+                        return st.display !== 'none' && st.visibility !== 'hidden' &&
+                            r.width > 10 && r.height > 10 && r.width < 520 && r.height < 120 && r.y >= 0 && r.y < 440;
+                    };
+                    const parseCount = (el, raw) => {
+                        const m = (raw || '').match(/(\\d+)\\s*$/);
+                        if (m) return parseInt(m[1], 10) || 0;
+                        const badge = el.querySelector('.ant-badge-count, .ant-tabs-tab-count');
+                        if (badge) {
+                            const n = parseInt((badge.textContent || '').replace(/\\D+/g, ''), 10);
+                            if (!Number.isNaN(n)) return n;
+                        }
+                        return 0;
+                    };
+                    const setMax = (k, v) => {
+                        const n = parseInt(v || 0, 10) || 0;
+                        if (n > (out[k] || 0)) out[k] = n;
+                    };
+
+                    const nodes = Array.from(document.querySelectorAll('[role="tab"], .ant-tabs-tab'));
+                    for (const el of nodes) {
+                        if (!isVisible(el)) continue;
+                        const raw = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (!raw) continue;
+                        const txt = normalize(raw);
+                        if (!txt) continue;
+                        const count = parseCount(el, raw);
+
+                        if (txt.startsWith('para emitir')) {
+                            setMax('para_emitir', count);
+                            continue;
+                        }
+                        if (txt.startsWith('emitindo')) {
+                            setMax('emitindo', count);
+                            continue;
+                        }
+                        if (txt.startsWith('falha na emissao') || txt.includes('falha na emissao')) {
+                            setMax('falha_na_emissao', count);
+                            continue;
+                        }
+                        if (txt.startsWith('subindo')) {
+                            setMax('subindo', count);
+                            continue;
+                        }
+                        if (txt.startsWith('falha ao subir') || txt.includes('falha ao subir')) {
+                            setMax('falha_ao_subir', count);
+                            continue;
+                        }
+                    }
+                    return out;
+                })()
+            """)
+            if isinstance(info, dict):
+                for k in base.keys():
+                    try:
+                        base[k] = max(0, int(info.get(k, 0) or 0))
+                    except Exception:
+                        base[k] = 0
+            return base
+        except Exception:
+            return base
+
+    async def _tabela_filtrada_para_loja(self, nome_loja: str) -> bool:
+        """
+        Valida se as linhas visiveis da tabela pertencem majoritariamente a loja alvo.
+        Evita contagem errada quando o filtro de loja nao aplica de fato.
+        """
+        try:
+            valid = await self._page.evaluate("""
+                (nomeLoja) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/[^a-z0-9 ]+/g, ' ')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const target = normalize(nomeLoja);
+                    const marketRx = /(shopee|shein|mercado livre|tiktok|amazon|magalu|kwai)/i;
+
+                    // Identificar o box de loja (evita pegar "Métodos de Envio", etc).
+                    const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                    let txtBox = '';
+                    for (const box of boxes) {
+                        const trigger = box.querySelector('.inp_box') || box;
+                        const t = normalize(trigger ? trigger.textContent : (box.textContent || ''));
+                        if (!t) continue;
+                        if (
+                            t.includes(target) ||
+                            t.includes('loja') ||
+                            t.includes('todas lojas') ||
+                            t.includes('todas as lojas')
+                        ) {
+                            txtBox = t;
+                            break;
+                        }
+                    }
+                    // Fallback: alguns layouts usam ant-select no filtro de loja.
+                    if (!txtBox) {
+                        const selects = Array.from(document.querySelectorAll('.ant-select'));
+                        for (const sel of selects) {
+                            const r = sel.getBoundingClientRect();
+                            if (r.width < 100 || r.height < 20 || r.y < 30 || r.y > 280) continue;
+                            const t = normalize(sel.textContent || '');
+                            if (!t) continue;
+                            if (
+                                t.includes(target) ||
+                                t.includes('loja') ||
+                                t.includes('todas lojas') ||
+                                t.includes('todas as lojas')
+                            ) {
+                                txtBox = t;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Se o seletor indicar explicitamente "todas/tudo", filtro nao aplicado.
+                    if (txtBox && (txtBox.includes('todas') || txtBox.includes('tudo'))) {
+                        return false;
+                    }
+
+                    const rows = Array.from(document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item')).slice(0, 25);
+                    if (rows.length === 0) {
+                        const bodyTxt = normalize(document.body.innerText || '');
+                        if (bodyTxt.includes('nenhum dado') || bodyTxt.includes('total 0')) {
+                            // Loja filtrada sem pedidos visiveis -> filtro valido.
+                            return true;
+                        }
+                        return false;
+                    }
+
+                    let comparadas = 0;
+                    let ok = 0;
+                    for (const row of rows) {
+                        const rowTxt = normalize(row.textContent || '');
+                        const lojaEl =
+                            row.querySelector('span.d_ib.max_w_160, span[class*="max_w_160"], [class*="shop"], [class*="store"]');
+                        const txtLoja = normalize(lojaEl ? lojaEl.textContent : '');
+                        let lojaLinha = txtLoja;
+                        if (!lojaLinha && rowTxt) {
+                            const m = rowTxt.match(/([a-z0-9][a-z0-9 ._-]{1,60})\\s*\\|\\s*(shopee|shein|mercado livre|tiktok|amazon|magalu|kwai)/i);
+                            if (m && m[1]) lojaLinha = normalize(m[1]);
+                        }
+                        if (!lojaLinha && rowTxt && rowTxt.includes(target)) {
+                            lojaLinha = target;
+                        }
+                        if (!lojaLinha) continue;
+                        comparadas++;
+                        if (lojaLinha === target || lojaLinha.includes(target) || target.includes(lojaLinha)) {
+                            ok++;
+                            continue;
+                        }
+                        // Se a linha nao carrega nome da loja de forma clara, mas contem marketplace,
+                        // considerar mismatch para evitar falso positivo.
+                        if (!marketRx.test(rowTxt)) {
+                            // Sem marketplace identificavel, nao penaliza.
+                            comparadas--;
+                        }
+                    }
+
+                    // Quando a UI nao expõe nome da loja nas linhas, usar o trigger como fallback.
+                    if (comparadas === 0) {
+                        if (!txtBox) return false;
+                        if (txtBox.includes(target) && !txtBox.includes('todas') && !txtBox.includes('tudo')) {
+                            return true;
+                        }
+                        return false;
+                    }
+                    const ratio = ok / comparadas;
+                    return ratio >= 0.75;
+                }
+            """, nome_loja)
+            return bool(valid)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _normalizar_lista_lojas_filtro(filtro_loja: Union[str, List[str], tuple, set, None]) -> List[str]:
+        """Normaliza filtro de loja aceitando string unica ou lista de lojas."""
+        if filtro_loja is None:
+            return []
+        if isinstance(filtro_loja, str):
+            nome = filtro_loja.strip()
+            return [nome] if nome else []
+
+        out = []
+        vistos = set()
+        for item in list(filtro_loja or []):
+            nome = str(item or "").strip()
+            if not nome:
+                continue
+            key = re.sub(r"\s+", " ", nome.casefold()).strip()
+            if key in vistos:
+                continue
+            vistos.add(key)
+            out.append(nome)
+        return out
+
+    async def _tabela_filtrada_para_lojas(self, nomes_lojas: List[str]) -> bool:
+        """
+        Valida se as linhas visiveis da tabela pertencem ao conjunto de lojas informado.
+        """
+        nomes = self._normalizar_lista_lojas_filtro(nomes_lojas)
+        if not nomes:
+            return True
+        if len(nomes) == 1:
+            return await self._tabela_filtrada_para_loja(nomes[0])
+
+        try:
+            valid = await self._page.evaluate("""
+                (nomesLojas) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/[^a-z0-9 ]+/g, ' ')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const targets = (nomesLojas || []).map(normalize).filter(Boolean);
+                    if (!targets.length) return true;
+                    const marketRx = /(shopee|shein|mercado livre|tiktok|amazon|magalu|kwai)/i;
+
+                    // Trigger do seletor de loja nao pode indicar "todas".
+                    const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                    let txtBox = '';
+                    for (const box of boxes) {
+                        const trigger = box.querySelector('.inp_box') || box;
+                        const t = normalize(trigger ? trigger.textContent : (box.textContent || ''));
+                        if (!t) continue;
+                        if (
+                            t.includes('loja') ||
+                            t.includes('todas lojas') ||
+                            t.includes('todas as lojas') ||
+                            targets.some((x) => t.includes(x))
+                        ) {
+                            txtBox = t;
+                            break;
+                        }
+                    }
+                    // Fallback: alguns layouts usam ant-select no filtro de loja.
+                    if (!txtBox) {
+                        const selects = Array.from(document.querySelectorAll('.ant-select'));
+                        for (const sel of selects) {
+                            const r = sel.getBoundingClientRect();
+                            if (r.width < 100 || r.height < 20 || r.y < 30 || r.y > 280) continue;
+                            const t = normalize(sel.textContent || '');
+                            if (!t) continue;
+                            if (
+                                t.includes('loja') ||
+                                t.includes('todas lojas') ||
+                                t.includes('todas as lojas') ||
+                                targets.some((x) => t.includes(x))
+                            ) {
+                                txtBox = t;
+                                break;
+                            }
+                        }
+                    }
+                    if (txtBox && (txtBox.includes('todas') || txtBox.includes('tudo'))) {
+                        return false;
+                    }
+
+                    const rows = Array.from(
+                        document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item')
+                    ).slice(0, 30);
+                    if (rows.length === 0) {
+                        const bodyTxt = normalize(document.body.innerText || '');
+                        if (bodyTxt.includes('nenhum dado') || bodyTxt.includes('total 0')) {
+                            return true;
+                        }
+                        return false;
+                    }
+
+                    const matchTarget = (lojaLinha) => {
+                        if (!lojaLinha) return false;
+                        return targets.some((t) => lojaLinha === t || lojaLinha.includes(t) || t.includes(lojaLinha));
+                    };
+
+                    let comparadas = 0;
+                    let ok = 0;
+                    for (const row of rows) {
+                        const rowTxt = normalize(row.textContent || '');
+                        const lojaEl =
+                            row.querySelector('span.d_ib.max_w_160, span[class*="max_w_160"], [class*="shop"], [class*="store"]');
+                        const txtLoja = normalize(lojaEl ? lojaEl.textContent : '');
+                        let lojaLinha = txtLoja;
+                        if (!lojaLinha && rowTxt) {
+                            const m = rowTxt.match(/([a-z0-9][a-z0-9 ._-]{1,60})\\s*\\|\\s*(shopee|shein|mercado livre|tiktok|amazon|magalu|kwai)/i);
+                            if (m && m[1]) lojaLinha = normalize(m[1]);
+                        }
+                        if (!lojaLinha) continue;
+                        comparadas++;
+                        if (matchTarget(lojaLinha)) {
+                            ok++;
+                            continue;
+                        }
+                        if (!marketRx.test(rowTxt)) {
+                            comparadas--;
+                        }
+                    }
+
+                    if (comparadas === 0) {
+                        if (!txtBox) return false;
+                        if (txtBox.includes('todas') || txtBox.includes('tudo')) return false;
+                        if (targets.some((t) => txtBox.includes(t))) return true;
+                        return false;
+                    }
+                    const ratio = ok / comparadas;
+                    return ratio >= 0.75;
+                }
+            """, nomes)
+            return bool(valid)
+        except Exception:
+            return False
+
+    async def _filtrar_por_lojas_ant_select(self, nomes_lojas: List[str]) -> bool:
+        """
+        Fallback para layouts que usam ant-select no filtro de loja
+        (sem .select_multiple_box).
+        """
+        nomes = self._normalizar_lista_lojas_filtro(nomes_lojas)
+        if not nomes:
+            return True
+
+        # Blindagem contra tutorial/overlay que bloqueia cliques no select.
+        try:
+            await self._fechar_popups(max_tentativas=2)
+        except Exception:
+            pass
+
+        try:
+            await self._page.wait_for_selector(".ant-select", timeout=6000)
+        except Exception:
+            return False
+
+        try:
+            loja_ref = nomes[0]
+            store_idx = await self._page.evaluate("""
+                (nomeLoja) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const target = normalize(nomeLoja || '');
+                    const nodes = Array.from(document.querySelectorAll('.ant-select'));
+                    if (!nodes.length) return -1;
+
+                    let bestIdx = -1;
+                    let bestScore = -9999;
+                    nodes.forEach((el, idx) => {
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 100 || r.height < 18 || r.y < 30 || r.y > 300) return;
+                        const t = normalize(el.textContent || '');
+                        let score = 0;
+                        if (t.includes('loja') || t.includes('todas lojas') || t.includes('todas as lojas')) score += 20;
+                        if (target && (t.includes(target) || target.includes(t))) score += 8;
+                        if (el.querySelector('.ant-select-selection-item, .ant-select-selection-overflow-item')) score += 2;
+                        if (r.y >= 40 && r.y <= 240) score += 4;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestIdx = idx;
+                        }
+                    });
+                    return bestIdx;
+                }
+            """, loja_ref)
+            try:
+                store_idx = int(store_idx)
+            except Exception:
+                store_idx = -1
+            if store_idx < 0:
+                return False
+
+            box = self._page.locator(".ant-select").nth(store_idx)
+
+            # Limpar selecao atual via X (sem usar "marcar tudo").
+            for _ in range(20):
+                removed = False
+                for sel in [
+                    ".ant-select-selection-item-remove",
+                    ".ant-select-selection-overflow-item .anticon-close",
+                    ".ant-select-clear",
+                    "i[aria-label='icon: close']",
+                ]:
+                    loc = box.locator(sel).first
+                    if await loc.count() <= 0:
+                        continue
+                    try:
+                        await loc.click(timeout=1200)
+                        removed = True
+                        break
+                    except Exception:
+                        continue
+                if not removed:
+                    break
+                await self._page.wait_for_timeout(120)
+
+            # Abrir dropdown do ant-select.
+            trigger = box.locator(".ant-select-selector").first
+            if await trigger.count() <= 0:
+                trigger = box
+            if await trigger.count() <= 0:
+                return False
+            try:
+                await trigger.scroll_into_view_if_needed(timeout=1200)
+            except Exception:
+                pass
+            try:
+                await trigger.click(timeout=2200)
+            except Exception:
+                # Fallback: clique por JS para contornar overlay residual.
+                try:
+                    await self._fechar_popups(max_tentativas=2)
+                except Exception:
+                    pass
+                abriu_js = await self._page.evaluate("""
+                    (idx) => {
+                        const nodes = Array.from(document.querySelectorAll('.ant-select'));
+                        const el = (idx >= 0 && idx < nodes.length) ? nodes[idx] : null;
+                        if (!el) return false;
+                        const trg = el.querySelector('.ant-select-selector') || el;
+                        try {
+                            trg.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                            trg.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                            trg.click();
+                            return true;
+                        } catch (e) {
+                            return false;
+                        }
+                    }
+                """, store_idx)
+                if not abriu_js:
+                    return False
+            await self._page.wait_for_timeout(400)
+
+            faltantes = []
+            selecionadas = []
+            for nome in nomes:
+                # Busca (quando input existir).
+                try:
+                    dd_input = self._page.locator(
+                        ".ant-select-dropdown:not(.ant-select-dropdown-hidden) input[type='search'], "
+                        ".ant-select-dropdown:not(.ant-select-dropdown-hidden) input[type='text'], "
+                        ".ant-select-dropdown:not(.ant-select-dropdown-hidden) input"
+                    ).first
+                    if await dd_input.count() > 0:
+                        await dd_input.fill(nome)
+                        await self._page.wait_for_timeout(280)
+                except Exception:
+                    pass
+
+                match = await self._page.evaluate("""
+                    (nomeLoja) => {
+                        const normalize = (s) => (s || '')
+                            .toLowerCase()
+                            .normalize('NFD')
+                            .replace(/[\\u0300-\\u036f]/g, '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        const target = normalize(nomeLoja || '');
+                        const dropdowns = Array.from(document.querySelectorAll('.ant-select-dropdown'))
+                            .filter((d) => {
+                                const st = window.getComputedStyle(d);
+                                const r = d.getBoundingClientRect();
+                                return st.display !== 'none' &&
+                                    st.visibility !== 'hidden' &&
+                                    !d.classList.contains('ant-select-dropdown-hidden') &&
+                                    r.width > 120 && r.height > 40;
+                            });
+                        const dd = dropdowns[dropdowns.length - 1];
+                        if (!dd) return { ok: false, options: [] };
+                        const opts = Array.from(
+                            dd.querySelectorAll('.ant-select-item-option, .ant-select-dropdown-menu-item, [role="option"]')
+                        );
+                        const labels = opts.map((o) => (o.textContent || '').trim()).filter(Boolean);
+
+                        let best = null;
+                        for (const o of opts) {
+                            const t = normalize(o.textContent || '');
+                            if (!t) continue;
+                            if (t === target) { best = o; break; }
+                        }
+                        if (!best) {
+                            for (const o of opts) {
+                                const t = normalize(o.textContent || '');
+                                if (!t) continue;
+                                if (t.includes(target) || target.includes(t)) { best = o; break; }
+                            }
+                        }
+                        if (!best) return { ok: false, options: labels.slice(0, 12) };
+                        best.click();
+                        return { ok: true, text: (best.textContent || '').trim() };
+                    }
+                """, nome)
+
+                if not match or not match.get("ok"):
+                    faltantes.append({
+                        "nome": nome,
+                        "opcoes": (match or {}).get("options", [])[:12],
+                    })
+                    continue
+
+                selecionadas.append((match or {}).get("text") or nome)
+                await self._page.wait_for_timeout(180)
+            # Fechar dropdown.
+            try:
+                await self._page.keyboard.press("Escape")
+            except Exception:
+                pass
+            try:
+                await self._page.evaluate("document.body.click()")
+            except Exception:
+                pass
+            await self._page.wait_for_timeout(500)
+
+            if faltantes:
+                logger.warning(f"[UpSeller] Ant-select: lojas nao encontradas: {faltantes}")
+                return False
+            if not selecionadas:
+                return False
+
+            # Validacao minima no trigger: nao pode ficar em "todas".
+            trigger_ok = await self._page.evaluate("""
+                (idx) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const nodes = Array.from(document.querySelectorAll('.ant-select'));
+                    const el = (idx >= 0 && idx < nodes.length) ? nodes[idx] : null;
+                    if (!el) return false;
+                    const txt = normalize(el.textContent || '');
+                    if (!txt) return false;
+                    if (txt.includes('todas') || txt.includes('tudo')) return false;
+                    return true;
+                }
+            """, store_idx)
+            if not trigger_ok:
+                return False
+
+            logger.info(f"[UpSeller] Filtro aplicado via ant-select ({len(selecionadas)} loja(s))")
+            return True
+        except Exception as e:
+            logger.warning(f"[UpSeller] Falha no fallback ant-select de lojas: {e}")
+            return False
+
+    async def _filtrar_por_lojas(self, nomes_lojas: List[str]) -> bool:
+        """
+        Aplica filtro de MULTIPLAS lojas em um unico salvamento.
+        """
+        nomes = self._normalizar_lista_lojas_filtro(nomes_lojas)
+        if not nomes:
+            return True
+        if len(nomes) == 1:
+            return await self._filtrar_por_loja(nomes[0])
+
+        try:
+            await self._fechar_popups(max_tentativas=2)
+        except Exception:
+            pass
+
+        logger.info(f"[UpSeller] Filtrando por lote de lojas ({len(nomes)}): {nomes[:6]}")
+
+        try:
+            try:
+                await self._page.wait_for_selector(
+                    ".select_multiple_box, .select_multiple_box .inp_box",
+                    timeout=8000
+                )
+            except Exception:
+                await self._page.wait_for_timeout(800)
+
+            loja_ref = nomes[0]
+            store_box_idx = await self._page.evaluate("""
+                (nomeLoja) => {
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const target = normalize(nomeLoja);
+                    const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                    if (!boxes.length) return -1;
+
+                    let bestIdx = 0;
+                    let bestScore = -9999;
+                    boxes.forEach((box, idx) => {
+                        const inp = box.querySelector('.inp_box');
+                        const txt = normalize(inp ? (inp.textContent || '') : (box.textContent || ''));
+                        const r = box.getBoundingClientRect();
+                        let score = 0;
+                        if (txt.includes('loja') || txt.includes('todas lojas') || txt.includes('todas as lojas')) score += 20;
+                        if (target && (txt.includes(target) || target.includes(txt))) score += 8;
+                        if (txt.includes('+')) score += 3;
+                        if (box.querySelector('.tag_item')) score += 2;
+                        if (r.y >= 40 && r.y <= 240) score += 4;
+                        if (r.width >= 120 && r.width <= 260) score += 2;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestIdx = idx;
+                        }
+                    });
+                    if (bestScore < 0) return -1;
+                    return bestIdx;
+                }
+            """, loja_ref)
+            try:
+                store_box_idx = int(store_box_idx)
+            except Exception:
+                store_box_idx = -1
+            if store_box_idx < 0:
+                try:
+                    dbg = await self._page.evaluate("""
+                        () => ({
+                            url: window.location.href,
+                            select_multiple_count: document.querySelectorAll('.select_multiple_box').length,
+                            ant_select_count: document.querySelectorAll('.ant-select').length,
+                            body_head: (document.body?.innerText || '').slice(0, 180),
+                        })
+                    """)
+                    logger.warning(f"[UpSeller][FiltroDebug] multiloja_caixa_nao_encontrada: {dbg}")
+                except Exception:
+                    pass
+                logger.warning("[UpSeller] Caixa de filtro de loja nao encontrada (multiloja). Tentando ant-select...")
+                return await self._filtrar_por_lojas_ant_select(nomes)
+            store_box = self._page.locator(".select_multiple_box").nth(store_box_idx)
+
+            # Limpa chips atuais somente pelo X.
+            removed_total = 0
+            for _ in range(15):
+                removed = False
+                for sel in [
+                    ".tag_item .anticon-close",
+                    "i[aria-label='icon: close']",
+                    ".ant-select-selection-item-remove",
+                    ".ant-select-selection-overflow-item .anticon-close",
+                    ".icon_clear.icon_item.anticon-close-circle",
+                    ".ant-select-clear",
+                ]:
+                    loc = store_box.locator(sel).first
+                    if await loc.count() <= 0:
+                        continue
+                    try:
+                        await loc.click(timeout=1200)
+                        removed = True
+                        break
+                    except Exception:
+                        continue
+                if not removed:
+                    break
+                removed_total += 1
+                await self._page.wait_for_timeout(120)
+
+            if removed_total > 0:
+                logger.info(f"[UpSeller] Filtro anterior removido via X ({removed_total} clique(s))")
+                await self._page.wait_for_timeout(220)
+
+            # Abre dropdown.
+            abriu = {"found": False}
+            trigger = store_box.locator(".inp_box").first
+            if await trigger.count() <= 0:
+                trigger = store_box
+            if await trigger.count() > 0:
+                try:
+                    await trigger.scroll_into_view_if_needed(timeout=1200)
+                except Exception:
+                    pass
+                try:
+                    await trigger.click(timeout=1800)
+                    abriu = {"found": True}
+                except Exception:
+                    abriu = {"found": False}
+            if not abriu.get("found"):
+                try:
+                    abriu_js = await self._page.evaluate("""
+                        (idx) => {
+                            const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                            if (!boxes.length) return false;
+                            const box = boxes[Math.max(0, Math.min(idx, boxes.length - 1))];
+                            if (!box) return false;
+                            const trg = box.querySelector('.inp_box') || box;
+                            trg.click();
+                            return true;
+                        }
+                    """, store_box_idx)
+                    abriu = {"found": bool(abriu_js)}
+                except Exception:
+                    abriu = {"found": False}
+            if not abriu.get("found"):
+                logger.warning("[UpSeller] Trigger do filtro multiloja nao encontrado")
+                return False
+
+            await self._page.wait_for_timeout(700)
+
+            wrap_selector = await self._page.evaluate("""
+                (() => {
+                    const wraps = Array.from(document.querySelectorAll('.my_select_dropdown_wrap'));
+                    const wrap = wraps.find((w) => {
+                        const st = window.getComputedStyle(w);
+                        const r = w.getBoundingClientRect();
+                        const visible = st.display !== 'none' && st.visibility !== 'hidden' && r.width > 120 && r.height > 120;
+                        const hasLabels = w.querySelectorAll('label.ant-checkbox-wrapper').length > 0;
+                        return visible && hasLabels;
+                    }) || null;
+                    if (!wrap) return null;
+                    if (!wrap.id) wrap.id = 'store_filter_wrap_multi_' + Date.now();
+                    return '#' + wrap.id;
+                })()
+            """)
+            if not wrap_selector:
+                logger.warning("[UpSeller] Dropdown de lojas nao encontrado (multiloja). Tentando ant-select...")
+                return await self._filtrar_por_lojas_ant_select(nomes)
+
+            # Desmarca "Tudo".
+            await self._page.evaluate("""
+                (wrapSelector) => {
+                    const wrap = document.querySelector(wrapSelector);
+                    if (!wrap) return;
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .trim();
+                    const allLabel = Array.from(wrap.querySelectorAll('label.ant-checkbox-wrapper'))
+                        .find((l) => normalize(l.textContent).includes('tudo'));
+                    if (allLabel && allLabel.classList.contains('ant-checkbox-wrapper-checked')) {
+                        allLabel.click();
+                    }
+                }
+            """, wrap_selector)
+            await self._page.wait_for_timeout(220)
+
+            search_input = await self._page.query_selector(
+                f'{wrap_selector} .option_search input.ant-input, {wrap_selector} input.ant-input, '
+                f'{wrap_selector} input[type="text"], {wrap_selector} input[type="search"]'
+            )
+
+            selecionadas = []
+            faltantes = []
+            for nome in nomes:
+                if search_input:
+                    try:
+                        await search_input.fill(nome)
+                    except Exception:
+                        pass
+                    await self._page.wait_for_timeout(350)
+
+                match = await self._page.evaluate("""
+                    (args) => {
+                        const nomeLoja = args.nomeLoja;
+                        const wrapSelector = args.wrapSelector;
+                        const wrap = document.querySelector(wrapSelector);
+                        if (!wrap) return { idx: -1, method: '', checked: false };
+                        const labels = Array.from(wrap.querySelectorAll('label.ant-checkbox-wrapper'));
+                        const normalizar = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+                        const target = normalizar(nomeLoja);
+                        let idx = -1;
+                        let method = '';
+                        for (let i = 0; i < labels.length; i++) {
+                            const text = normalizar(labels[i].textContent || '');
+                            if (text === target) {
+                                idx = i;
+                                method = 'exact';
+                                break;
+                            }
+                        }
+                        if (idx < 0) {
+                            for (let i = 0; i < labels.length; i++) {
+                                const text = normalizar(labels[i].textContent || '');
+                                if (text.includes(target) || target.includes(text)) {
+                                    idx = i;
+                                    method = 'partial';
+                                    break;
+                                }
+                            }
+                        }
+                        if (idx < 0) return { idx: -1, method: '', checked: false };
+                        const el = labels[idx];
+                        const checked =
+                            el.classList.contains('ant-checkbox-wrapper-checked') ||
+                            !!el.querySelector('.ant-checkbox-checked, input[type="checkbox"]:checked');
+                        return {
+                            idx,
+                            method,
+                            checked,
+                            selectedText: (el.textContent || '').trim(),
+                        };
+                    }
+                """, {"nomeLoja": nome, "wrapSelector": wrap_selector})
+
+                idx = int((match or {}).get("idx", -1) or -1)
+                if idx < 0:
+                    faltantes.append(nome)
+                    continue
+
+                if not bool((match or {}).get("checked")):
+                    try:
+                        opcoes = self._page.locator(f"{wrap_selector} label.ant-checkbox-wrapper")
+                        if await opcoes.count() > idx:
+                            await opcoes.nth(idx).click(timeout=2000)
+                            await self._page.wait_for_timeout(120)
+                        else:
+                            faltantes.append(nome)
+                            continue
+                    except Exception:
+                        faltantes.append(nome)
+                        continue
+                selecionadas.append((match or {}).get("selectedText") or nome)
+
+            if search_input:
+                try:
+                    await search_input.fill("")
+                    await self._page.wait_for_timeout(120)
+                except Exception:
+                    pass
+
+            if not selecionadas:
+                logger.warning("[UpSeller] Nenhuma loja foi marcada no filtro multiloja")
+                return False
+            if faltantes:
+                logger.warning(f"[UpSeller] Lojas nao encontradas no filtro multiloja: {faltantes}")
+                return False
+
+            # Salvar.
+            clicou_salvar = False
+            for sel in [
+                f"{wrap_selector} .option_action .d_ib:text-is('Salvar')",
+                f"{wrap_selector} .option_action button:text-is('Salvar')",
+                f"{wrap_selector} .option_action a:text-is('Salvar')",
+                f"{wrap_selector} .option_action span:text-is('Salvar')",
+                f"{wrap_selector} .option_action div:text-is('Salvar')",
+            ]:
+                loc = self._page.locator(sel).first
+                if await loc.count() <= 0:
+                    continue
+                try:
+                    await loc.click(timeout=2200)
+                    clicou_salvar = True
+                    break
+                except Exception:
+                    continue
+            if not clicou_salvar:
+                logger.warning("[UpSeller] Botao 'Salvar' nao encontrado no multiloja; tentando fechar com Enter")
+                try:
+                    await self._page.keyboard.press("Enter")
+                except Exception:
+                    pass
+
+            try:
+                await self._page.keyboard.press("Escape")
+                await self._page.wait_for_timeout(200)
+                await self._page.evaluate("document.body.click()")
+            except Exception:
+                pass
+
+            try:
+                await self._page.wait_for_selector(wrap_selector, state='hidden', timeout=5000)
+            except Exception:
+                logger.warning("[UpSeller] Dropdown multiloja permaneceu aberto apos salvar")
+
+            await self._page.wait_for_timeout(1700)
+            await self.screenshot("filtro_lojas_multi")
+            logger.info(f"[UpSeller] Filtro multiloja aplicado e salvo ({len(selecionadas)} loja(s))")
+            return True
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao filtrar por lojas: {e}")
+            return False
+
+    async def _aplicar_filtro_loja_seguro(self, nome_loja: str, contexto: str = "") -> bool:
+        """
+        Aplica filtro de loja com retries e confirma na tabela.
+        Este helper e o caminho unico para evitar vazar pedidos de outras lojas.
+        """
+        nome = (nome_loja or "").strip()
+        if not nome:
+            return True
+
+        ctx = f" ({contexto})" if contexto else ""
+        for tentativa in range(1, 4):
+            filtrou = await self._filtrar_por_loja(nome)
+            if not filtrou:
+                logger.warning(
+                    f"[UpSeller] Tentativa {tentativa}/3: falha ao aplicar filtro '{nome}'{ctx}"
+                )
+                await self._page.wait_for_timeout(700)
+                continue
+
+            await self._page.wait_for_timeout(1200)
+            tabela_ok = await self._tabela_filtrada_para_loja(nome)
+            if tabela_ok:
+                logger.info(
+                    f"[UpSeller] Filtro confirmado para loja '{nome}'{ctx} (tentativa {tentativa}/3)"
+                )
+                return True
+
+            logger.warning(
+                f"[UpSeller] Tentativa {tentativa}/3: filtro '{nome}' nao confirmado na tabela{ctx}"
+            )
+            await self._page.wait_for_timeout(800)
+
+        logger.error(
+            f"[UpSeller] Filtro por loja '{nome}' NAO confirmado apos 3 tentativas{ctx}"
+        )
+        return False
+
+    async def _aplicar_filtro_lojas_seguro(self, nomes_lojas: List[str], contexto: str = "") -> bool:
+        """
+        Aplica filtro de MULTIPLAS lojas com retries e confirma na tabela.
+        """
+        nomes = self._normalizar_lista_lojas_filtro(nomes_lojas)
+        if not nomes:
+            return True
+        if len(nomes) == 1:
+            return await self._aplicar_filtro_loja_seguro(nomes[0], contexto=contexto)
+
+        ctx = f" ({contexto})" if contexto else ""
+        for tentativa in range(1, 4):
+            filtrou = await self._filtrar_por_lojas(nomes)
+            if not filtrou:
+                logger.warning(
+                    f"[UpSeller] Tentativa {tentativa}/3: falha ao aplicar filtro multiloja{ctx}"
+                )
+                await self._page.wait_for_timeout(700)
+                continue
+
+            await self._page.wait_for_timeout(1200)
+            tabela_ok = await self._tabela_filtrada_para_lojas(nomes)
+            if tabela_ok:
+                logger.info(
+                    f"[UpSeller] Filtro multiloja confirmado ({len(nomes)} lojas){ctx} "
+                    f"(tentativa {tentativa}/3)"
+                )
+                return True
+
+            logger.warning(
+                f"[UpSeller] Tentativa {tentativa}/3: filtro multiloja nao confirmado na tabela{ctx}"
+            )
+            await self._page.wait_for_timeout(800)
+
+        logger.error(
+            f"[UpSeller] Filtro multiloja NAO confirmado apos 3 tentativas{ctx}"
+        )
+        return False
+
+    async def _abrir_pagina_para_enviar(self) -> None:
+        """Navega para /order/to-ship e garante foco no item 'Para Enviar'."""
+        try:
+            await self._page.goto(UPSELLER_PEDIDOS, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(1800)
+            await self._fechar_popups()
+            await self._page.wait_for_timeout(300)
+            await self._page.evaluate("""
+                (() => {
+                    const nodes = document.querySelectorAll('li, a, span, div');
+                    for (const el of nodes) {
+                        const t = (el.textContent || '').trim();
+                        if (/^Para Enviar(\\s+\\d+)?$/.test(t)) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 5 && r.height > 5 && r.height < 120) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+                })()
+            """)
+            await self._page.wait_for_timeout(1100)
+        except Exception:
+            pass
+
+    async def _contagem_precisa_por_loja(self, nomes_lojas: List[str], mapa_fallback: Dict[str, dict]) -> List[dict]:
+        """
+        Recalcula quantidade por loja aplicando filtro loja-a-loja e lendo
+        a contagem da aba 'Para Programar' (mais confiavel para uso no sistema).
+        """
+        if not nomes_lojas:
+            return []
+
+        lojas_precisas = []
+        # Sempre iniciar em contexto limpo para evitar herdar estado de outra rotina
+        # (ex.: pagina/aba diferente apos contar "Para Emitir"/"Para Imprimir").
+        try:
+            await self._abrir_pagina_para_enviar()
+            await self._limpar_filtro_loja()
+            await self._page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+        for idx, nome in enumerate(nomes_lojas, start=1):
+            nome_limpo = (nome or '').strip()
+            if not nome_limpo:
+                continue
+            key = nome_limpo.casefold()
+            fallback = mapa_fallback.get(key, {})
+            pedidos_fallback = int(fallback.get("pedidos", 0) or 0)
+            marketplace_fallback = (fallback.get("marketplace") or '').strip()
+
+            try:
+                logger.info(f"[UpSeller] Contagem precisa ({idx}/{len(nomes_lojas)}): {nome_limpo}")
+                filtrou = await self._aplicar_filtro_loja_seguro(nome_limpo, contexto="contagem_precisa")
+                if not filtrou:
+                    # Em alguns layouts o filtro some apos navegações/paginacao.
+                    # Recarrega a tela base e tenta novamente.
+                    await self._abrir_pagina_para_enviar()
+                    filtrou = await self._aplicar_filtro_loja_seguro(
+                        nome_limpo, contexto="contagem_precisa_retry"
+                    )
+                if not filtrou:
+                    lojas_precisas.append({
+                        "nome": nome_limpo,
+                        "marketplace": marketplace_fallback,
+                        "pedidos": pedidos_fallback,
+                        "orders": [],
+                        "_src": "fallback_filtro",
+                    })
+                    continue
+
+                # Confirmacao final do filtro antes de mudar de aba.
+                tabela_ok = await self._tabela_filtrada_para_loja(nome_limpo)
+                if not filtrou or not tabela_ok:
+                    lojas_precisas.append({
+                        "nome": nome_limpo,
+                        "marketplace": marketplace_fallback,
+                        "pedidos": pedidos_fallback,
+                        "orders": [],
+                        "_src": "fallback_tabela",
+                    })
+                    continue
+
+                await self._abrir_subaba_para_programar()
+                await self._page.wait_for_timeout(450)
+
+                # Garantir que o filtro da loja permaneceu aplicado apos trocar de aba.
+                tabela_ok_pos_aba = await self._tabela_filtrada_para_loja(nome_limpo)
+                if not tabela_ok_pos_aba:
+                    lojas_precisas.append({
+                        "nome": nome_limpo,
+                        "marketplace": marketplace_fallback,
+                        "pedidos": pedidos_fallback,
+                        "orders": [],
+                        "_src": "fallback_pos_aba",
+                    })
+                    continue
+
+                # Modo rapido e seguro:
+                # - evita paginacao loja-a-loja (lento e sujeito a perder filtro)
+                # - usa contadores da aba filtrada + linhas visiveis
+                pedidos_programar = await self._ler_contagem_para_programar()
+                pedidos_subabas = await self._ler_total_subabas()
+                linhas_visiveis = await self._contar_linhas_visiveis_tabela()
+
+                if linhas_visiveis == 0:
+                    pedidos = 0
+                    src = "preciso_vazio"
+                elif pedidos_programar > 0:
+                    pedidos = pedidos_programar
+                    src = "preciso_prog"
+                elif pedidos_subabas > 0:
+                    pedidos = pedidos_subabas
+                    src = "preciso_tabs"
+                elif linhas_visiveis > 0:
+                    pedidos = linhas_visiveis
+                    src = "preciso_rows"
+                elif pedidos_fallback >= 0:
+                    pedidos = pedidos_fallback
+                    src = "fallback_db"
+                else:
+                    pedidos = 0
+                    src = "fallback"
+
+                marketplace = await self._ler_marketplace_primeira_linha() or marketplace_fallback
+
+                lojas_precisas.append({
+                    "nome": nome_limpo,
+                    "marketplace": marketplace,
+                    "pedidos": max(0, int(pedidos or 0)),
+                    "orders": [],
+                    "_src": (
+                        f"{src}(prog={pedidos_programar},"
+                        f"tabs={pedidos_subabas},rows={linhas_visiveis},fb={pedidos_fallback})"
+                    ),
+                })
+            except Exception as e:
+                logger.warning(f"[UpSeller] Falha na contagem precisa de '{nome_limpo}': {e}")
+                lojas_precisas.append({
+                    "nome": nome_limpo,
+                    "marketplace": marketplace_fallback,
+                    "pedidos": pedidos_fallback,
+                    "orders": [],
+                    "_src": "fallback_ex",
+                })
+
+        return lojas_precisas
+
+    async def contar_pedidos_loja(self, nome_loja: str, pedidos_fallback: int = 0, marketplace_fallback: str = "") -> Dict:
+        """
+        Atualiza contagem de UMA loja especifica usando filtro dedicado no UpSeller.
+
+        Args:
+            nome_loja: Nome da loja no UpSeller.
+            pedidos_fallback: Valor de fallback caso o filtro falhe.
+            marketplace_fallback: Marketplace de fallback.
+
+        Retorna:
+            {
+                "sucesso": bool,
+                "loja": {"nome","marketplace","pedidos","orders", "_src"?},
+                "erro": str (quando houver)
+            }
+        """
+        nome = (nome_loja or "").strip()
+        if not nome:
+            return {"sucesso": False, "erro": "loja_vazia"}
+
+        if not self._page:
+            await self._iniciar_navegador()
+
+        if not await self._esta_logado():
+            if not await self.login():
+                return {"sucesso": False, "erro": "nao_logado"}
+
+        try:
+            mapa_fallback = {
+                nome.casefold(): {
+                    "pedidos": max(0, int(pedidos_fallback or 0)),
+                    "marketplace": (marketplace_fallback or "").strip(),
+                }
+            }
+            lojas = await self._contagem_precisa_por_loja([nome], mapa_fallback)
+            if not lojas:
+                return {
+                    "sucesso": True,
+                    "loja": {
+                        "nome": nome,
+                        "marketplace": (marketplace_fallback or "").strip(),
+                        "pedidos": max(0, int(pedidos_fallback or 0)),
+                        "orders": [],
+                        "_src": "fallback_vazio",
+                    },
+                }
+            return {"sucesso": True, "loja": lojas[0]}
+        except Exception as e:
+            logger.warning(f"[UpSeller] Falha na contagem individual da loja '{nome}': {e}")
+            return {"sucesso": False, "erro": str(e)}
 
     # ===== HELPERS: Filtro de loja e configuracao de etiqueta =====
 
@@ -979,179 +3169,698 @@ class UpSellerScraper:
         """
         Filtra pedidos por loja no dropdown multi-checkbox do UpSeller.
 
-        O UpSeller usa um componente customizado (nao ant-select padrao):
-        - Trigger: .select_multiple_box > .inp_box com texto "Todas Lojas"
-        - Popup: .my_select_dropdown_wrap com search, checkboxes, Cancelar/Salvar
-        - Cada loja: label.ant-checkbox-wrapper dentro de .option_list
-        - Confirmacao: div "Salvar" dentro de .option_action
-
-        Args:
-            nome_loja: Nome da loja para filtrar (ex: "DAHIANE")
-
-        Retorna: True se filtrou com sucesso
+        Regra principal para trocar de loja:
+        - limpar a loja atual clicando no "X" do chip selecionado
+        - nao usar estrategia de "marcar/desmarcar tudo"
         """
         if not nome_loja:
-            return True  # Sem filtro = mostra todas
+            return True
 
         logger.info(f"[UpSeller] Filtrando por loja: '{nome_loja}'")
 
         try:
-            # 1. Abrir o popup clicando no trigger "Todas Lojas"
-            abriu = await self._page.evaluate("""
-                (() => {
-                    // Buscar o trigger do multi-select de lojas
-                    const triggers = document.querySelectorAll('.inp_box.ant-select-selection, .select_multiple_box .inp_box');
-                    for (const trigger of triggers) {
-                        const text = (trigger.textContent || '').trim();
-                        if (text.includes('Todas Lojas') || text.includes('Todas as Lojas') || text.includes('Loja')) {
-                            trigger.click();
-                            return { found: true, text: text.substring(0, 50) };
-                        }
-                    }
-                    // Fallback: buscar por classe do container
-                    const selectBox = document.querySelector('.select_multiple_box');
-                    if (selectBox) {
-                        const inp = selectBox.querySelector('.inp_box');
-                        if (inp) { inp.click(); return { found: true, text: 'select_multiple_box fallback' }; }
-                    }
-                    return { found: false };
-                })()
-            """)
+            await self._fechar_popups(max_tentativas=2)
+        except Exception:
+            pass
 
-            if not abriu or not abriu.get("found"):
-                logger.warning("[UpSeller] Trigger 'Todas Lojas' nao encontrado")
-                return False
+        try:
+            # Aguarda os filtros do topo estarem visiveis no DOM.
+            try:
+                await self._page.wait_for_selector(
+                    ".select_multiple_box, .select_multiple_box .inp_box",
+                    timeout=8000
+                )
+            except Exception:
+                await self._page.wait_for_timeout(800)
 
-            logger.info(f"[UpSeller] Popup de lojas aberto: {abriu}")
-            await self._page.wait_for_timeout(800)
-
-            # 2. Desmarcar "Tudo" se estiver marcado (queremos apenas 1 loja)
-            await self._page.evaluate("""
-                (() => {
-                    const wrap = document.querySelector('.my_select_dropdown_wrap');
-                    if (!wrap) return;
-                    const allCheck = wrap.querySelector('.all_check label.ant-checkbox-wrapper');
-                    if (allCheck && allCheck.classList.contains('ant-checkbox-wrapper-checked')) {
-                        allCheck.click(); // Desmarcar "Tudo"
-                    }
-                })()
-            """)
-            await self._page.wait_for_timeout(300)
-
-            # 3. Desmarcar todas as lojas que possam estar selecionadas
-            await self._page.evaluate("""
-                (() => {
-                    const wrap = document.querySelector('.my_select_dropdown_wrap');
-                    if (!wrap) return;
-                    const checked = wrap.querySelectorAll('.option_list label.ant-checkbox-wrapper-checked');
-                    for (const cb of checked) { cb.click(); }
-                })()
-            """)
-            await self._page.wait_for_timeout(300)
-
-            # 4. Usar o campo de busca para filtrar (facilita encontrar a loja)
-            search_input = await self._page.query_selector('.my_select_dropdown_wrap .option_search input.ant-input')
-            if search_input:
-                await search_input.fill(nome_loja)
-                await self._page.wait_for_timeout(500)
-                logger.info(f"[UpSeller] Buscou '{nome_loja}' no campo de pesquisa")
-
-            # 5. Selecionar a loja desejada pelo nome
-            selecionou = await self._page.evaluate("""
+            # 0) Antes de trocar de loja, remove selecao atual apenas pelo "X" do chip.
+            removed_total = 0
+            store_box_idx = await self._page.evaluate("""
                 (nomeLoja) => {
-                    const wrap = document.querySelector('.my_select_dropdown_wrap');
-                    if (!wrap) return { selected: false, error: 'wrap not found' };
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+                    const target = normalize(nomeLoja);
+                    const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                    if (!boxes.length) return -1;
 
-                    const labels = wrap.querySelectorAll('.option_list label.ant-checkbox-wrapper');
-                    const normalizar = (s) => s.toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
-                    const target = normalizar(nomeLoja);
-
-                    // Match exato primeiro
-                    for (const label of labels) {
-                        const text = normalizar(label.textContent || '');
-                        if (text === target) {
-                            if (!label.classList.contains('ant-checkbox-wrapper-checked')) {
-                                label.click();
-                            }
-                            return { selected: true, text: label.textContent.trim(), method: 'exact' };
+                    let bestIdx = 0;
+                    let bestScore = -9999;
+                    boxes.forEach((box, idx) => {
+                        const inp = box.querySelector('.inp_box');
+                        const txt = normalize(inp ? (inp.textContent || '') : (box.textContent || ''));
+                        const r = box.getBoundingClientRect();
+                        let score = 0;
+                        if (txt.includes('loja') || txt.includes('todas lojas') || txt.includes('todas as lojas')) score += 20;
+                        if (target && (txt.includes(target) || target.includes(txt))) score += 8;
+                        if (txt.includes('+')) score += 3;  // multi-selecao de lojas
+                        if (box.querySelector('.tag_item')) score += 2;
+                        if (r.y >= 40 && r.y <= 240) score += 4;
+                        if (r.width >= 120 && r.width <= 260) score += 2;
+                        if (score > bestScore) {
+                            bestScore = score;
+                            bestIdx = idx;
                         }
-                    }
-
-                    // Match parcial (contem)
-                    for (const label of labels) {
-                        const text = normalizar(label.textContent || '');
-                        if (text.includes(target) || target.includes(text)) {
-                            if (!label.classList.contains('ant-checkbox-wrapper-checked')) {
-                                label.click();
-                            }
-                            return { selected: true, text: label.textContent.trim(), method: 'partial' };
-                        }
-                    }
-
-                    return {
-                        selected: false,
-                        available: Array.from(labels).map(l => l.textContent.trim())
-                    };
+                    });
+                    if (bestScore < 0) return -1;
+                    return bestIdx;
                 }
             """, nome_loja)
+            try:
+                store_box_idx = int(store_box_idx)
+            except Exception:
+                store_box_idx = -1
+            if store_box_idx < 0:
+                try:
+                    dbg = await self._page.evaluate("""
+                        () => {
+                            const pick = (arr, n=6) => Array.from(arr).slice(0, n).map((el) => {
+                                const r = el.getBoundingClientRect();
+                                return {
+                                    cls: (el.className || '').toString().slice(0, 90),
+                                    txt: (el.textContent || '').trim().slice(0, 90),
+                                    y: Math.round(r.y),
+                                    w: Math.round(r.width),
+                                };
+                            });
+                            return {
+                                url: window.location.href,
+                                select_multiple_count: document.querySelectorAll('.select_multiple_box').length,
+                                ant_select_count: document.querySelectorAll('.ant-select').length,
+                                top_select_multiple: pick(document.querySelectorAll('.select_multiple_box')),
+                                top_ant_select: pick(document.querySelectorAll('.ant-select')),
+                                body_head: (document.body?.innerText || '').slice(0, 180),
+                            };
+                        }
+                    """)
+                    logger.warning(f"[UpSeller][FiltroDebug] caixa_loja_nao_encontrada: {dbg}")
+                except Exception:
+                    pass
+                logger.warning("[UpSeller] Caixa de filtro de loja nao encontrada. Tentando ant-select...")
+                return await self._filtrar_por_lojas_ant_select([nome_loja])
+            store_box = self._page.locator(".select_multiple_box").nth(store_box_idx)
+            for _ in range(12):
+                removed = False
+                for sel in [
+                    ".tag_item .anticon-close",
+                    "i[aria-label='icon: close']",
+                    ".ant-select-selection-item-remove",
+                    ".ant-select-selection-overflow-item .anticon-close",
+                    ".icon_clear.icon_item.anticon-close-circle",
+                    ".ant-select-clear",
+                ]:
+                    loc = store_box.locator(sel).first
+                    if await loc.count() <= 0:
+                        continue
+                    try:
+                        await loc.click(timeout=1200)
+                        removed = True
+                        break
+                    except Exception:
+                        continue
+                if not removed:
+                    break
+                removed_total += 1
+                await self._page.wait_for_timeout(140)
 
-            if not selecionou or not selecionou.get("selected"):
-                lojas_disp = selecionou.get("available", []) if selecionou else []
-                logger.warning(f"[UpSeller] Loja '{nome_loja}' nao encontrada. Disponiveis: {lojas_disp}")
-                # Cancelar e fechar popup
-                await self._page.evaluate("""
+            if removed_total > 0:
+                logger.info(f"[UpSeller] Loja anterior removida pelo X ({removed_total} clique(s))")
+                await self._page.wait_for_timeout(220)
+            logger.info(f"[UpSeller] Filtro de loja usando select_multiple_box idx={store_box_idx}")
+
+            # Helper JS para localizar o dropdown de lojas de forma dinamica.
+            find_wrap_js = """
+                () => {
+                    const normalize = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+                    const nodes = Array.from(document.querySelectorAll('div, section, aside'));
+                    let best = null;
+                    let bestScore = -1;
+                    for (const n of nodes) {
+                        const text = normalize(n.textContent || '');
+                        if (!text) continue;
+                        const hasSalvar = text.includes('salvar');
+                        const hasTudo = text.includes('tudo');
+                        const hasCancelar = text.includes('cancelar');
+                        const hasCheckbox = n.querySelector('label.ant-checkbox-wrapper, input[type="checkbox"]');
+                        const hasSearch = n.querySelector('input[type="text"], input.ant-input, input[type="search"]');
+                        const r = n.getBoundingClientRect();
+                        const isReasonableSize = r.width >= 180 && r.width <= 520 && r.height >= 140 && r.height <= 700;
+                        const isTopArea = r.y >= 40 && r.y <= 460;
+                        const score = (hasSalvar ? 4 : 0) + (hasTudo ? 4 : 0) + (hasCancelar ? 3 : 0) + (hasCheckbox ? 3 : 0) + (hasSearch ? 2 : 0) + (isReasonableSize ? 3 : 0) + (isTopArea ? 2 : 0);
+                        if (!hasSalvar || !hasTudo || !hasCheckbox) continue;
+                        if (score > bestScore) { best = n; bestScore = score; }
+                    }
+                    if (!best || bestScore < 10) return null;
+                    if (!best.id) best.id = 'dynamic_store_filter_wrap_' + Date.now();
+                    return '#' + best.id;
+                }
+            """
+
+            # 1) Abrir o popup de lojas.
+            abriu = {"found": False}
+            trigger = store_box.locator(".inp_box").first
+            if await trigger.count() <= 0:
+                # Fallback: alguns layouts nao possuem .inp_box interno.
+                trigger = store_box
+            if await trigger.count() > 0:
+                try:
+                    txt = (await trigger.text_content() or "").strip()
+                    try:
+                        await trigger.scroll_into_view_if_needed(timeout=1200)
+                    except Exception:
+                        pass
+                    await trigger.click(timeout=1800)
+                    abriu = {"found": True, "text": txt[:80]}
+                except Exception:
+                    abriu = {"found": False}
+            if not abriu.get("found"):
+                # Fallback hard: click via JS no box identificado.
+                try:
+                    abriu_js = await self._page.evaluate("""
+                        (idx) => {
+                            const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                            if (!boxes.length) return false;
+                            const box = boxes[Math.max(0, Math.min(idx, boxes.length - 1))];
+                            if (!box) return false;
+                            const trg = box.querySelector('.inp_box') || box;
+                            trg.click();
+                            return true;
+                        }
+                    """, store_box_idx)
+                    if abriu_js:
+                        abriu = {"found": True, "text": ""}
+                except Exception:
+                    pass
+            if not abriu or not abriu.get("found"):
+                logger.warning("[UpSeller] Trigger de loja nao encontrado")
+                return False
+
+            await self._page.wait_for_timeout(700)
+            wrap_selector = await self._page.evaluate("""
+                (() => {
+                    const wraps = Array.from(document.querySelectorAll('.my_select_dropdown_wrap'));
+                    const wrap = wraps.find((w) => {
+                        const st = window.getComputedStyle(w);
+                        const r = w.getBoundingClientRect();
+                        const visible = st.display !== 'none' && st.visibility !== 'hidden' && r.width > 120 && r.height > 120;
+                        const hasLabels = w.querySelectorAll('label.ant-checkbox-wrapper').length > 0;
+                        return visible && hasLabels;
+                    }) || null;
+                    if (!wrap) return null;
+                    if (!wrap.id) wrap.id = 'store_filter_wrap_' + Date.now();
+                    return '#' + wrap.id;
+                })()
+            """)
+            if not wrap_selector:
+                wrap_selector = await self._page.evaluate(find_wrap_js)
+            if not wrap_selector:
+                # Segunda tentativa: reabrir trigger e procurar wrapper padrao.
+                try:
+                    trigger_retry = store_box.locator(".inp_box").first
+                    if await trigger_retry.count() > 0:
+                        await trigger_retry.click(timeout=1500)
+                except Exception:
+                    pass
+                await self._page.wait_for_timeout(500)
+                wrap_selector = await self._page.evaluate("""
                     (() => {
-                        const cancel = document.querySelector('.my_select_dropdown_wrap .option_action .d_ib');
-                        if (cancel && cancel.textContent.trim() === 'Cancelar') cancel.click();
+                        const wraps = Array.from(document.querySelectorAll('.my_select_dropdown_wrap'));
+                        const wrap = wraps.find((w) => {
+                            const st = window.getComputedStyle(w);
+                            const r = w.getBoundingClientRect();
+                            const visible = st.display !== 'none' && st.visibility !== 'hidden' && r.width > 120 && r.height > 120;
+                            const hasLabels = w.querySelectorAll('label.ant-checkbox-wrapper').length > 0;
+                            return visible && hasLabels;
+                        }) || null;
+                        if (!wrap) return null;
+                        if (!wrap.id) wrap.id = 'store_filter_wrap_retry_' + Date.now();
+                        return '#' + wrap.id;
                     })()
                 """)
-                await self._page.wait_for_timeout(500)
+            if not wrap_selector:
+                logger.warning("[UpSeller] Nao encontrou dropdown de lojas dinamicamente")
+                return await self._filtrar_por_lojas_ant_select([nome_loja])
+
+            # 2) Garantir apenas que "Tudo" esteja desmarcado (sem estrategia de reset global).
+            await self._page.evaluate("""
+                (wrapSelector) => {
+                    const wrap = document.querySelector(wrapSelector);
+                    if (!wrap) return;
+                    const normalize = (s) => (s || '')
+                        .toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f]/g, '')
+                        .trim();
+                    const allLabel = Array.from(wrap.querySelectorAll('label.ant-checkbox-wrapper'))
+                        .find((l) => normalize(l.textContent).includes('tudo'));
+                    if (allLabel && allLabel.classList.contains('ant-checkbox-wrapper-checked')) {
+                        allLabel.click();
+                    }
+                }
+            """, wrap_selector)
+            await self._page.wait_for_timeout(220)
+
+            # 3) Buscar loja pelo nome.
+            search_input = await self._page.query_selector(
+                f'{wrap_selector} .option_search input.ant-input, {wrap_selector} input.ant-input, '
+                f'{wrap_selector} input[type="text"], {wrap_selector} input[type="search"]'
+            )
+            if search_input:
+                await search_input.fill(nome_loja)
+                await self._page.wait_for_timeout(450)
+
+            # 4) Selecionar loja alvo.
+            match = await self._page.evaluate("""
+                (args) => {
+                    const nomeLoja = args.nomeLoja;
+                    const wrapSelector = args.wrapSelector;
+                    const wrap = document.querySelector(wrapSelector);
+                    if (!wrap) return { idx: -1, method: '', available: [] };
+                    const labels = Array.from(wrap.querySelectorAll('label.ant-checkbox-wrapper'));
+                    const normalizar = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim();
+                    const target = normalizar(nomeLoja);
+                    let idx = -1;
+                    let method = '';
+                    for (let i = 0; i < labels.length; i++) {
+                        const text = normalizar(labels[i].textContent || '');
+                        if (text === target) {
+                            idx = i;
+                            method = 'exact';
+                            break;
+                        }
+                    }
+                    if (idx < 0) {
+                        for (let i = 0; i < labels.length; i++) {
+                            const text = normalizar(labels[i].textContent || '');
+                            if (text.includes(target) || target.includes(text)) {
+                                idx = i;
+                                method = 'partial';
+                                break;
+                            }
+                        }
+                    }
+                    return {
+                        idx,
+                        method,
+                        selectedText: idx >= 0 ? (labels[idx].textContent || '').trim() : '',
+                        available: labels.map((l) => (l.textContent || '').trim())
+                    };
+                }
+            """, {"nomeLoja": nome_loja, "wrapSelector": wrap_selector})
+            selecionou = {"selected": False, "text": "", "method": ""}
+            if isinstance(match, dict) and int(match.get("idx", -1)) >= 0:
+                idx = int(match.get("idx"))
+                opcoes = self._page.locator(f"{wrap_selector} label.ant-checkbox-wrapper")
+                if await opcoes.count() > idx:
+                    try:
+                        await opcoes.nth(idx).click(timeout=2000)
+                        selecionou = {
+                            "selected": True,
+                            "text": match.get("selectedText", ""),
+                            "method": match.get("method", ""),
+                        }
+                    except Exception:
+                        # Fallback: click JS direto no label.
+                        try:
+                            ok_click = await self._page.evaluate("""
+                                (args) => {
+                                    const wrap = document.querySelector(args.wrapSelector);
+                                    if (!wrap) return false;
+                                    const labels = Array.from(wrap.querySelectorAll('label.ant-checkbox-wrapper'));
+                                    const idx = args.idx;
+                                    if (idx < 0 || idx >= labels.length) return false;
+                                    labels[idx].click();
+                                    return true;
+                                }
+                            """, {"wrapSelector": wrap_selector, "idx": idx})
+                        except Exception:
+                            ok_click = False
+                        selecionou = {
+                            "selected": bool(ok_click),
+                            "text": match.get("selectedText", ""),
+                            "method": match.get("method", ""),
+                        }
+                else:
+                    selecionou = {"selected": False, "text": "", "method": ""}
+            else:
+                selecionou = {"selected": False, "text": "", "method": ""}
+            if not selecionou or not selecionou.get("selected"):
+                lojas_disp = match.get("available", []) if isinstance(match, dict) else []
+                logger.warning(f"[UpSeller] Loja '{nome_loja}' nao encontrada. Disponiveis: {lojas_disp}")
+                await self._page.evaluate("""
+                    (() => {
+                        const wrap = document.querySelector('.my_select_dropdown_wrap');
+                        if (!wrap) return;
+                        const cancel = Array.from(wrap.querySelectorAll('.option_action .d_ib, .option_action button, .option_action a, .option_action div'))
+                            .find((el) => ((el.textContent || '').trim().toLowerCase() === 'cancelar'));
+                        if (cancel) cancel.click();
+                    })()
+                """)
+                await self._page.wait_for_timeout(350)
                 return False
 
             logger.info(f"[UpSeller] Loja '{selecionou.get('text')}' marcada ({selecionou.get('method')})")
 
-            # 6. Clicar em "Salvar" para aplicar o filtro
-            await self._page.evaluate("""
-                (() => {
-                    const wrap = document.querySelector('.my_select_dropdown_wrap');
-                    if (!wrap) return;
-                    const actionDivs = wrap.querySelectorAll('.option_action .d_ib, .option_action div');
-                    for (const div of actionDivs) {
-                        if (div.textContent.trim() === 'Salvar') {
-                            div.click();
-                            return;
+            # 5) Salvar.
+            clicou_salvar = False
+            for sel in [
+                f"{wrap_selector} .option_action .d_ib:text-is('Salvar')",
+                f"{wrap_selector} .option_action button:text-is('Salvar')",
+                f"{wrap_selector} .option_action a:text-is('Salvar')",
+                f"{wrap_selector} .option_action span:text-is('Salvar')",
+                f"{wrap_selector} .option_action div:text-is('Salvar')",
+            ]:
+                loc = self._page.locator(sel).first
+                if await loc.count() <= 0:
+                    continue
+                try:
+                    await loc.click(timeout=2200)
+                    clicou_salvar = True
+                    break
+                except Exception:
+                    continue
+            if not clicou_salvar:
+                # Alguns layouts aplicam selecao sem botao "Salvar".
+                logger.warning("[UpSeller] Botao 'Salvar' nao encontrado; tentando confirmar sem salvar")
+                try:
+                    await self._page.keyboard.press("Enter")
+                except Exception:
+                    pass
+                try:
+                    await self._page.evaluate("document.body.click()")
+                except Exception:
+                    pass
+                await self._page.wait_for_timeout(350)
+
+            # Tenta fechar o dropdown e aguarda aplicar.
+            try:
+                await self._page.keyboard.press("Escape")
+                await self._page.wait_for_timeout(200)
+                # Clicar em area neutra via JS (evita clicar em botoes como Ordenar)
+                await self._page.evaluate("document.body.click()")
+            except Exception:
+                pass
+
+            fechou_dropdown = False
+            try:
+                await self._page.wait_for_selector(wrap_selector, state='hidden', timeout=5000)
+                fechou_dropdown = True
+            except Exception:
+                logger.warning("[UpSeller] Dropdown de loja permaneceu aberto apos salvar")
+
+            # 6) Validar trigger/chips de forma tolerante.
+            applied = await self._page.evaluate("""
+                (args) => {
+                    const nomeLoja = args.nomeLoja || '';
+                    const idxLoja = Number.isInteger(args.idx) ? args.idx : -1;
+                    const normalize = (s) => (s || '')
+                      .toLowerCase()
+                      .normalize('NFD')
+                      .replace(/[\\u0300-\\u036f]/g, '')
+                      .trim();
+                    const target = normalize(nomeLoja);
+                    const boxes = Array.from(document.querySelectorAll('.select_multiple_box'));
+                    const alvo = (idxLoja >= 0 && idxLoja < boxes.length) ? [boxes[idxLoja]] : boxes;
+                    let txt = '';
+                    let applied = false;
+                    let hasAll = false;
+                    let selectedLabels = [];
+                    for (const box of alvo) {
+                        const trigger = box.querySelector('.inp_box') || box;
+                        const txtLocal = trigger ? (trigger.textContent || '').trim() : '';
+                        const normLocal = normalize(txtLocal);
+                        if (!normLocal) continue;
+
+                        const labels = Array.from(
+                            box.querySelectorAll('.tag_item, .ant-select-selection-item, .ant-tag')
+                        )
+                            .map((el) => normalize(el.textContent || ''))
+                            .filter(Boolean);
+                        if (labels.length) selectedLabels = labels;
+
+                        if (normLocal.includes('todas') || normLocal.includes('tudo')) {
+                            hasAll = true;
+                        }
+                        if (normLocal.includes(target)) {
+                            txt = txtLocal;
+                            applied = true;
+                            break;
+                        }
+                        if (labels.some((lb) => lb === target || lb.includes(target) || target.includes(lb))) {
+                            txt = txtLocal;
+                            applied = true;
+                            break;
                         }
                     }
-                })()
-            """)
+                    return {
+                        applied,
+                        triggerText: txt,
+                        hasAll,
+                        selectedLabels,
+                    };
+                }
+            """, {"nomeLoja": nome_loja, "idx": store_box_idx})
+            if applied and applied.get("hasAll"):
+                logger.warning(
+                    f"[UpSeller] Trigger ainda mostra todas lojas para '{nome_loja}'"
+                )
+                ant_ok = await self._filtrar_por_lojas_ant_select([nome_loja])
+                if ant_ok:
+                    return True
+                return False
 
-            await self._page.wait_for_timeout(2000)  # Esperar tabela recarregar
+            if not applied or not applied.get("applied"):
+                # Algumas variacoes do UpSeller nao refletem o nome no trigger/chip.
+                # Nesses casos, a confirmacao final fica a cargo de _tabela_filtrada_para_loja.
+                logger.warning(
+                    f"[UpSeller] Filtro nao confirmado no trigger. trigger='{(applied or {}).get('triggerText', '')}'"
+                )
+                ant_ok = await self._filtrar_por_lojas_ant_select([nome_loja])
+                if ant_ok:
+                    return True
+                await self._page.wait_for_timeout(400)
+
+            await self._page.wait_for_timeout(2200)
             await self.screenshot(f"filtro_loja_{nome_loja[:20]}")
-            logger.info(f"[UpSeller] Filtro por loja '{nome_loja}' aplicado e salvo")
+            logger.info(
+                f"[UpSeller] Filtro por loja '{nome_loja}' aplicado e salvo (dropdown_fechado={fechou_dropdown})"
+            )
             return True
-
         except Exception as e:
             logger.error(f"[UpSeller] Erro ao filtrar por loja: {e}")
             return False
 
-    async def _configurar_formato_etiqueta(self) -> bool:
+    async def _configurar_formato_etiqueta(self, sem_rodape_upseller: bool = False) -> bool:
         """
-        Verifica se a configuracao de etiqueta ja esta salva no UpSeller.
+        Ajusta configuracao de impressao no UpSeller antes de baixar etiquetas.
 
-        As configuracoes de etiqueta sao salvas globalmente em:
-        UpSeller > Configuracoes > Configuracoes de Envio > Shopee
-        - Tipo: Etiqueta de Envio Personalizada
-        - Formato: PDF
-        - Tamanho: 10x15cm
-        - Lista de Separacao: Habilitada (SKU + Variante)
+        URL: /pt/settings/order/print-setting
 
-        Como as configs ja estao salvas, este metodo apenas loga confirmacao.
-        Se precisar configurar no futuro, acessar /pt/settings/shipping-shopee.
+        Objetivo principal:
+        - manter formato de etiqueta em PDF 10x15
+        - por padrao, preservar configuracao de lista de separacao/rodape do proprio UpSeller
+          (modo antigo que o cliente usa em producao)
+        - opcionalmente permitir desativar elementos extras quando sem_rodape_upseller=True.
 
-        Retorna: True (configs ja salvas no UpSeller)
+        Retorna:
+            True se conseguiu abrir a tela e salvar/aplicar sem erro fatal.
         """
-        logger.info("[UpSeller] Formato de etiqueta ja configurado no UpSeller (Personalizada + Lista Sep. 10x15cm)")
-        return True
+        try:
+            # Cache curto para nao reconfigurar em toda chamada.
+            if self._ultima_config_etiqueta_ts:
+                delta = (datetime.now() - self._ultima_config_etiqueta_ts).total_seconds()
+                if delta < 600:
+                    logger.info("[UpSeller] Configuracao de etiqueta reutilizada do cache")
+                    return True
+
+            if not self._page:
+                await self._iniciar_navegador()
+
+            if not await self._esta_logado():
+                if not await self.login():
+                    logger.warning("[UpSeller] Nao foi possivel configurar etiqueta (nao logado)")
+                    return False
+
+            logger.info("[UpSeller] Abrindo configuracao de impressao de etiqueta...")
+            await self._page.goto(UPSELLER_PRINT_SETTING, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(2500)
+            await self._fechar_popups()
+
+            resultado = await self._page.evaluate(
+                """
+                (opts) => {
+                    const norm = (s) => (s || '')
+                      .toLowerCase()
+                      .normalize('NFD')
+                      .replace(/[\\u0300-\\u036f]/g, '')
+                      .replace(/\\s+/g, ' ')
+                      .trim();
+
+                    const clickNode = (el) => {
+                        if (!el) return false;
+                        try {
+                            el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+                        } catch (_) {}
+                        const fire = (node) => {
+                            if (!node) return;
+                            ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((evt) => {
+                                try {
+                                    node.dispatchEvent(new MouseEvent(evt, { bubbles: true, cancelable: true, view: window }));
+                                } catch (_) {}
+                            });
+                        };
+                        fire(el);
+                        fire(el.closest('label'));
+                        fire(el.parentElement);
+                        return true;
+                    };
+
+                    const clicarOpcaoPorTexto = (palavras, preferirRadio = false) => {
+                        const wants = palavras.map(norm);
+                        const nodes = Array.from(document.querySelectorAll('label, span, div, button, a'));
+                        for (const node of nodes) {
+                            const txt = norm(node.textContent || '');
+                            if (!txt) continue;
+                            if (!wants.some((w) => txt.includes(w))) continue;
+                            if (preferirRadio) {
+                                const radio = node.querySelector('input[type="radio"]');
+                                if (radio) {
+                                    clickNode(radio);
+                                    return true;
+                                }
+                            }
+                            if (clickNode(node)) return true;
+                        }
+                        return false;
+                    };
+
+                    const setToggle = (keywords, enabled) => {
+                        const wants = keywords.map(norm);
+                        const labels = Array.from(document.querySelectorAll('label, div, span, tr, li'));
+                        for (const lb of labels) {
+                            const txt = norm(lb.textContent || '');
+                            if (!txt) continue;
+                            if (!wants.some((w) => txt.includes(w))) continue;
+
+                            const checkbox = lb.querySelector('input[type="checkbox"]');
+                            if (checkbox) {
+                                const checked = !!checkbox.checked;
+                                if (checked !== enabled) clickNode(checkbox);
+                                return true;
+                            }
+
+                            const sw = lb.querySelector('.ant-switch, [role="switch"]');
+                            if (sw) {
+                                const cls = (sw.className || '').toLowerCase();
+                                const isOn = cls.includes('ant-switch-checked') || sw.getAttribute('aria-checked') === 'true';
+                                if (isOn !== enabled) clickNode(sw);
+                                return true;
+                            }
+
+                            // Alguns layouts sao apenas botao/linha clicavel.
+                            if (clickNode(lb)) return true;
+                        }
+                        return false;
+                    };
+
+                    const passos = [];
+
+                    // Tentar manter formato padrao de etiqueta.
+                    if (clicarOpcaoPorTexto(['etiqueta personalizada', 'etiqueta de envio personalizada'], true)) {
+                        passos.push('tipo_personalizada');
+                    }
+                    if (clicarOpcaoPorTexto(['pdf'], true)) {
+                        passos.push('formato_pdf');
+                    }
+                    if (clicarOpcaoPorTexto(['10x15', '10 x 15', '10*15'], true)) {
+                        passos.push('tamanho_10x15');
+                    }
+
+                    if (opts.semRodape) {
+                        // Desativa itens que costumam adicionar conteudo extra no rodape/lista.
+                        const k1 = setToggle(
+                            ['lista de separacao', 'lista de separação', 'separacao', 'separação'],
+                            false
+                        );
+                        const k2 = setToggle(
+                            ['declaracao de conteudo', 'declaração de conteúdo', 'conteudo adicional', 'conteúdo adicional'],
+                            false
+                        );
+                        const k3 = setToggle(
+                            ['informacoes do produto', 'informações do produto', 'sku + variante', 'sku variante', 'show sku'],
+                            false
+                        );
+                        if (k1 || k2 || k3) passos.push('rodape_extras_desativados');
+                    }
+
+                    // Salvar configuracao.
+                    // IMPORTANTE: aqui estamos dentro de evaluate(), portanto nao pode usar
+                    // pseudo-seletores do Playwright como :has-text().
+                    let salvou = false;
+                    const candidatos = Array.from(
+                        document.querySelectorAll('button, a, [role="button"], .ant-btn, .ant-btn-primary')
+                    );
+                    for (const btn of candidatos) {
+                        const txt = norm(btn.textContent || btn.innerText || '');
+                        if (!txt) continue;
+                        if (
+                            txt.includes('salvar') ||
+                            txt.includes('save') ||
+                            txt.includes('confirmar') ||
+                            txt.includes('aplicar')
+                        ) {
+                            clickNode(btn);
+                            salvou = true;
+                            break;
+                        }
+                    }
+
+                    // Fallback: se nao encontrou por texto, tenta botao primario visivel.
+                    if (!salvou) {
+                        const primarios = Array.from(
+                            document.querySelectorAll('.ant-btn-primary, button[type="submit"]')
+                        );
+                        for (const btn of primarios) {
+                            const txt = norm(btn.textContent || btn.innerText || '');
+                            if (!txt || txt.includes('cancelar') || txt.includes('close') || txt.includes('fechar')) {
+                                continue;
+                            }
+                            clickNode(btn);
+                            salvou = true;
+                            break;
+                        }
+                    }
+
+                    return { ok: true, salvou, passos };
+                }
+                """,
+                {"semRodape": bool(sem_rodape_upseller)},
+            )
+
+            await self._page.wait_for_timeout(1400)
+            await self._fechar_popups()
+            await self.screenshot("print_setting_configurado")
+
+            if resultado and resultado.get("ok"):
+                passos = resultado.get("passos", [])
+                logger.info(
+                    "[UpSeller] Configuracao de etiqueta aplicada (sem_rodape=%s, salvou=%s, passos=%s)",
+                    sem_rodape_upseller,
+                    bool(resultado.get("salvou")),
+                    ",".join(passos) if passos else "nenhum",
+                )
+                self._ultima_config_etiqueta_ts = datetime.now()
+                return True
+
+            logger.warning("[UpSeller] Nao confirmou configuracao de etiqueta na pagina")
+            return False
+
+        except Exception as e:
+            logger.warning(f"[UpSeller] Falha ao configurar formato de etiqueta: {e}")
+            return False
 
     async def _aguardar_tracking(self, timeout_segundos: int = 120) -> bool:
         """
@@ -1213,7 +3922,689 @@ class UpSellerScraper:
         logger.warning(f"[UpSeller] Timeout aguardando tracking apos {timeout_segundos}s")
         return False
 
-    async def programar_envio(self, filtro_loja: str = None) -> dict:
+    async def emitir_nfe(self, filtro_loja: Union[str, List[str], None] = None) -> dict:
+        """
+        Emite NF-e dos pedidos pendentes em 'Para Emitir'.
+
+        Fluxo:
+          1. Navega para /pt/order/pending-invoice (Para Emitir)
+          2. Fecha popups/tutoriais
+          3. FILTRA POR LOJA se especificado
+          4. Verifica se ha pedidos na aba 'Para Emitir'
+          5. Seleciona todos os pedidos
+          6. Clica em 'Emitir Nota Fiscal' (botao batch no topo)
+          7. Confirma no modal se aparecer
+          8. Aguarda processamento
+
+        Args:
+            filtro_loja: Nome da loja (str) ou lista de lojas para filtrar (opcional, None = todas)
+
+        Retorna: dict com {total_emitidos, sucesso, mensagem}
+        """
+        if not self._page:
+            await self._iniciar_navegador()
+
+        # Emitir NF-e nao deve iniciar tentativa de login interativo.
+        # Se a sessao expirou, retorna erro claro para o usuario reconectar.
+        if not await self._esta_logado():
+            return {
+                "total_emitidos": 0,
+                "sucesso": False,
+                "mensagem": "Sessao expirada. Clique em Reconectar.",
+            }
+
+        logger.info("[UpSeller] Iniciando emissao de NF-e...")
+        resultado = {"total_emitidos": 0, "sucesso": False, "mensagem": ""}
+        filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+        filtro_desc = (
+            filtro_lojas[0] if len(filtro_lojas) == 1
+            else f"{len(filtro_lojas)} lojas selecionadas"
+        )
+
+        try:
+            # 1. Navegar para pagina "Para Emitir"
+            await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(3000)
+
+            # 2. Fechar popups/tutoriais
+            await self._fechar_popups()
+            await self._page.wait_for_timeout(1000)
+            await self._fechar_popups()
+
+            # 3. Clicar na aba "Para Emitir" para garantir que estamos na aba correta
+            clicou_tab = await self._page.evaluate("""
+                (() => {
+                    const candidates = document.querySelectorAll(
+                        '[role="tab"], .ant-tabs-tab, [class*="tab"], span, div, a'
+                    );
+                    for (const el of candidates) {
+                        const text = (el.textContent || '').trim();
+                        if (/^Para Emitir(\\s+\\d+)?$/.test(text)) {
+                            if (text.includes('Emitido') || text.includes('Falha'))
+                                continue;
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 5 && rect.width < 500 && rect.height < 100) {
+                                el.click();
+                                return { clicked: true, text: text };
+                            }
+                        }
+                    }
+                    return { clicked: false };
+                })()
+            """)
+            if clicou_tab and clicou_tab.get("clicked"):
+                logger.info(f"[UpSeller] Clicou na aba 'Para Emitir': {clicou_tab}")
+                await self._page.wait_for_timeout(2000)
+
+            await self._fechar_popups()
+
+            # 4. Ler contadores das tabs para evitar filtro em aba zerada.
+            cont_tabs_inicio = await self._ler_contadores_tabs_nfe()
+            total_para_emitir_tab = int(cont_tabs_inicio.get("para_emitir", 0) or 0)
+            if total_para_emitir_tab <= 0:
+                # Pequeno retry para evitar falso zero durante render.
+                await self._page.wait_for_timeout(450)
+                cont_tabs_retry = await self._ler_contadores_tabs_nfe()
+                total_para_emitir_tab = max(
+                    total_para_emitir_tab,
+                    int(cont_tabs_retry.get("para_emitir", 0) or 0),
+                )
+            logger.info(
+                "[UpSeller] Contadores NF-e (inicio): "
+                f"para_emitir={total_para_emitir_tab}, "
+                f"falha_emissao={int(cont_tabs_inicio.get('falha_na_emissao', 0) or 0)}, "
+                f"falha_subir={int(cont_tabs_inicio.get('falha_ao_subir', 0) or 0)}"
+            )
+
+            # 5. FILTRAR POR LOJA(S) apenas se houver itens em "Para Emitir".
+            # Em aba zerada, pular filtro poupa muito tempo.
+            if filtro_lojas and total_para_emitir_tab > 0:
+                if len(filtro_lojas) == 1:
+                    filtrou = await self._aplicar_filtro_loja_seguro(
+                        filtro_lojas[0], contexto="emitir_nfe"
+                    )
+                else:
+                    filtrou = await self._aplicar_filtro_lojas_seguro(
+                        filtro_lojas, contexto="emitir_nfe_lote"
+                    )
+                if not filtrou:
+                    logger.error(f"[UpSeller] Nao conseguiu filtrar por loja(s) '{filtro_desc}' em Para Emitir. Abortando.")
+                    resultado["mensagem"] = f"Falha ao aplicar filtro de loja(s): {filtro_desc}"
+                    return resultado
+                logger.info(f"[UpSeller] NF-e filtrado por loja(s): {filtro_desc}")
+            elif filtro_lojas and total_para_emitir_tab <= 0:
+                logger.info(
+                    "[UpSeller] Aba 'Para Emitir' com contador 0; "
+                    f"pulando filtro de loja nesta etapa ({filtro_desc})."
+                )
+
+            await self.screenshot("emitir_01_pagina_para_emitir")
+
+            # 6. Verificar se ha pedidos
+            page_text = await self._page.evaluate("document.body.innerText")
+
+            # Extrair quantidade
+            total_match = re.search(r'Para Emitir\s*(\d+)', page_text)
+            total_para_emitir = int(total_match.group(1)) if total_match else 0
+            logger.info(f"[UpSeller] Pedidos Para Emitir: {total_para_emitir}")
+
+            selecionados = 0
+            if total_para_emitir > 0 and "Nenhum Dado" not in page_text and "Total 0" not in page_text:
+                # 6. Selecionar todos os pedidos
+                try:
+                    select_all = await self._page.wait_for_selector(
+                        'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                        'thead input[type="checkbox"], '
+                        '.ant-table-header .ant-checkbox-wrapper',
+                        timeout=5000
+                    )
+                    await select_all.click()
+                    await self._page.wait_for_timeout(1000)
+                    logger.info("[UpSeller] Checkbox 'selecionar todos' clicado (NF-e)")
+
+                    sel_text = await self._page.evaluate("document.body.innerText")
+                    sel_match = re.search(r'Selecionado\s*(\d+)', sel_text)
+                    selecionados = int(sel_match.group(1)) if sel_match else total_para_emitir
+
+                except Exception:
+                    logger.warning("[UpSeller] Checkbox 'selecionar todos' nao encontrado, tentando individuais")
+                    checkboxes = await self._page.query_selector_all(
+                        'tbody .ant-checkbox-input, tr.top_row .ant-checkbox-input, '
+                        'tbody input[type="checkbox"]'
+                    )
+                    for cb in checkboxes[:100]:
+                        try:
+                            await cb.click()
+                            selecionados += 1
+                        except:
+                            pass
+                    await self._page.wait_for_timeout(500)
+
+                logger.info(f"[UpSeller] {selecionados} pedidos selecionados para emissao NF-e")
+                await self.screenshot("emitir_02_selecionados")
+
+                if selecionados > 0:
+                    # 7. Clicar no botao "Emitir Nota Fiscal" (batch na barra de acoes)
+                    clicou_btn = await self._page.evaluate("""
+                        (() => {
+                            const btns = document.querySelectorAll(
+                                'button.ant-btn, a.ant-btn, button.ant-btn-link, a.ant-btn-link'
+                            );
+                            for (const btn of btns) {
+                                const text = (btn.textContent || '').trim();
+                                if (text === 'Emitir Nota Fiscal' || text.includes('Emitir Nota Fiscal')) {
+                                    const rect = btn.getBoundingClientRect();
+                                    if (rect.width > 30 && rect.y < 400) {
+                                        btn.click();
+                                        return { clicked: true, text: text, y: Math.round(rect.y) };
+                                    }
+                                }
+                            }
+                            return { clicked: false };
+                        })()
+                    """)
+
+                    if not clicou_btn or not clicou_btn.get("clicked"):
+                        logger.warning("[UpSeller] JS nao encontrou 'Emitir Nota Fiscal', tentando Playwright")
+                        btn_emitir = self._page.locator('button:has-text("Emitir Nota Fiscal"), a:has-text("Emitir Nota Fiscal")').first
+                        if await btn_emitir.count() > 0:
+                            await btn_emitir.click(timeout=5000)
+                            logger.info("[UpSeller] Clicou 'Emitir Nota Fiscal' via locator")
+                        else:
+                            logger.error("[UpSeller] Botao 'Emitir Nota Fiscal' nao encontrado")
+                            await self.screenshot("emitir_erro_sem_botao")
+                            resultado["mensagem"] = "Botao 'Emitir Nota Fiscal' nao encontrado"
+                            return resultado
+                    else:
+                        logger.info(f"[UpSeller] Clicou 'Emitir Nota Fiscal': {clicou_btn}")
+
+                    await self._page.wait_for_timeout(2000)
+                    await self.screenshot("emitir_03_apos_click")
+
+                    # 8. Modal de confirmacao (se aparecer)
+                    try:
+                        modal_btn = await self._page.wait_for_selector(
+                            '.ant-modal button.ant-btn-primary',
+                            timeout=5000
+                        )
+                        if modal_btn:
+                            btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
+                            logger.info(f"[UpSeller] Modal NF-e encontrado, botao: '{btn_text}'")
+                            await modal_btn.click()
+                            logger.info("[UpSeller] Confirmou emissao NF-e no modal")
+                            await self._page.wait_for_timeout(3000)
+                    except Exception:
+                        logger.info("[UpSeller] Sem modal de confirmacao de emissao NF-e")
+
+                    await self._fechar_popups()
+                    await self.screenshot("emitir_04_apos_confirmar")
+
+                    # 9. Aguardar processamento e verificar resultado
+                    logger.info("[UpSeller] Aguardando processamento NF-e (15s)...")
+                    await self._page.wait_for_timeout(15000)
+
+                    await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+                    await self._page.wait_for_timeout(3000)
+                    await self._fechar_popups()
+
+                    if filtro_lojas:
+                        if len(filtro_lojas) == 1:
+                            await self._aplicar_filtro_loja_seguro(
+                                filtro_lojas[0], contexto="emitir_nfe_pos"
+                            )
+                        else:
+                            await self._aplicar_filtro_lojas_seguro(
+                                filtro_lojas, contexto="emitir_nfe_lote_pos"
+                            )
+
+                    new_text = await self._page.evaluate("document.body.innerText")
+                    new_match = re.search(r'Para Emitir\s*(\d+)', new_text)
+                    novo_total = int(new_match.group(1)) if new_match else 0
+                    emitidos_real = total_para_emitir - novo_total
+                    if emitidos_real < 0:
+                        emitidos_real = selecionados
+
+                    logger.info(f"[UpSeller] NF-e - Antes: {total_para_emitir}, Agora: {novo_total}, Emitidos: {emitidos_real}")
+                    await self.screenshot("emitir_05_finalizado")
+
+                    resultado["total_emitidos"] = emitidos_real if emitidos_real > 0 else selecionados
+                    resultado["sucesso"] = True
+                    resultado["mensagem"] = f"{resultado['total_emitidos']} NF-e emitidas com sucesso"
+                    logger.info(f"[UpSeller] Emissao NF-e concluida: {resultado['total_emitidos']}")
+                else:
+                    logger.info("[UpSeller] Para Emitir > 0, mas sem itens selecionados para emissao em lote")
+                    resultado["sucesso"] = True
+                    resultado["mensagem"] = "Nenhum pedido selecionado na aba Para Emitir"
+            else:
+                # Nao aborta aqui: ainda precisamos tratar abas de falha.
+                resultado["sucesso"] = True
+                resultado["mensagem"] = "Nenhum pedido na aba Para Emitir"
+                logger.info("[UpSeller] Aba 'Para Emitir' com 0 itens. Seguindo para reprocessar abas de falha.")
+
+            # === 10. Tentar reprocessar "Falha na Emissao" ===
+            falha_result = {}
+            try:
+                # Reaproveita a lista normalizada para manter o mesmo escopo
+                # de filtro usado na etapa principal de emissao.
+                falha_result = await self._retentar_falha_emissao(filtro_loja=filtro_lojas)
+                if falha_result.get("total_retentados", 0) > 0:
+                    resultado["total_emitidos"] += falha_result.get("sucesso_reemissao", 0)
+                    resultado["mensagem"] = (
+                        f"{resultado['total_emitidos']} NF-e emitidas "
+                        f"({falha_result.get('sucesso_reemissao', 0)} re-emitidas de falhas)"
+                    )
+                if falha_result.get("falhas_persistentes", 0) > 0:
+                    resultado["aviso_falhas"] = (
+                        f"Atencao: {falha_result['falhas_persistentes']} NF-e com falha persistente. "
+                        f"Verifique no UpSeller (abas 'Falha na Emissao' e 'Falha ao subir')."
+                    )
+                    resultado["falhas_persistentes"] = falha_result["falhas_persistentes"]
+                if falha_result.get("motivos_falhas"):
+                    resultado["motivos_falhas"] = falha_result.get("motivos_falhas", [])[:8]
+            except Exception as e_falha:
+                logger.warning(f"[UpSeller] Erro ao retentar falhas de emissao: {e_falha}")
+
+            # IMPORTANTE:
+            # A acao "Emitir Notas Fiscais" NAO deve gerar etiquetas.
+            # Aqui mantemos somente o fluxo de NF-e (incluindo retentativa em abas de falha).
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao emitir NF-e: {e}")
+            resultado["mensagem"] = str(e)
+            await self.screenshot("emitir_erro")
+
+        return resultado
+
+    async def _retentar_falha_emissao(self, filtro_loja: Union[str, List[str], None] = None) -> dict:
+        """
+        Reprocessa falhas de NF-e nas abas:
+        - Falha na Emissao
+        - Falha ao subir
+
+        Se houver falha persistente, retorna tambem motivos resumidos para aviso ao usuario.
+        """
+        resultado = {
+            "total_retentados": 0,
+            "sucesso_reemissao": 0,
+            "falhas_persistentes": 0,
+            "mensagem": "",
+            "motivos_falhas": [],
+            "detalhes_abas": [],
+        }
+        filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+
+        try:
+            logger.info("[UpSeller] Reprocessando abas de falha de NF-e...")
+
+            abas_alvo = [
+                {
+                    "nome": "Falha na Emissao",
+                    "alvos": ["falha na emissao", "falha emissao"],
+                    "key": "falha_na_emissao",
+                },
+                {
+                    "nome": "Falha ao subir",
+                    "alvos": ["falha ao subir"],
+                    "key": "falha_ao_subir",
+                },
+            ]
+
+            async def _clicar_aba_por_alvo(alvos):
+                return await self._page.evaluate(
+                    """
+                    (targets) => {
+                        const normalize = (s) => (s || '')
+                          .toLowerCase()
+                          .normalize('NFD')
+                          .replace(/[\\u0300-\\u036f]/g, '')
+                          .replace(/\\s+/g, ' ')
+                          .trim();
+                        const tgts = (targets || []).map(normalize).filter(Boolean);
+                        const nodes = document.querySelectorAll('[role="tab"], .ant-tabs-tab');
+                        for (const el of nodes) {
+                            const tRaw = (el.textContent || '').trim();
+                            const t = normalize(tRaw);
+                            if (!t) continue;
+                            if (t.includes('para emitir')) continue;
+                            if (t.includes('emitido')) continue;
+                            if (!tgts.some(x => t.includes(x))) continue;
+                            const r = el.getBoundingClientRect();
+                            if (r.width > 5 && r.width < 500 && r.height > 5 && r.height < 100 && r.y < 420) {
+                                el.click();
+                                return { clicked: true, text: tRaw };
+                            }
+                        }
+                        return { clicked: false, text: '' };
+                    }
+                    """,
+                    alvos or [],
+                )
+
+            async def _ler_contador_tab_por_alvo(alvos):
+                try:
+                    tgts = [
+                        re.sub(r"\s+", " ", (str(x or "")).strip().casefold())
+                        for x in (alvos or [])
+                    ]
+                    cont = await self._ler_contadores_tabs_nfe()
+                    if any("falha ao subir" in t for t in tgts):
+                        return int(cont.get("falha_ao_subir", 0) or 0)
+                    if any(("falha na emissao" in t) or ("falha emissao" in t) for t in tgts):
+                        return int(cont.get("falha_na_emissao", 0) or 0)
+                    if any("emitindo" in t for t in tgts):
+                        return int(cont.get("emitindo", 0) or 0)
+                    if any("para emitir" in t for t in tgts):
+                        return int(cont.get("para_emitir", 0) or 0)
+                    return 0
+                except Exception:
+                    return 0
+
+            async def _aba_ativa_confere_alvo(alvos):
+                try:
+                    ok = await self._page.evaluate(
+                        """
+                        (targets) => {
+                            const normalize = (s) => (s || '')
+                              .toLowerCase()
+                              .normalize('NFD')
+                              .replace(/[\\u0300-\\u036f]/g, '')
+                              .replace(/\\s+/g, ' ')
+                              .trim();
+                            const tgts = (targets || []).map(normalize).filter(Boolean);
+                            const active = document.querySelector('.ant-tabs-tab-active, [role="tab"][aria-selected="true"]');
+                            const txt = normalize(active ? (active.textContent || '') : '');
+                            if (!txt || !tgts.length) return false;
+                            if (txt.includes('para emitir') || txt.includes('emitido')) return false;
+                            return tgts.some((x) => txt.includes(x));
+                        }
+                        """,
+                        alvos or [],
+                    )
+                    return bool(ok)
+                except Exception:
+                    return False
+
+            async def _contar_itens_aba_atual():
+                return await self._page.evaluate("""
+                    (() => {
+                        const txt = (document.body.innerText || '').trim();
+                        if (txt.includes('Nenhum Dado') || txt.includes('Total 0')) return 0;
+
+                        const active = document.querySelector('.ant-tabs-tab-active, .ant-tabs-tab.ant-tabs-tab-active');
+                        if (active) {
+                            const at = (active.textContent || '').trim();
+                            const mAt = at.match(/(\\d+)\\s*$/);
+                            if (mAt) return parseInt(mAt[1], 10) || 0;
+                        }
+
+                        const topRows = document.querySelectorAll('tbody tr.top_row, tr.top_row').length;
+                        if (topRows > 0) return topRows;
+                        const dataRows = document.querySelectorAll('tbody tr.ant-table-row, tbody tr[data-row-key], tbody tr.row.my_table_border').length;
+                        return dataRows > 0 ? dataRows : 0;
+                    })()
+                """)
+
+            async def _coletar_motivos_visiveis():
+                motivos = await self._page.evaluate("""
+                    (() => {
+                        const out = [];
+                        const seen = new Set();
+                        const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+                        const rows = document.querySelectorAll('tbody tr, tr.top_row, tr.row.my_table_border');
+                        const re = /(erro|falha|rejei|inv[aá]l|duplic|cpf|cnpj|ncm|icms|cep|uf|xml|assinatur|schema|timeout)/i;
+                        for (const row of rows) {
+                            const txt = norm(row.textContent || '');
+                            if (!txt) continue;
+                            if (!re.test(txt)) continue;
+                            const s = txt.slice(0, 180);
+                            const key = s.toLowerCase();
+                            if (!seen.has(key)) {
+                                seen.add(key);
+                                out.push(s);
+                            }
+                            if (out.length >= 8) break;
+                        }
+                        return out;
+                    })()
+                """)
+                return [str(x).strip() for x in (motivos or []) if str(x or "").strip()]
+
+            async def _executar_batch_aba():
+                selecionados = 0
+                try:
+                    select_all = await self._page.wait_for_selector(
+                        'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                        'thead input[type="checkbox"], .ant-table-header .ant-checkbox-wrapper',
+                        timeout=5000
+                    )
+                    await select_all.click()
+                    await self._page.wait_for_timeout(900)
+                    sel_txt = await self._page.evaluate("document.body.innerText")
+                    m_sel = re.search(r'Selecionad[oa]s?\s*(\d+)', sel_txt)
+                    selecionados = int(m_sel.group(1)) if m_sel else 0
+                except Exception:
+                    checkboxes = await self._page.query_selector_all(
+                        'tbody .ant-checkbox-input, tbody input[type="checkbox"]'
+                    )
+                    for cb in checkboxes[:200]:
+                        try:
+                            await cb.click()
+                            selecionados += 1
+                        except Exception:
+                            pass
+                    await self._page.wait_for_timeout(500)
+
+                if selecionados <= 0:
+                    return {"ok": False, "motivo": "Nenhum pedido selecionado"}
+
+                clicou = await self._page.evaluate("""
+                    (() => {
+                        const targets = ['Emitir Nota Fiscal', 'Subir', 'Reenviar', 'Reprocessar'];
+                        const btns = document.querySelectorAll('button.ant-btn, a.ant-btn, button, a');
+                        for (const btn of btns) {
+                            const t = (btn.textContent || '').trim();
+                            if (!t) continue;
+                            if (!targets.some(x => t.includes(x))) continue;
+                            const r = btn.getBoundingClientRect();
+                            if (r.width > 30 && r.height > 10 && r.y < 420) {
+                                btn.click();
+                                return { clicked: true, text: t };
+                            }
+                        }
+                        return { clicked: false, text: '' };
+                    })()
+                """)
+                if not clicou or not clicou.get("clicked"):
+                    return {"ok": False, "motivo": "Botao de reprocessamento nao encontrado"}
+
+                try:
+                    modal_btn = await self._page.wait_for_selector(
+                        '.ant-modal button.ant-btn-primary',
+                        timeout=5000
+                    )
+                    if modal_btn:
+                        await modal_btn.click()
+                        await self._page.wait_for_timeout(2000)
+                except Exception:
+                    pass
+
+                return {"ok": True}
+
+            # Leitura inicial dos contadores para pular abas zeradas sem gastar tempo.
+            contadores_hint = {}
+            try:
+                await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+                await self._page.wait_for_timeout(1700)
+                await self._fechar_popups()
+                contadores_hint = await self._ler_contadores_tabs_nfe()
+            except Exception:
+                contadores_hint = await self._ler_contadores_tabs_nfe()
+
+            total_falhas_hint = int(contadores_hint.get("falha_na_emissao", 0) or 0) + int(
+                contadores_hint.get("falha_ao_subir", 0) or 0
+            )
+            if total_falhas_hint <= 0:
+                logger.info("[UpSeller] Abas de falha com contador 0; pulando reprocessamento.")
+                for aba in abas_alvo:
+                    resultado["detalhes_abas"].append({
+                        "aba": aba["nome"],
+                        "antes": 0,
+                        "sucesso": 0,
+                        "persistentes": 0,
+                        "erro": "",
+                        "pulado": "contador_zero",
+                    })
+                resultado["mensagem"] = "Nenhuma falha para reprocessar"
+                return resultado
+
+            for aba in abas_alvo:
+                nome_aba = aba["nome"]
+                slug_aba = re.sub(r'[^a-z0-9]+', '_', (nome_aba or '').lower()).strip('_') or "falha"
+                detalhe = {
+                    "aba": nome_aba,
+                    "antes": 0,
+                    "sucesso": 0,
+                    "persistentes": 0,
+                    "erro": "",
+                }
+                hint_aba = int(contadores_hint.get(aba.get("key", ""), 0) or 0)
+                if hint_aba <= 0:
+                    detalhe["pulado"] = "contador_zero"
+                    resultado["detalhes_abas"].append(detalhe)
+                    logger.info(f"[UpSeller] Aba '{nome_aba}' com 0; pulando filtro/execucao.")
+                    continue
+                try:
+                    await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+                    await self._page.wait_for_timeout(2500)
+                    await self._fechar_popups()
+
+                    c1 = await _clicar_aba_por_alvo(aba["alvos"])
+                    if not c1 or not c1.get("clicked"):
+                        detalhe["erro"] = "aba_nao_encontrada"
+                        resultado["detalhes_abas"].append(detalhe)
+                        continue
+                    await self._page.wait_for_timeout(1800)
+                    await self._fechar_popups()
+
+                    # Blindagem: nunca executar batch se a aba ativa nao for a de falha alvo.
+                    # Isso evita clicar "Emitir Nota Fiscal" novamente em "Para Emitir".
+                    aba_ok = await _aba_ativa_confere_alvo(aba["alvos"])
+                    if not aba_ok:
+                        # tentativa extra de clique antes de desistir
+                        c1_retry = await _clicar_aba_por_alvo(aba["alvos"])
+                        if c1_retry and c1_retry.get("clicked"):
+                            await self._page.wait_for_timeout(1200)
+                            aba_ok = await _aba_ativa_confere_alvo(aba["alvos"])
+                    if not aba_ok:
+                        detalhe["erro"] = "aba_alvo_nao_ativa"
+                        resultado["detalhes_abas"].append(detalhe)
+                        continue
+
+                    # Pula abas zeradas rapidamente para evitar voltas desnecessarias.
+                    contador_aba = await _ler_contador_tab_por_alvo(aba["alvos"])
+                    if contador_aba <= 0:
+                        detalhe["antes"] = 0
+                        resultado["detalhes_abas"].append(detalhe)
+                        continue
+
+                    if filtro_lojas:
+                        if len(filtro_lojas) == 1:
+                            filtrou = await self._aplicar_filtro_loja_seguro(
+                                filtro_lojas[0], contexto=f"retentar_{slug_aba}"
+                            )
+                        else:
+                            filtrou = await self._aplicar_filtro_lojas_seguro(
+                                filtro_lojas, contexto=f"retentar_{slug_aba}_lote"
+                            )
+                        if not filtrou:
+                            detalhe["erro"] = "falha_filtro_lojas"
+                            resultado["detalhes_abas"].append(detalhe)
+                            continue
+
+                    total_antes = int((await _contar_itens_aba_atual()) or 0)
+                    detalhe["antes"] = total_antes
+                    if total_antes <= 0:
+                        resultado["detalhes_abas"].append(detalhe)
+                        continue
+
+                    resultado["total_retentados"] += total_antes
+                    await self.screenshot(f"falha_nfe_{slug_aba}_01_antes")
+
+                    exec_batch = await _executar_batch_aba()
+                    if not exec_batch.get("ok"):
+                        detalhe["erro"] = exec_batch.get("motivo", "erro_batch")
+                        detalhe["persistentes"] = total_antes
+                        resultado["falhas_persistentes"] += total_antes
+                        motivos = await _coletar_motivos_visiveis()
+                        for m in motivos:
+                            if m not in resultado["motivos_falhas"]:
+                                resultado["motivos_falhas"].append(m)
+                        resultado["detalhes_abas"].append(detalhe)
+                        continue
+
+                    await self._fechar_popups()
+                    await self._page.wait_for_timeout(12000)
+
+                    await self._page.goto(UPSELLER_PARA_EMITIR, wait_until="domcontentloaded", timeout=30000)
+                    await self._page.wait_for_timeout(2200)
+                    await self._fechar_popups()
+                    c2 = await _clicar_aba_por_alvo(aba["alvos"])
+                    if c2 and c2.get("clicked") and await _aba_ativa_confere_alvo(aba["alvos"]):
+                        await self._page.wait_for_timeout(1500)
+                        if filtro_lojas:
+                            if len(filtro_lojas) == 1:
+                                await self._aplicar_filtro_loja_seguro(
+                                    filtro_lojas[0], contexto=f"retentar_pos_{slug_aba}"
+                                )
+                            else:
+                                await self._aplicar_filtro_lojas_seguro(
+                                    filtro_lojas, contexto=f"retentar_pos_{slug_aba}_lote"
+                                )
+                        total_depois = int((await _contar_itens_aba_atual()) or 0)
+                    else:
+                        total_depois = 0
+
+                    sucesso = max(0, total_antes - total_depois)
+                    persist = max(0, total_depois)
+                    detalhe["sucesso"] = sucesso
+                    detalhe["persistentes"] = persist
+
+                    resultado["sucesso_reemissao"] += sucesso
+                    resultado["falhas_persistentes"] += persist
+
+                    if persist > 0:
+                        motivos = await _coletar_motivos_visiveis()
+                        if not motivos:
+                            motivos = [f"{nome_aba}: erro persistente sem detalhe visivel"]
+                        for m in motivos:
+                            if m not in resultado["motivos_falhas"]:
+                                resultado["motivos_falhas"].append(m)
+
+                    await self.screenshot(f"falha_nfe_{slug_aba}_02_depois")
+                    resultado["detalhes_abas"].append(detalhe)
+                except Exception as e_aba:
+                    detalhe["erro"] = str(e_aba)
+                    resultado["detalhes_abas"].append(detalhe)
+                    logger.warning(f"[UpSeller] Falha ao reprocessar aba '{nome_aba}': {e_aba}")
+
+            if resultado["total_retentados"] <= 0:
+                resultado["mensagem"] = "Nenhuma falha para reprocessar"
+            else:
+                resultado["mensagem"] = (
+                    f"{resultado['sucesso_reemissao']} reprocessadas, "
+                    f"{resultado['falhas_persistentes']} falhas persistentes"
+                )
+            if resultado["motivos_falhas"]:
+                resultado["motivos_falhas"] = resultado["motivos_falhas"][:8]
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao retentar falhas de emissao: {e}")
+            resultado["mensagem"] = str(e)
+            await self.screenshot("falha_emissao_erro")
+
+        return resultado
+
+    async def programar_envio(self, filtro_loja: Union[str, List[str], None] = None) -> dict:
         """
         Programa envio dos pedidos pendentes em 'Para Programar'.
 
@@ -1228,7 +4619,7 @@ class UpSellerScraper:
           8. Aguarda processamento (pedidos movem para 'Para Imprimir')
 
         Args:
-            filtro_loja: Nome da loja para filtrar (opcional, None = todas)
+            filtro_loja: Nome da loja (str) ou lista de lojas para filtrar (opcional, None = todas)
 
         Retorna: dict com {total_programados, sucesso, mensagem}
         """
@@ -1241,6 +4632,12 @@ class UpSellerScraper:
 
         logger.info("[UpSeller] Iniciando programacao de envio...")
         resultado = {"total_programados": 0, "sucesso": False, "mensagem": ""}
+        filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+        filtro_multiplo = len(filtro_lojas) > 1
+        filtro_desc = (
+            filtro_lojas[0] if len(filtro_lojas) == 1
+            else f"{len(filtro_lojas)} lojas selecionadas"
+        )
 
         try:
             # 1. Navegar para pagina "Para Enviar" (contem sub-aba "Para Programar")
@@ -1290,14 +4687,23 @@ class UpSellerScraper:
             # Fechar popups novamente (sidebar click pode ativar novos tutoriais)
             await self._fechar_popups()
 
-            # 3.5. FILTRAR POR LOJA se especificado
-            if filtro_loja:
-                filtrou = await self._filtrar_por_loja(filtro_loja)
-                if filtrou:
-                    logger.info(f"[UpSeller] Filtrado por loja: {filtro_loja}")
+            # 3.5. FILTRAR POR LOJA(S) se especificado
+            filtrou_loja = False
+            if filtro_lojas:
+                if len(filtro_lojas) == 1:
+                    filtrou_loja = await self._aplicar_filtro_loja_seguro(
+                        filtro_lojas[0], contexto="programar_envio"
+                    )
+                else:
+                    filtrou_loja = await self._aplicar_filtro_lojas_seguro(
+                        filtro_lojas, contexto="programar_envio_lote"
+                    )
+                if filtrou_loja:
+                    logger.info(f"[UpSeller] Filtrado por loja(s): {filtro_desc}")
                     await self._page.wait_for_timeout(2000)
                 else:
-                    logger.warning(f"[UpSeller] Nao conseguiu filtrar por loja '{filtro_loja}', continuando sem filtro")
+                    logger.error(f"[UpSeller] Nao conseguiu filtrar por loja(s) '{filtro_desc}'. Abortando para nao processar tudo.")
+                    return {"sucesso": False, "total_programados": 0, "mensagem": f"Falha ao filtrar loja(s): '{filtro_desc}'"}
 
             await self.screenshot("programar_01_pagina_para_enviar")
 
@@ -1346,6 +4752,38 @@ class UpSellerScraper:
             await self._fechar_popups()
             await self.screenshot("programar_02_aba_para_programar")
 
+            # 4.1 Validar se filtro de loja realmente entrou na tabela.
+            # Se ficar misto, tenta reaplicar. Se falhar, ABORTA.
+            if filtro_lojas and filtrou_loja:
+                if len(filtro_lojas) == 1:
+                    tabela_ok = await self._tabela_filtrada_para_loja(filtro_lojas[0])
+                else:
+                    tabela_ok = await self._tabela_filtrada_para_lojas(filtro_lojas)
+                if not tabela_ok:
+                    logger.warning(f"[UpSeller] Tabela ainda mista apos filtro '{filtro_desc}', reaplicando...")
+                    if len(filtro_lojas) == 1:
+                        filtrou_loja = await self._aplicar_filtro_loja_seguro(
+                            filtro_lojas[0], contexto="programar_envio_reaplicar"
+                        )
+                    else:
+                        filtrou_loja = await self._aplicar_filtro_lojas_seguro(
+                            filtro_lojas, contexto="programar_envio_reaplicar_lote"
+                        )
+                    if filtrou_loja:
+                        await self._page.wait_for_timeout(1500)
+                        await self._abrir_subaba_para_programar()
+                        if len(filtro_lojas) == 1:
+                            tabela_ok = await self._tabela_filtrada_para_loja(filtro_lojas[0])
+                        else:
+                            tabela_ok = await self._tabela_filtrada_para_lojas(filtro_lojas)
+                if not tabela_ok:
+                    logger.error(
+                        f"[UpSeller] Filtro por loja(s) '{filtro_desc}' nao confirmou na tabela. "
+                        "Abortando para nao processar pedidos de outras lojas."
+                    )
+                    return {"sucesso": False, "total_programados": 0,
+                            "mensagem": f"Filtro por loja(s) '{filtro_desc}' nao confirmado na tabela"}
+
             # 5. Extrair quantidade de pedidos para programar
             page_text = await self._page.evaluate("document.body.innerText")
             total_match = re.search(r'Para Programar\s*(\d+)', page_text)
@@ -1359,24 +4797,91 @@ class UpSellerScraper:
                     resultado["mensagem"] = "Nenhum pedido para programar"
                     return resultado
 
-            # 6. Selecionar todos os pedidos
+            # 6. Selecionar pedidos
             selecionados = 0
             try:
-                # Checkbox "selecionar todos" no header da tabela
-                select_all = await self._page.wait_for_selector(
-                    'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
-                    'thead input[type="checkbox"], '
-                    '.ant-table-header .ant-checkbox-wrapper',
-                    timeout=5000
-                )
-                await select_all.click()
-                await self._page.wait_for_timeout(1000)
-                logger.info("[UpSeller] Checkbox 'selecionar todos' clicado")
+                # Se filtro foi aplicado com sucesso, usar selecao em massa da tabela.
+                # Fallback por linha fica restrito a quando o filtro falhar.
+                if (not filtro_lojas) or filtrou_loja:
+                    # Checkbox "selecionar todos" no header da tabela
+                    select_all = await self._page.wait_for_selector(
+                        'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                        'thead input[type="checkbox"], '
+                        '.ant-table-header .ant-checkbox-wrapper',
+                        timeout=5000
+                    )
+                    await select_all.click()
+                    await self._page.wait_for_timeout(1000)
+                    logger.info("[UpSeller] Checkbox 'selecionar todos' clicado")
 
-                # Extrair quantos foram selecionados
-                sel_text = await self._page.evaluate("document.body.innerText")
-                sel_match = re.search(r'Selecionado\s*(\d+)', sel_text)
-                selecionados = int(sel_match.group(1)) if sel_match else total_para_programar
+                    # Popup "Selecionar todas as paginas" (quando existir).
+                    # IMPORTANTE: NÃO clicar quando filtro de loja esta ativo!
+                    # O "Selecionar todas as páginas" do UpSeller ignora o filtro
+                    # e seleciona pedidos de TODAS as lojas no backend.
+                    if (not filtro_lojas) or filtro_multiplo:
+                        try:
+                            btn_todas_paginas = await self._page.query_selector(
+                                "button:has-text('Selecionar todas as páginas'), "
+                                "a:has-text('Selecionar todas as páginas'), "
+                                "button:has-text('Selecionar todas as paginas'), "
+                                "a:has-text('Selecionar todas as paginas')"
+                            )
+                            if btn_todas_paginas:
+                                await btn_todas_paginas.click()
+                                await self._page.wait_for_timeout(900)
+                                logger.info("[UpSeller] Clicou 'Selecionar todas as paginas'")
+                        except Exception:
+                            pass
+                    else:
+                        logger.info(
+                            f"[UpSeller] Filtro por loja unica '{filtro_desc}' ativo - "
+                            "nao clicando 'Selecionar todas as paginas' para evitar mistura indevida"
+                        )
+
+                    # Extrair quantos foram selecionados
+                    sel_text = await self._page.evaluate("document.body.innerText")
+                    sel_match = re.search(r'Selecionad[oa]s?\s*(\d+)', sel_text)
+                    selecionados = int(sel_match.group(1)) if sel_match else total_para_programar
+                else:
+                    # Fallback robusto: selecionar apenas linhas que contem a loja alvo.
+                    sel_info = await self._page.evaluate("""
+                        (nomeLoja) => {
+                            const normalize = (s) => (s || '')
+                              .toLowerCase()
+                              .normalize('NFD')
+                              .replace(/[\\u0300-\\u036f]/g, '')
+                              .trim();
+                            const target = normalize(nomeLoja);
+                            const rows = Array.from(document.querySelectorAll(
+                                'tr, .table_sub_head_row, .tr_top_content, .order_item, .list_table tbody tr'
+                            ));
+
+                            let candidates = 0;
+                            let selected = 0;
+                            for (const row of rows) {
+                                const txt = normalize(row.textContent || '');
+                                if (!txt || !txt.includes(target)) continue;
+                                // Evita misturar plataformas no batch: programar envio deve ficar em Shopee.
+                                if (!txt.includes('shopee') || txt.includes('shein')) continue;
+                                candidates += 1;
+
+                                const cb = row.querySelector('input[type="checkbox"], .ant-checkbox-input');
+                                if (!cb) continue;
+                                try {
+                                    const isChecked = cb.checked === true || cb.getAttribute('aria-checked') === 'true';
+                                    if (!isChecked) cb.click();
+                                    selected += 1;
+                                } catch (_) {}
+                            }
+                            return { candidates, selected };
+                        }
+                    """, (filtro_lojas[0] if filtro_lojas else ""))
+                    selecionados = int((sel_info or {}).get("selected", 0))
+                    logger.info(
+                        f"[UpSeller] Fallback selecao por loja '{filtro_desc}': "
+                        f"candidatos={(sel_info or {}).get('candidates', 0)}, selecionados={selecionados}"
+                    )
+                    await self._page.wait_for_timeout(1000)
 
             except Exception:
                 logger.warning("[UpSeller] Checkbox 'selecionar todos' nao encontrado, tentando individuais")
@@ -1459,6 +4964,18 @@ class UpSellerScraper:
             await self._page.wait_for_timeout(2000)
             await self.screenshot("programar_04_apos_click")
 
+            # 7.1 Detectar erro de plataforma mista (não seguir no pipeline inválido)
+            try:
+                body_text = await self._page.evaluate("document.body.innerText")
+                if "Compatível apenas mesmos pedidos de plataforma" in body_text:
+                    logger.error("[UpSeller] Erro: pedidos de plataformas diferentes no lote")
+                    resultado["mensagem"] = "Erro: lote com plataformas diferentes. Revise o filtro de loja."
+                    resultado["sucesso"] = False
+                    await self.screenshot("programar_erro_plataforma_mista")
+                    return resultado
+            except Exception:
+                pass
+
             # 8. Modal de "Programar Envio" com tabs de logistica (Entregar na Agencia/Retirada)
             # O modal tem: tabs por metodo de envio, endereco/data por loja, e botao "Programar Envio"
             try:
@@ -1480,24 +4997,38 @@ class UpSellerScraper:
             await self._fechar_popups()
             await self.screenshot("programar_05_apos_confirmar_modal")
 
-            # 9. Aguardar processamento - recarregar pagina e verificar se count diminuiu
-            # O tab counter NAO atualiza dinamicamente, entao recarregamos a pagina
-            logger.info("[UpSeller] Aguardando processamento do UpSeller (10s)...")
-            await self._page.wait_for_timeout(10000)
+            # 9. Aguardar processamento completo (nao apenas sleep fixo)
+            # para evitar seguir pipeline antes de finalizar "Programando/Obtendo rastreio".
+            logger.info("[UpSeller] Aguardando conclusao de Programando/Obtendo rastreio...")
+            await self._page.wait_for_timeout(5000)
+            cont_final = await self._aguardar_conclusao_programacao(timeout_segundos=300)
 
-            # Recarregar pagina para ver contadores atualizados
-            await self._page.goto(UPSELLER_PEDIDOS, wait_until="domcontentloaded", timeout=30000)
-            await self._page.wait_for_timeout(3000)
-            await self._fechar_popups()
-
-            # Verificar novo total "Para Programar"
-            new_text = await self._page.evaluate("document.body.innerText")
-            new_match = re.search(r'Para Programar\s*(\d+)', new_text)
-            novo_total = int(new_match.group(1)) if new_match else 0
-            programados_real = total_para_programar - novo_total
+            # Recalcular total para programar apos conclusao
+            try:
+                await self._page.goto(UPSELLER_PEDIDOS, wait_until="domcontentloaded", timeout=30000)
+                await self._page.wait_for_timeout(2500)
+                await self._fechar_popups()
+                await self._abrir_subaba_para_programar()
+            except Exception:
+                pass
+            novo_total = await self._ler_contagem_para_programar()
+            programados_real = total_para_programar - int(novo_total or 0)
             if programados_real < 0:
-                programados_real = selecionados  # fallback
+                programados_real = 0
+            if programados_real == 0 and selecionados > 0:
+                # Se o contador nao refletiu no DOM, assumir ao menos os selecionados
+                # para manter consistencia do pipeline.
+                programados_real = selecionados
 
+            logger.info(
+                "[UpSeller] Programacao concluida (tabs finais: para_programar=%s, programando=%s, "
+                "falha_programacao=%s, obtendo_rastreio=%s, erro_rastreio=%s)",
+                cont_final.get("para_programar", 0),
+                cont_final.get("programando", 0),
+                cont_final.get("falha_na_programacao", 0),
+                cont_final.get("obtendo_rastreio", 0),
+                cont_final.get("erro_obter_rastreio", 0),
+            )
             logger.info(f"[UpSeller] Antes: {total_para_programar}, Agora: {novo_total}, Programados: {programados_real}")
             await self.screenshot("programar_06_finalizado")
 
@@ -1513,24 +5044,742 @@ class UpSellerScraper:
 
         return resultado
 
-    async def baixar_etiquetas(self, filtro_loja: str = None) -> List[str]:
+    async def _salvar_pdf_de_popup(self, popup_page, save_path: str) -> bool:
         """
-        Navega para pagina "Para Enviar" e usa "Imprimir em Massa" para baixar PDFs.
+        Tenta salvar o PDF original quando o UpSeller abre um novo tab.
 
-        O UpSeller ja esta configurado globalmente para:
-        - Etiqueta de Envio Personalizada, PDF, 10x15cm
-        - Imprimir Lista de Separacao (SKU + Variante, ordenado por Nome)
-        Portanto o "Imprimir em Massa" gera o PDF com etiqueta+lista ja intercalados.
+        Cenarios suportados:
+        1) URL direta .pdf
+        2) Preview HTML com iframe/object/embed apontando para PDF
+        3) Preview com blob: URL
 
-        Fluxo (atualizado 2026-02-26):
-          1. Navega para /pt/order/in-process (Para Imprimir)
+        Retorna True se o arquivo foi salvo.
+        """
+        try:
+            await popup_page.wait_for_timeout(800)
+        except Exception:
+            pass
+
+        try:
+            popup_url = popup_page.url or ""
+            if popup_url:
+                logger.info(f"[UpSeller] URL popup: {popup_url}")
+        except Exception:
+            popup_url = ""
+
+        # Coletar candidatos de URL de PDF a partir da pagina.
+        candidates = []
+        try:
+            candidates = await popup_page.evaluate(
+                """
+                () => {
+                    const out = [];
+                    const add = (u) => {
+                        if (!u) return;
+                        let v = String(u).trim();
+                        if (!v) return;
+                        try {
+                            v = new URL(v, window.location.href).href;
+                        } catch (_) {}
+                        if (!out.includes(v)) out.push(v);
+                    };
+
+                    add(window.location.href);
+                    try {
+                        const params = new URLSearchParams(window.location.search || '');
+                        for (const key of ['file', 'url', 'src', 'pdf', 'download']) {
+                            add(params.get(key));
+                        }
+                    } catch (_) {}
+
+                    document.querySelectorAll('iframe, embed, object, a, source').forEach((el) => {
+                        add(el.getAttribute('src'));
+                        add(el.getAttribute('data'));
+                        add(el.getAttribute('href'));
+                        add(el.src);
+                        add(el.data);
+                        add(el.href);
+                    });
+
+                    return out;
+                }
+                """
+            )
+        except Exception:
+            candidates = []
+
+        if popup_url:
+            candidates = [popup_url] + list(candidates or [])
+
+        # Normalizar e manter apenas urls com cara de PDF.
+        vistos = set()
+        filtrados = []
+        for u in candidates or []:
+            u = (u or "").strip()
+            if not u or u in vistos:
+                continue
+            vistos.add(u)
+            low = u.lower()
+            if low.endswith(".pdf") or ".pdf?" in low or "/pdf" in low or low.startswith("blob:"):
+                filtrados.append(u)
+
+        # Fallback: tentar todos os candidatos se nenhum passou no filtro.
+        if not filtrados:
+            filtrados = list(vistos)
+
+        for url_cand in filtrados:
+            try:
+                low = (url_cand or "").lower()
+
+                if low.startswith("blob:"):
+                    # Blob precisa ser lido no contexto da pagina.
+                    b64 = await popup_page.evaluate(
+                        """
+                        async (u) => {
+                            const r = await fetch(u);
+                            const b = await r.arrayBuffer();
+                            const bytes = new Uint8Array(b);
+                            let binary = '';
+                            const chunk = 0x8000;
+                            for (let i = 0; i < bytes.length; i += chunk) {
+                                const sub = bytes.subarray(i, i + chunk);
+                                binary += String.fromCharCode.apply(null, sub);
+                            }
+                            return btoa(binary);
+                        }
+                        """,
+                        url_cand,
+                    )
+                    if b64:
+                        import base64
+                        pdf_data = base64.b64decode(b64)
+                        with open(save_path, "wb") as f:
+                            f.write(pdf_data)
+                        logger.info(f"[UpSeller] PDF salvo via blob do popup: {save_path}")
+                        return True
+                    continue
+
+                # URL HTTP(S) com cookies/sessao do contexto atual.
+                resp = await popup_page.context.request.get(url_cand, timeout=90000)
+                if not resp or not resp.ok:
+                    continue
+
+                body = await resp.body()
+                if not body or len(body) < 1200:
+                    continue
+
+                # Validar assinatura PDF.
+                if not body.startswith(b"%PDF"):
+                    # Alguns servidores retornam HTML com status 200.
+                    ct = (resp.headers.get("content-type") or "").lower()
+                    if "pdf" not in ct:
+                        continue
+
+                with open(save_path, "wb") as f:
+                    f.write(body)
+                logger.info(f"[UpSeller] PDF salvo via URL real do popup: {save_path}")
+                return True
+            except Exception as e:
+                logger.debug(f"[UpSeller] Falha ao baixar candidato de popup '{url_cand}': {e}")
+
+        return False
+
+    async def baixar_lista_separacao(self, filtro_loja: str = None) -> List[str]:
+        """
+        Baixa a "Lista de Separação" do UpSeller para obter dados de produtos
+        (SKU, variação, quantidade) que serão usados no rodapé das etiquetas.
+
+        Fluxo:
+        1. Navega para "Etiqueta para Impressão"
+        2. Filtra por loja (se especificado)
+        3. Seleciona todos os pedidos
+        4. Hover em "Imprimir Etiquetas" → clica "Imprimir Lista de Separação"
+        5. Captura novo tab (print-pick-list) e salva como PDF via CDP
+
+        Retorna lista de caminhos dos PDFs baixados.
+        """
+        pdfs_baixados = []
+        try:
+            if not self._page:
+                await self._iniciar_navegador()
+            if not await self._esta_logado():
+                if not await self.login():
+                    logger.warning("[UpSeller] Nao logado para baixar lista de separacao")
+                    return []
+
+            logger.info(f"[UpSeller] Baixando lista de separacao (loja={filtro_loja or 'todas'})...")
+
+            # 1. Navegar para "Etiqueta para Impressão"
+            await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(3000)
+            await self._fechar_popups()
+
+            # Clicar na aba "Etiqueta para Impressão"
+            async def _clicar_aba_impressao():
+                result = await self._page.evaluate("""
+                    (() => {
+                        const tabs = document.querySelectorAll('[role="tab"], .ant-tabs-tab, div.ant-tabs-tab');
+                        for (const tab of tabs) {
+                            const text = (tab.textContent || '').trim();
+                            if (text.includes('Etiqueta para Impress') ||
+                                (text.includes('Impress') && !text.includes('Falhada') && !text.includes('Gerando'))) {
+                                tab.click();
+                                return { clicked: true, text: text };
+                            }
+                        }
+                        return { clicked: false };
+                    })()
+                """)
+                if result and result.get("clicked"):
+                    logger.info(f"[UpSeller] Aba clicada para lista separacao: {result.get('text')}")
+                    await self._page.wait_for_timeout(2000)
+                    return True
+                return False
+
+            await _clicar_aba_impressao()
+
+            # 2. Filtrar por loja
+            if filtro_loja:
+                filtrou = await self._aplicar_filtro_loja_seguro(
+                    filtro_loja, contexto="lista_separacao"
+                )
+                if not filtrou:
+                    logger.error(f"[UpSeller] Nao filtrou loja '{filtro_loja}' para lista separacao. Abortando.")
+                    return []
+                logger.info(f"[UpSeller] Lista separacao filtrada por loja: {filtro_loja}")
+
+            # 3. Verificar se há pedidos na tabela
+            tem_dados = await self._page.evaluate("""
+                (() => {
+                    const rows = document.querySelectorAll(
+                        'tbody tr.ant-table-row, tbody tr.top_row, tbody tr:not(.ant-table-placeholder)'
+                    );
+                    const dataRows = Array.from(rows).filter(r => {
+                        const text = (r.textContent || '').trim();
+                        return text.length > 5 && !text.includes('Nenhum Dado');
+                    });
+                    if (dataRows.length > 0) return { hasData: true, count: dataRows.length };
+                    const activeTab = document.querySelector('.ant-tabs-tab-active');
+                    if (activeTab) {
+                        const m = (activeTab.textContent || '').match(/(\\d+)/);
+                        if (m && parseInt(m[1]) > 0) return { hasData: true, count: parseInt(m[1]) };
+                    }
+                    return { hasData: false, count: 0 };
+                })()
+            """)
+
+            if not tem_dados or not tem_dados.get("hasData"):
+                logger.info("[UpSeller] 0 pedidos para lista de separacao - nada para baixar")
+                return []
+
+            logger.info(f"[UpSeller] {tem_dados.get('count', '?')} pedido(s) para lista de separacao")
+
+            # 4. Selecionar todos
+            try:
+                select_all = await self._page.wait_for_selector(
+                    'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                    'thead input[type="checkbox"], '
+                    '.ant-table-header .ant-checkbox-wrapper',
+                    timeout=5000
+                )
+                await select_all.click()
+                await self._page.wait_for_timeout(1000)
+                logger.info("[UpSeller] Checkbox 'selecionar todos' clicado (lista separacao)")
+
+                # NÃO clicar "Selecionar todas as páginas" quando filtro_loja ativo
+                if not filtro_loja:
+                    try:
+                        loc_sel_todas = self._page.locator(
+                            '.ant-dropdown-menu-item:has-text("Selecionar todas")'
+                        ).first
+                        if await loc_sel_todas.is_visible(timeout=2000):
+                            await loc_sel_todas.click()
+                            logger.info("[UpSeller] 'Selecionar todas as paginas' clicado (lista separacao)")
+                            await self._page.wait_for_timeout(1500)
+                    except Exception:
+                        pass
+                else:
+                    logger.info(f"[UpSeller] Filtro loja '{filtro_loja}' ativo - NÃO clicando 'Selecionar todas'")
+            except Exception as e:
+                logger.warning(f"[UpSeller] Checkbox selecionar todos nao encontrado: {e}")
+                return []
+
+            # 5. Hover no trigger "Imprimir Etiquetas" para abrir dropdown
+            try:
+                trigger = self._page.locator(
+                    'a.ant-dropdown-trigger:has-text("Imprimir Etiquetas")'
+                ).first
+                if await trigger.count() == 0:
+                    trigger = self._page.locator(
+                        'a.ant-btn-link:has-text("Imprimir Etiquetas")'
+                    ).first
+                if await trigger.count() == 0:
+                    trigger = self._page.locator(
+                        'a:has-text("Imprimir em Massa")'
+                    ).first
+
+                if await trigger.count() == 0:
+                    logger.error("[UpSeller] Botao 'Imprimir Etiquetas' nao encontrado para lista separacao")
+                    return []
+
+                logger.info("[UpSeller] Hover em 'Imprimir Etiquetas' para abrir dropdown (lista separacao)...")
+                await trigger.hover()
+                await self._page.wait_for_timeout(1500)
+
+                # 6. Clicar opção "Imprimir Lista de Separação"
+                opcao_lista = self._page.locator(
+                    '.ant-dropdown-menu-item:has-text("Lista de Separação"), '
+                    '.ant-dropdown-menu-item:has-text("Lista de Separacao")'
+                ).first
+
+                if not await opcao_lista.is_visible(timeout=3000):
+                    # Fallback: buscar por texto parcial
+                    opcao_lista = self._page.locator(
+                        '.ant-dropdown-menu-item:has-text("Separação"), '
+                        '.ant-dropdown-menu-item:has-text("Separacao")'
+                    ).first
+
+                if not await opcao_lista.is_visible(timeout=2000):
+                    logger.error("[UpSeller] Opcao 'Imprimir Lista de Separação' nao encontrada no dropdown")
+                    await self.screenshot("lista_sep_sem_opcao")
+                    return []
+
+                opcao_text = await opcao_lista.text_content()
+                logger.info(f"[UpSeller] Clicando opcao: '{(opcao_text or '').strip()}'")
+
+                # Capturar popup (novo tab)
+                _captured_popups = []
+                _captured_downloads = []
+                self._page.on('download', lambda d: _captured_downloads.append(d))
+                self._page.context.on('page', lambda p: _captured_popups.append(p))
+
+                await opcao_lista.click()
+                logger.info("[UpSeller] Opcao 'Lista de Separação' clicada, aguardando resposta...")
+                await self._page.wait_for_timeout(3000)
+
+                # Se modal de confirmação aparecer
+                try:
+                    modal_btn = await self._page.wait_for_selector(
+                        '.ant-modal button.ant-btn-primary',
+                        timeout=5000
+                    )
+                    if modal_btn:
+                        btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
+                        logger.info(f"[UpSeller] Modal encontrado, botao: '{btn_text}'")
+                        await modal_btn.click()
+                        await self._page.wait_for_timeout(3000)
+                except Exception:
+                    pass
+
+                # Aguardar popup ou download (até 60s)
+                for i in range(30):
+                    if _captured_downloads or _captured_popups:
+                        break
+                    await self._page.wait_for_timeout(2000)
+                    if i % 5 == 4:
+                        logger.info(f"[UpSeller] Aguardando popup/download lista separacao... ({(i+1)*2}s)")
+
+                save_path = os.path.join(
+                    self.download_dir,
+                    f"lista_separacao_{filtro_loja or 'todas'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                )
+
+                logger.info(f"[UpSeller] Lista separacao: downloads={len(_captured_downloads)}, popups={len(_captured_popups)}")
+
+                if _captured_downloads:
+                    # Download direto
+                    download = _captured_downloads[0]
+                    filename = download.suggested_filename or os.path.basename(save_path)
+                    actual_path = os.path.join(self.download_dir, filename)
+                    await download.save_as(actual_path)
+                    pdfs_baixados.append(actual_path)
+                    logger.info(f"[UpSeller] Lista separacao baixada via download: {actual_path}")
+
+                elif _captured_popups:
+                    # Novo tab aberto (print-pick-list)
+                    new_page = _captured_popups[0]
+                    logger.info(f"[UpSeller] Novo tab lista separacao: {new_page.url}")
+                    try:
+                        await new_page.wait_for_load_state('networkidle', timeout=30000)
+                    except Exception:
+                        await new_page.wait_for_timeout(5000)
+
+                    salvo = False
+
+                    # Prioridade: CDP Page.printToPDF (funciona em headed mode)
+                    try:
+                        import base64
+                        cdp = await new_page.context.new_cdp_session(new_page)
+                        result = await cdp.send('Page.printToPDF', {
+                            'printBackground': True,
+                            'preferCSSPageSize': True,
+                        })
+                        pdf_bytes = base64.b64decode(result['data'])
+                        with open(save_path, 'wb') as f:
+                            f.write(pdf_bytes)
+                        await cdp.detach()
+                        salvo = True
+                        logger.info(f"[UpSeller] Lista separacao salva via CDP: {save_path}")
+                    except Exception as cdp_err:
+                        logger.warning(f"[UpSeller] CDP printToPDF falhou: {cdp_err}")
+
+                    # Fallback: page.pdf() (funciona em headless)
+                    if not salvo:
+                        try:
+                            await new_page.pdf(path=save_path, format='A4', print_background=True)
+                            salvo = True
+                            logger.info(f"[UpSeller] Lista separacao salva via page.pdf(): {save_path}")
+                        except Exception as pdf_err:
+                            logger.warning(f"[UpSeller] page.pdf() falhou: {pdf_err}")
+
+                    # Fallback: salvar conteúdo HTML como PDF
+                    if not salvo:
+                        try:
+                            salvo = await self._salvar_pdf_de_popup(new_page, save_path)
+                        except Exception:
+                            pass
+
+                    if salvo and os.path.exists(save_path):
+                        pdfs_baixados.append(save_path)
+                    else:
+                        logger.error("[UpSeller] Nao conseguiu salvar lista de separacao")
+
+                    try:
+                        await new_page.close()
+                    except Exception:
+                        pass
+
+                else:
+                    logger.warning("[UpSeller] Nem download nem popup para lista separacao")
+                    # Fallback: verificar filesystem
+                    downloads_novos = self._verificar_downloads_novos("*.pdf")
+                    if downloads_novos:
+                        pdfs_baixados.extend(downloads_novos)
+
+            except Exception as e:
+                logger.error(f"[UpSeller] Erro no processo de lista separacao: {e}")
+                import traceback
+                traceback.print_exc()
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao baixar lista de separacao: {e}")
+
+        logger.info(f"[UpSeller] Lista(s) de separacao baixada(s): {len(pdfs_baixados)}")
+        return pdfs_baixados
+
+    async def baixar_lista_resumo(self, filtro_loja: Union[str, List[str], None] = None) -> List[str]:
+        """
+        Baixa a opcao "Imprimir Lista de Resumo" (normalmente XLSX/CSV) antes
+        de gerar as etiquetas.
+
+        Esse arquivo alimenta os dados de produtos usados no rodape/modelo novo.
+
+        Fluxo:
+          1. Navega para "Etiqueta para Impressao"
+          2. Filtra por loja (se informado)
+          3. Seleciona pedidos da tabela
+          4. Hover em "Imprimir Etiquetas"
+          5. Clica "Imprimir Lista de Resumo"
+          6. Captura arquivo baixado (xlsx/xls/csv)
+        """
+        arquivos_baixados = []
+        try:
+            if not self._page:
+                await self._iniciar_navegador()
+            if not await self._esta_logado():
+                if not await self.login():
+                    logger.warning("[UpSeller] Nao logado para baixar lista de resumo")
+                    return []
+
+            filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+            filtro_multiplo = len(filtro_lojas) > 1
+            filtro_desc = (
+                filtro_lojas[0] if len(filtro_lojas) == 1
+                else f"{len(filtro_lojas)} lojas"
+            )
+            logger.info(f"[UpSeller] Baixando lista de resumo (loja={filtro_desc or 'todas'})...")
+
+            await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(3000)
+            await self._fechar_popups()
+
+            async def _clicar_aba_impressao():
+                result = await self._page.evaluate("""
+                    (() => {
+                        const tabs = document.querySelectorAll('[role="tab"], .ant-tabs-tab, div.ant-tabs-tab');
+                        for (const tab of tabs) {
+                            const text = (tab.textContent || '').trim();
+                            if (text.includes('Etiqueta para Impress') ||
+                                (text.includes('Impress') && !text.includes('Falhada') && !text.includes('Gerando'))) {
+                                tab.click();
+                                return { clicked: true, text: text };
+                            }
+                        }
+                        return { clicked: false };
+                    })()
+                """)
+                if result and result.get("clicked"):
+                    await self._page.wait_for_timeout(2000)
+                    return True
+                return False
+
+            async def _clicar_subaba_nao_impressa():
+                """
+                Forca a sub-aba "Etiqueta nao impressa" e valida a aba ativa.
+                """
+                ok = await self._ativar_subaba_etiquetas(
+                    alvo="nao_impressa",
+                    tentativas=3,
+                    estrito=True
+                )
+                st = await self._status_subaba_etiquetas("nao_impressa")
+                if ok:
+                    logger.info("[UpSeller] Sub-aba 'Etiqueta nao impressa' confirmada para Lista de Resumo")
+                    return True
+                if st.get("exists"):
+                    logger.error(
+                        "[UpSeller] Nao ativou sub-aba 'Etiqueta nao impressa' na Lista de Resumo (ativa: %s)",
+                        st.get("active_text", "")
+                    )
+                return False
+
+            await _clicar_aba_impressao()
+            ok_subaba = await _clicar_subaba_nao_impressa()
+            st_subaba = await self._status_subaba_etiquetas("nao_impressa")
+            if st_subaba.get("exists") and not ok_subaba:
+                logger.error("[UpSeller] Abortando lista de resumo para evitar leitura na sub-aba errada.")
+                return []
+
+            if filtro_lojas:
+                if len(filtro_lojas) == 1:
+                    filtrou = await self._aplicar_filtro_loja_seguro(
+                        filtro_lojas[0], contexto="lista_resumo"
+                    )
+                else:
+                    filtrou = await self._aplicar_filtro_lojas_seguro(
+                        filtro_lojas, contexto="lista_resumo_lote"
+                    )
+                if not filtrou:
+                    logger.error(f"[UpSeller] Nao filtrou loja(s) '{filtro_desc}' para lista de resumo. Abortando.")
+                    return []
+                # Alguns filtros voltam para "Todos"; reafirma a sub-aba correta.
+                ok_subaba = await _clicar_subaba_nao_impressa()
+                st_subaba = await self._status_subaba_etiquetas("nao_impressa")
+                if st_subaba.get("exists") and not ok_subaba:
+                    logger.error("[UpSeller] Filtro aplicado, mas sem ativar 'Etiqueta nao impressa'. Abortando.")
+                    return []
+
+            tem_dados = await self._page.evaluate("""
+                (() => {
+                    const rows = document.querySelectorAll(
+                        'tbody tr.ant-table-row, tbody tr.top_row, tbody tr:not(.ant-table-placeholder)'
+                    );
+                    const dataRows = Array.from(rows).filter(r => {
+                        const text = (r.textContent || '').trim();
+                        return text.length > 5 && !text.includes('Nenhum Dado');
+                    });
+                    if (dataRows.length > 0) return { hasData: true, count: dataRows.length };
+                    const activeTab = document.querySelector('.ant-tabs-tab-active');
+                    if (activeTab) {
+                        const m = (activeTab.textContent || '').match(/(\\d+)/);
+                        if (m && parseInt(m[1]) > 0) return { hasData: true, count: parseInt(m[1]) };
+                    }
+                    return { hasData: false, count: 0 };
+                })()
+            """)
+
+            if not tem_dados or not tem_dados.get("hasData"):
+                logger.info("[UpSeller] 0 pedidos para lista de resumo")
+                return []
+
+            try:
+                select_all = await self._page.wait_for_selector(
+                    'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                    'thead input[type="checkbox"], '
+                    '.ant-table-header .ant-checkbox-wrapper',
+                    timeout=5000
+                )
+                await select_all.click()
+                await self._page.wait_for_timeout(1000)
+
+                if (not filtro_lojas) or filtro_multiplo:
+                    try:
+                        loc_sel_todas = self._page.locator(
+                            '.ant-dropdown-menu-item:has-text("Selecionar todas")'
+                        ).first
+                        if await loc_sel_todas.is_visible(timeout=2000):
+                            await loc_sel_todas.click()
+                            await self._page.wait_for_timeout(1200)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"[UpSeller] Falha ao selecionar pedidos para lista de resumo: {e}")
+                return []
+
+            trigger = self._page.locator(
+                'a.ant-dropdown-trigger:has-text("Imprimir Etiquetas")'
+            ).first
+            if await trigger.count() == 0:
+                trigger = self._page.locator(
+                    'a.ant-btn-link:has-text("Imprimir Etiquetas")'
+                ).first
+            if await trigger.count() == 0:
+                trigger = self._page.locator(
+                    'a:has-text("Imprimir em Massa")'
+                ).first
+            if await trigger.count() == 0:
+                logger.error("[UpSeller] Trigger 'Imprimir Etiquetas' nao encontrado para lista de resumo")
+                return []
+
+            await trigger.hover()
+            await self._page.wait_for_timeout(1300)
+
+            opcao_resumo = self._page.locator(
+                '.ant-dropdown-menu-item:has-text("Lista de Resumo")'
+            ).first
+            if not await opcao_resumo.is_visible(timeout=2500):
+                opcao_resumo = self._page.locator(
+                    '.ant-dropdown-menu-item:has-text("Resumo")'
+                ).first
+
+            if not await opcao_resumo.is_visible(timeout=2000):
+                logger.error("[UpSeller] Opcao 'Imprimir Lista de Resumo' nao encontrada no dropdown")
+                await self.screenshot("lista_resumo_sem_opcao")
+                return []
+
+            _captured_downloads = []
+            _captured_popups = []
+            self._page.on('download', lambda d: _captured_downloads.append(d))
+            self._page.context.on('page', lambda p: _captured_popups.append(p))
+
+            await opcao_resumo.click()
+            await self._page.wait_for_timeout(2500)
+
+            try:
+                modal_btn = await self._page.wait_for_selector(
+                    '.ant-modal button.ant-btn-primary',
+                    timeout=5000
+                )
+                if modal_btn:
+                    await modal_btn.click()
+                    await self._page.wait_for_timeout(2500)
+            except Exception:
+                pass
+
+            for _ in range(30):
+                if _captured_downloads or _captured_popups:
+                    break
+                await self._page.wait_for_timeout(2000)
+
+            base_nome = f"lista_resumo_{(filtro_desc or 'todas').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+            for idx, download in enumerate(_captured_downloads):
+                try:
+                    suggested = (download.suggested_filename or "").strip()
+                    ext = os.path.splitext(suggested)[1] if suggested else ""
+                    if not ext:
+                        ext = ".xlsx"
+                    fname = suggested or f"{base_nome}_{idx + 1}{ext}"
+                    destino = os.path.join(self.download_dir, fname)
+                    await download.save_as(destino)
+                    if os.path.exists(destino) and self._arquivo_tabulado_valido(destino):
+                        arquivos_baixados.append(destino)
+                        logger.info(f"[UpSeller] Lista de resumo baixada: {destino}")
+                    else:
+                        logger.warning(f"[UpSeller] Arquivo de resumo invalido (provavel HTML), ignorando: {destino}")
+                        try:
+                            if os.path.exists(destino):
+                                os.remove(destino)
+                        except Exception:
+                            pass
+                except Exception as e_dw:
+                    logger.warning(f"[UpSeller] Falha ao salvar download da lista de resumo: {e_dw}")
+
+            if not arquivos_baixados and _captured_popups:
+                for idx, new_page in enumerate(_captured_popups):
+                    try:
+                        try:
+                            await new_page.wait_for_load_state('networkidle', timeout=20000)
+                        except Exception:
+                            await new_page.wait_for_timeout(3000)
+
+                        popup_url = (new_page.url or "").strip()
+                        if popup_url.startswith("http"):
+                            resp = await new_page.context.request.get(popup_url, timeout=60000)
+                            if resp and resp.ok:
+                                body = await resp.body()
+                                if body and len(body) > 256:
+                                    ct = (resp.headers.get("content-type") or "").lower()
+                                    low_url = popup_url.lower()
+                                    low_body = body[:2048].lower()
+                                    # Evitar salvar shell HTML do SPA como se fosse XLSX.
+                                    if "html" in ct or b"<!doctype html" in low_body or b"<html" in low_body:
+                                        logger.warning(
+                                            f"[UpSeller] Popup retornou HTML (nao planilha): {popup_url}"
+                                        )
+                                        continue
+                                    ext = ".xlsx"
+                                    if "csv" in ct or low_url.endswith(".csv"):
+                                        ext = ".csv"
+                                    elif low_url.endswith(".xls"):
+                                        ext = ".xls"
+                                    elif low_url.endswith(".xlsx"):
+                                        ext = ".xlsx"
+                                    destino = os.path.join(self.download_dir, f"{base_nome}_{idx + 1}{ext}")
+                                    with open(destino, "wb") as f:
+                                        f.write(body)
+                                    if self._arquivo_tabulado_valido(destino):
+                                        arquivos_baixados.append(destino)
+                                        logger.info(f"[UpSeller] Lista de resumo salva via popup URL: {destino}")
+                                    else:
+                                        logger.warning(f"[UpSeller] Popup salvou arquivo invalido, ignorando: {destino}")
+                                        try:
+                                            os.remove(destino)
+                                        except Exception:
+                                            pass
+                    except Exception as e_popup:
+                        logger.warning(f"[UpSeller] Falha ao obter lista de resumo via popup: {e_popup}")
+                    finally:
+                        try:
+                            await new_page.close()
+                        except Exception:
+                            pass
+
+            if not arquivos_baixados:
+                # Fallback: arquivos recentes que possam ter sido baixados sem evento.
+                for padrao in ("*.xlsx", "*.xls", "*.csv"):
+                    for path in self._verificar_downloads_novos(padrao, segundos_atras=180):
+                        if path and path not in arquivos_baixados and self._arquivo_tabulado_valido(path):
+                            arquivos_baixados.append(path)
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao baixar lista de resumo: {e}")
+
+        logger.info(f"[UpSeller] Lista(s) de resumo baixada(s): {len(arquivos_baixados)}")
+        return arquivos_baixados
+
+    async def baixar_etiquetas(
+        self,
+        filtro_loja: Union[str, List[str], None] = None,
+        aba_alvo: str = "impressao",
+    ) -> List[str]:
+        """
+        Navega para pagina "Etiqueta para Impressao" e baixa PDFs de etiquetas.
+
+        Fluxo (mapeado da UI do UpSeller 2026-02-26):
+          1. Navega para /pt/order/in-process (Etiqueta para Impressao)
           2. FILTRA POR LOJA se especificado
-          3. Seleciona todos os pedidos
-          4. Clica em "Imprimir em Massa" (botao dropdown na barra de acoes)
-          5. Aguarda download do PDF (as configs ja estao salvas globalmente)
+          3. Clica checkbox "selecionar todos" na tabela
+          4. Clica "Selecionar todas as paginas" no popup que aparece
+          5. Clica "Imprimir Etiquetas" (dropdown trigger na barra de acoes)
+          6. Clica "Imprimir Etiquetas" (primeira opcao do dropdown)
+          7. Aguarda download do PDF
 
         Args:
-            filtro_loja: Filtrar por nome de loja (opcional)
+            filtro_loja: Filtrar por nome de loja (str) ou lista de lojas (opcional)
+            aba_alvo:
+                - "impressao": fluxo normal (Etiqueta para Impressao)
+                - "falha": tenta processar aba de etiquetas com falha
 
         Retorna: Lista de caminhos dos PDFs baixados
         """
@@ -1541,35 +5790,435 @@ class UpSellerScraper:
             if not await self.login():
                 return []
 
-        logger.info("[UpSeller] Navegando para Para Imprimir (/pt/order/in-process)...")
+        print("[baixar_etiquetas] INICIO - navegando para Etiqueta para Impressao")
+        logger.info("[UpSeller] Navegando para Etiqueta para Impressao...")
         pdfs_baixados = []
+        filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+        filtro_multiplo = len(filtro_lojas) > 1
+        filtro_desc = (
+            filtro_lojas[0] if len(filtro_lojas) == 1
+            else f"{len(filtro_lojas)} lojas"
+        )
+        aba_norm = (aba_alvo or "impressao").strip().lower()
 
         try:
-            # 1. Navegar diretamente para pagina "Para Imprimir"
+            # 0. Configurar formato base de impressao (PDF 10x15), preservando
+            # rodape/lista nativos do UpSeller (modo antigo).
+            try:
+                ok_cfg = await self._configurar_formato_etiqueta(sem_rodape_upseller=False)
+                if not ok_cfg:
+                    logger.warning("[UpSeller] Configuracao de print-setting nao confirmada; seguindo com fluxo")
+            except Exception as e_cfg:
+                logger.warning(f"[UpSeller] Erro ao configurar print-setting: {e_cfg}")
+
+            # 1. Navegar para pagina e clicar na aba "Etiqueta para Impressao"
+            print(f"[baixar_etiquetas] goto {UPSELLER_PARA_IMPRIMIR}")
             await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
             await self._page.wait_for_timeout(3000)
-
-            # Fechar popup tutorial se existir
             await self._fechar_popups()
 
-            # 2. FILTRAR POR LOJA se especificado
-            if filtro_loja:
-                filtrou = await self._filtrar_por_loja(filtro_loja)
-                if filtrou:
-                    logger.info(f"[UpSeller] Etiquetas filtradas por loja: {filtro_loja}")
+            # Funcao helper para clicar na aba alvo (impressao/falha)
+            async def _clicar_aba_impressao():
+                result = await self._page.evaluate("""
+                    (modoAba) => {
+                        const normalize = (s) => (s || '')
+                            .toLowerCase()
+                            .normalize('NFD')
+                            .replace(/[\\u0300-\\u036f]/g, '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        const modo = normalize(modoAba || 'impressao');
+                        // Buscar aba "Etiqueta para Impressão" nos tabs do Ant Design
+                        const tabs = document.querySelectorAll(
+                            '.ant-tabs-tab, .ant-tabs-tab-btn, [role="tab"], ' +
+                            '.ant-tabs-nav .ant-tabs-tab > div'
+                        );
+                        for (const tab of tabs) {
+                            const raw = (tab.textContent || '').trim();
+                            const text = normalize(raw);
+                            let match = false;
+                            if (modo.includes('falha')) {
+                                match = text.includes('falha') || text.includes('falhada') || text.includes('erro');
+                            } else {
+                                match = text.includes('etiqueta para impress') ||
+                                    (text.includes('impress') && !text.includes('falha') && !text.includes('gerando'));
+                            }
+                            if (match) {
+                                tab.click();
+                                return { clicked: true, text: raw, modo: modo };
+                            }
+                        }
+                        // Fallback para aba de impressao (somente no modo normal)
+                        if (modo.includes('falha')) {
+                            return { clicked: false, modo: modo };
+                        }
+                        // Fallback: buscar qualquer elemento clicavel com texto de impressao
+                        const all = document.querySelectorAll('div, span, a');
+                        for (const el of all) {
+                            // Apenas elementos com texto direto (sem filhos com texto)
+                            const directText = Array.from(el.childNodes)
+                                .filter(n => n.nodeType === 3)
+                                .map(n => n.textContent.trim())
+                                .join('');
+                            if (normalize(directText).includes('etiqueta para impress')) {
+                                const rect = el.getBoundingClientRect();
+                                if (rect.width > 20 && rect.height > 10) {
+                                    el.click();
+                                    return { clicked: true, text: directText, modo: modo };
+                                }
+                            }
+                        }
+                        return { clicked: false, modo: modo };
+                    }
+                """, aba_norm)
+                if result and result.get("clicked"):
+                    logger.info(f"[UpSeller] Aba clicada: {result.get('text')}")
                     await self._page.wait_for_timeout(2000)
-                else:
-                    logger.warning(f"[UpSeller] Nao filtrou por loja '{filtro_loja}' em Para Imprimir")
+                    return True
+                return False
 
-            # Verificar se ha pedidos para imprimir
-            page_text = await self._page.evaluate("document.body.innerText")
-            if "Nenhum Dado" in page_text or "Total 0" in page_text:
-                logger.info("[UpSeller] Para Imprimir tem 0 pedidos, pulando download de etiquetas.")
+            async def _clicar_subaba_nao_impressa() -> bool:
+                """
+                Garante que estamos na sub-aba "Etiqueta nao impressa".
+                Isso evita gerar da aba "Todos" e melhora a baixa para "impresso".
+                """
+                try:
+                    ok = await self._ativar_subaba_etiquetas(
+                        alvo="nao_impressa",
+                        tentativas=3,
+                        estrito=True
+                    )
+                    if ok:
+                        logger.info("[UpSeller] Sub-aba 'Etiqueta nao impressa' selecionada")
+                        await self._page.wait_for_timeout(1300)
+                    else:
+                        logger.warning("[UpSeller] Sub-aba 'Etiqueta nao impressa' nao encontrada; seguindo com aba atual")
+                    return bool(ok)
+                except Exception as e_sub:
+                    logger.warning(f"[UpSeller] Erro ao selecionar sub-aba 'Etiqueta nao impressa': {e_sub}")
+                    return False
+
+            async def _marcar_como_impresso_pos_download() -> bool:
+                """
+                Fallback de consistencia: apos baixar etiquetas, tenta marcar o lote como impresso.
+                """
+                if aba_norm.startswith("falha"):
+                    return True
+                try:
+                    await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
+                    await self._page.wait_for_timeout(2200)
+                    await self._fechar_popups()
+                    await _clicar_aba_impressao()
+                    ok_sub = await _clicar_subaba_nao_impressa()
+                    st_sub = await self._status_subaba_etiquetas("nao_impressa")
+                    if st_sub.get("exists") and not ok_sub:
+                        logger.warning("[UpSeller] Nao confirmou sub-aba 'nao impressa' para marcacao pos-download")
+                        return False
+
+                    if filtro_lojas:
+                        if len(filtro_lojas) == 1:
+                            ok_filtro = await self._aplicar_filtro_loja_seguro(
+                                filtro_lojas[0], contexto="marcar_impresso_pos_download"
+                            )
+                        else:
+                            ok_filtro = await self._aplicar_filtro_lojas_seguro(
+                                filtro_lojas, contexto="marcar_impresso_pos_download_lote"
+                            )
+                        if not ok_filtro:
+                            logger.warning("[UpSeller] Nao conseguiu aplicar filtro para marcar como impresso")
+                            return False
+                        await _clicar_subaba_nao_impressa()
+
+                    tem_nao_impressa = await self._page.evaluate("""
+                        (() => {
+                            const rows = document.querySelectorAll('tbody tr.ant-table-row, tbody tr.top_row, tbody tr:not(.ant-table-placeholder)');
+                            const vis = Array.from(rows).filter(r => {
+                                const t = (r.textContent || '').trim();
+                                return t.length > 5 && !t.includes('Nenhum Dado');
+                            });
+                            if (vis.length > 0) return true;
+                            const txt = (document.body.innerText || '').toLowerCase();
+                            return !(txt.includes('nenhum dado') || txt.includes('total 0'));
+                        })()
+                    """)
+                    if not tem_nao_impressa:
+                        return True
+
+                    try:
+                        select_all = await self._page.wait_for_selector(
+                            'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
+                            'thead input[type="checkbox"], .ant-table-header .ant-checkbox-wrapper',
+                            timeout=4000
+                        )
+                        await select_all.click()
+                        await self._page.wait_for_timeout(700)
+                    except Exception:
+                        pass
+
+                    if (not filtro_lojas) or filtro_multiplo:
+                        try:
+                            loc_sel_todas = self._page.locator(
+                                '.ant-dropdown-menu-item:has-text("Selecionar todas")'
+                            ).first
+                            if await loc_sel_todas.is_visible(timeout=1200):
+                                await loc_sel_todas.click()
+                                await self._page.wait_for_timeout(700)
+                        except Exception:
+                            pass
+
+                    acao = await self._page.evaluate("""
+                        (() => {
+                            const normalize = (s) => (s || '')
+                                .toLowerCase()
+                                .normalize('NFD')
+                                .replace(/[\\u0300-\\u036f]/g, '')
+                                .replace(/\\s+/g, ' ')
+                                .trim();
+                            const clickNode = (el) => {
+                                if (!el) return false;
+                                try { el.click(); return true; } catch(_) {}
+                                try {
+                                    ['mouseover','mouseenter','mousedown','mouseup','click'].forEach(ev =>
+                                        el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window }))
+                                    );
+                                    return true;
+                                } catch(_) {}
+                                return false;
+                            };
+                            const direta = [
+                                'marcar como impressa',
+                                'marcar impressa',
+                                'definir como impressa',
+                                'mover para impressa',
+                                'mark as printed',
+                                'set as printed'
+                            ];
+                            const botoes = document.querySelectorAll('button, a, [role="button"], .ant-btn, .ant-btn-link');
+                            for (const b of botoes) {
+                                const txt = normalize(b.textContent || b.innerText || '');
+                                if (!txt) continue;
+                                if (!direta.some(t => txt.includes(t))) continue;
+                                const r = b.getBoundingClientRect();
+                                if (r.width < 25 || r.height < 10 || r.y > 440) continue;
+                                if (clickNode(b)) return { ok: true, modo: 'direto', texto: txt };
+                            }
+                            for (const b of botoes) {
+                                const txt = normalize(b.textContent || b.innerText || '');
+                                if (!txt) continue;
+                                if (!(txt.includes('mais acoes') || txt.includes('mais ações') || txt.includes('more actions'))) continue;
+                                const r = b.getBoundingClientRect();
+                                if (r.width < 25 || r.height < 10 || r.y > 460) continue;
+                                if (clickNode(b)) return { ok: true, modo: 'abrir_menu', texto: txt };
+                            }
+                            return { ok: false, modo: '', texto: '' };
+                        })()
+                    """)
+
+                    if isinstance(acao, dict) and acao.get("modo") == "abrir_menu":
+                        item = self._page.locator(
+                            '.ant-dropdown-menu-item:has-text("impressa"), '
+                            '.ant-dropdown-menu-item:has-text("Impresso"), '
+                            '.ant-dropdown-menu-item:has-text("Marcar"), '
+                            '.ant-dropdown-menu-item:has-text("Printed")'
+                        ).first
+                        if await item.count() > 0 and await item.is_visible(timeout=2500):
+                            await item.click()
+                            await self._page.wait_for_timeout(900)
+
+                    try:
+                        modal_btn = await self._page.wait_for_selector(
+                            '.ant-modal button.ant-btn-primary',
+                            timeout=3500
+                        )
+                        if modal_btn:
+                            await modal_btn.click()
+                            await self._page.wait_for_timeout(1300)
+                    except Exception:
+                        pass
+
+                    logger.info("[UpSeller] Pos-download: tentativa de marcar lote como impresso executada")
+                    return True
+                except Exception as e_mark:
+                    logger.warning(f"[UpSeller] Falha ao marcar como impresso no pos-download: {e_mark}")
+                    return False
+
+            clicou_aba_alvo = await _clicar_aba_impressao()
+            if not clicou_aba_alvo and aba_norm.startswith("falha"):
+                logger.info("[UpSeller] Aba de etiquetas em falha nao encontrada nesta tela")
+                return []
+
+            if not aba_norm.startswith("falha"):
+                ok_subaba = await _clicar_subaba_nao_impressa()
+                st_subaba = await self._status_subaba_etiquetas("nao_impressa")
+                if st_subaba.get("exists") and not ok_subaba:
+                    logger.error(
+                        "[UpSeller] Abortando download para evitar imprimir aba incorreta (ativa: %s)",
+                        st_subaba.get("active_text", "")
+                    )
+                    return []
+
+            # Se o fluxo e "todas as lojas", limpar qualquer filtro residual
+            # deixado por etapas anteriores para evitar falso-zero.
+            if not filtro_lojas:
+                try:
+                    await self._limpar_filtro_loja()
+                    if not aba_norm.startswith("falha"):
+                        await _clicar_subaba_nao_impressa()
+                except Exception as e_clear:
+                    logger.warning(f"[UpSeller] Aviso ao limpar filtro residual em etiquetas: {e_clear}")
+
+            # 2. FILTRAR POR LOJA(S) se especificado
+            if filtro_lojas:
+                if len(filtro_lojas) == 1:
+                    filtrou = await self._aplicar_filtro_loja_seguro(
+                        filtro_lojas[0], contexto="baixar_etiquetas"
+                    )
+                else:
+                    filtrou = await self._aplicar_filtro_lojas_seguro(
+                        filtro_lojas, contexto="baixar_etiquetas_lote"
+                    )
+                if not filtrou:
+                    logger.error(f"[UpSeller] Nao filtrou por loja(s) '{filtro_desc}'. Abortando para nao baixar de todas.")
+                    return []
+                logger.info(f"[UpSeller] Etiquetas filtradas por loja(s): {filtro_desc}")
+                # Alguns filtros resetam para "Todos"; reafirma a sub-aba correta.
+                if not aba_norm.startswith("falha"):
+                    ok_subaba = await _clicar_subaba_nao_impressa()
+                    st_subaba = await self._status_subaba_etiquetas("nao_impressa")
+                    if st_subaba.get("exists") and not ok_subaba:
+                        logger.error(
+                            "[UpSeller] Filtro aplicado, mas sem ativar 'Etiqueta nao impressa' (ativa: %s).",
+                            st_subaba.get("active_text", "")
+                        )
+                        return []
+
+            # Verificar se ha etiquetas na TABELA (nao no texto geral da pagina)
+            # Diferencia "pagina carregada com 0 itens" vs "pagina ainda carregando"
+            max_tentativas = 6
+            pagina_carregada_vazia = False
+            tentou_recuperar_zero = False
+            for tentativa in range(max_tentativas):
+                tem_dados = await self._page.evaluate("""
+                    (() => {
+                        // 1. Verificar se a tabela tem linhas de dados (nao placeholder)
+                        const rows = document.querySelectorAll(
+                            'tbody tr.ant-table-row, tbody tr.top_row, ' +
+                            'tbody tr:not(.ant-table-placeholder)'
+                        );
+                        const dataRows = Array.from(rows).filter(r => {
+                            const text = (r.textContent || '').trim();
+                            return text.length > 5 && !text.includes('Nenhum Dado');
+                        });
+                        if (dataRows.length > 0) return { hasData: true, count: dataRows.length, loaded: true };
+
+                        // 2. Verificar se "Selecionado" ou "Total XX" na barra de acoes
+                        const actionBar = document.body.innerText;
+                        const selMatch = actionBar.match(/Selecionado\\s+(\\d+)/);
+                        const totalMatch = actionBar.match(/Total\\s+(\\d+)/);
+                        if (totalMatch && parseInt(totalMatch[1]) > 0)
+                            return { hasData: true, count: parseInt(totalMatch[1]), loaded: true };
+                        if (selMatch && parseInt(selMatch[1]) > 0)
+                            return { hasData: true, count: parseInt(selMatch[1]), loaded: true };
+
+                        // 3. Verificar contagem na aba ativa (ex: "Etiqueta para Impressão 50")
+                        const activeTab = document.querySelector('.ant-tabs-tab-active, .ant-tabs-tab.ant-tabs-tab-active');
+                        if (activeTab) {
+                            const tabText = activeTab.textContent || '';
+                            const m = tabText.match(/(\\d+)/);
+                            if (m) {
+                                const n = parseInt(m[1]);
+                                if (n > 0) return { hasData: true, count: n, loaded: true };
+                                // Aba ativa mostra 0 — pagina carregou mas esta vazia
+                                return { hasData: false, count: 0, loaded: true, tabText: tabText.trim() };
+                            }
+                        }
+
+                        // 4. Verificar se a pagina carregou (tem tabs visiveis, "Nenhum Dado Disponivel", etc.)
+                        const tabs = document.querySelectorAll('.ant-tabs-tab');
+                        const temPlaceholder = document.body.innerText.includes('Nenhum Dado Dispon');
+                        if (tabs.length > 0 || temPlaceholder) {
+                            return { hasData: false, count: 0, loaded: true, tabCount: tabs.length };
+                        }
+
+                        // Pagina ainda nao carregou
+                        return { hasData: false, count: 0, loaded: false };
+                    })()
+                """)
+
+                if tem_dados and tem_dados.get("hasData"):
+                    print(f"[baixar_etiquetas] Encontradas {tem_dados.get('count')} etiqueta(s)")
+                    logger.info(f"[UpSeller] Encontradas {tem_dados.get('count')} etiqueta(s) na tabela")
+                    break
+
+                # Se a pagina carregou mas nao tem dados, nao precisa ficar retentando
+                if tem_dados and tem_dados.get("loaded"):
+                    tab_info = tem_dados.get("tabText", "")
+
+                    # Recuperacao automatica: em alguns casos a tela abre com estado/filtro
+                    # residual e retorna 0 indevidamente apesar de haver pendencias.
+                    if (
+                        not tentou_recuperar_zero
+                        and not filtro_lojas
+                        and not aba_norm.startswith("falha")
+                    ):
+                        tentou_recuperar_zero = True
+                        print("[baixar_etiquetas] 0 detectado, tentando recuperar estado/filtro...")
+                        logger.info("[UpSeller] 0 detectado em impressao; tentando recuperar estado/filtro antes de abortar")
+                        try:
+                            await self._page.reload(wait_until="domcontentloaded")
+                            await self._page.wait_for_timeout(2500)
+                            await self._fechar_popups()
+                            await _clicar_aba_impressao()
+                            await _clicar_subaba_nao_impressa()
+                            await self._limpar_filtro_loja()
+                            await self._page.wait_for_timeout(1200)
+                            continue
+                        except Exception as e_retry_zero:
+                            logger.warning(f"[UpSeller] Falha na recuperacao de falso-zero em etiquetas: {e_retry_zero}")
+
+                    print(f"[baixar_etiquetas] Pagina carregada mas vazia (aba: '{tab_info}', count=0)")
+                    logger.info(f"[UpSeller] Pagina carregada, 0 etiquetas pendentes (aba: {tab_info})")
+                    pagina_carregada_vazia = True
+                    break
+
+                if tentativa < max_tentativas - 1:
+                    print(f"[baixar_etiquetas] Pagina ainda carregando... ({tentativa+1}/{max_tentativas})")
+                    logger.info(f"[UpSeller] Pagina carregando, aguardando... ({tentativa+1}/{max_tentativas})")
+                    await self._page.wait_for_timeout(10000)
+                    await self._page.reload(wait_until="domcontentloaded")
+                    await self._page.wait_for_timeout(3000)
+                    await self._fechar_popups()
+                    await _clicar_aba_impressao()  # Re-clicar aba apos reload
+                    if not aba_norm.startswith("falha"):
+                        await _clicar_subaba_nao_impressa()
+                    if filtro_lojas:
+                        if len(filtro_lojas) == 1:
+                            ok_reload = await self._aplicar_filtro_loja_seguro(
+                                filtro_lojas[0], contexto="baixar_etiquetas_reload"
+                            )
+                        else:
+                            ok_reload = await self._aplicar_filtro_lojas_seguro(
+                                filtro_lojas, contexto="baixar_etiquetas_reload_lote"
+                            )
+                        if not ok_reload:
+                            logger.error(
+                                f"[UpSeller] Filtro '{filtro_desc}' perdeu consistencia apos reload em etiquetas."
+                            )
+                            return []
+            else:
+                print("[baixar_etiquetas] ERRO: Pagina nao carregou apos 6 tentativas")
+                logger.info("[UpSeller] Pagina nao carregou apos 6 tentativas.")
+                await self.screenshot("etiquetas_00_nao_carregou")
+                return []
+
+            if pagina_carregada_vazia:
+                print("[baixar_etiquetas] 0 etiquetas pendentes - nada para imprimir")
+                await self.screenshot("etiquetas_00_sem_dados")
                 return []
 
             await self.screenshot("etiquetas_01_para_imprimir")
 
-            # 3. Selecionar todos os pedidos
+            # 3. Clicar checkbox "selecionar todos" no header da tabela
             try:
                 select_all = await self._page.wait_for_selector(
                     'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
@@ -1578,13 +6227,13 @@ class UpSellerScraper:
                     timeout=5000
                 )
                 await select_all.click()
-                await self._page.wait_for_timeout(1000)
+                await self._page.wait_for_timeout(1500)
                 logger.info("[UpSeller] Checkbox 'selecionar todos' clicado")
             except Exception:
                 logger.warning("[UpSeller] Checkbox 'selecionar todos' nao encontrado, tentando individuais")
                 has_data = await self._page.query_selector('tr.row, tr.top_row, tbody tr')
                 if not has_data:
-                    logger.info("[UpSeller] Nenhuma linha de pedido encontrada, pulando.")
+                    logger.info("[UpSeller] Nenhuma linha encontrada.")
                     return []
                 checkboxes = await self._page.query_selector_all(
                     'tbody .ant-checkbox-input, tr.top_row .ant-checkbox-input'
@@ -1595,135 +6244,198 @@ class UpSellerScraper:
                     except:
                         pass
 
+            # 4. Clicar "Selecionar todas as paginas" se o popup aparecer
+            # IMPORTANTE: NÃO clicar quando filtro de loja esta ativo!
+            # O "Selecionar todas as páginas" do UpSeller ignora o filtro
+            # e seleciona pedidos de TODAS as lojas no backend.
+            if (not filtro_lojas) or filtro_multiplo:
+                try:
+                    loc_sel_todas = self._page.locator(
+                        '.ant-dropdown-menu-item:has-text("Selecionar todas")'
+                    ).first
+                    if await loc_sel_todas.is_visible(timeout=2000):
+                        await loc_sel_todas.click()
+                        logger.info("[UpSeller] 'Selecionar todas as paginas' clicado")
+                        await self._page.wait_for_timeout(1500)
+                    else:
+                        logger.info("[UpSeller] Sem popup 'Selecionar todas' (pagina unica)")
+                except Exception:
+                    logger.info("[UpSeller] Sem popup de selecao de paginas (pagina unica)")
+            else:
+                logger.info(
+                    f"[UpSeller] Filtro por loja unica '{filtro_desc}' ativo - "
+                    "nao clicando 'Selecionar todas as paginas'"
+                )
+
             await self.screenshot("etiquetas_02_selecionados")
 
-            # 4. Clicar em "Imprimir em Massa" (dropdown trigger na barra de acoes)
-            # Este botao e: a.ant-btn.ant-btn-link.my_btn.ant-dropdown-trigger
-            # O download acontece DIRETAMENTE ao clicar, pois as configs ja estao salvas
+            # 5-6. HOVER no "Imprimir Etiquetas" para abrir dropdown, depois clicar opcao
+            # IMPORTANTE: O dropdown do UpSeller abre com HOVER, nao com click!
+            # Usar Playwright .hover() que dispara mouseenter real
             try:
-                async with self._page.expect_download(timeout=120000) as download_info:
-                    # Clicar "Imprimir em Massa"
-                    clicou = await self._page.evaluate("""
-                        (() => {
-                            // Buscar o botao "Imprimir em Massa" na barra de acoes
-                            const btns = document.querySelectorAll(
-                                'a.ant-btn.ant-btn-link, a.ant-dropdown-trigger, ' +
-                                'button.ant-btn-link, span'
-                            );
-                            for (const btn of btns) {
-                                const text = (btn.textContent || '').trim();
-                                if (text === 'Imprimir em Massa' || text.includes('Imprimir em Massa')) {
-                                    const rect = btn.getBoundingClientRect();
-                                    // Garantir que esta na barra de acoes (topo da pagina)
-                                    if (rect.width > 30 && rect.y < 400) {
-                                        btn.click();
-                                        return { clicked: true, text: text, y: Math.round(rect.y) };
-                                    }
-                                }
-                            }
-                            return { clicked: false };
-                        })()
-                    """)
+                # Encontrar o botao "Imprimir Etiquetas" na barra de acoes (dropdown trigger)
+                trigger = self._page.locator(
+                    'a.ant-dropdown-trigger:has-text("Imprimir Etiquetas")'
+                ).first
 
-                    if not clicou or not clicou.get("clicked"):
-                        # Fallback: Playwright locator
-                        logger.warning("[UpSeller] JS nao encontrou 'Imprimir em Massa', tentando locator")
-                        btn_massa = self._page.locator('a:has-text("Imprimir em Massa")').first
-                        if await btn_massa.count() > 0:
-                            await btn_massa.click(timeout=5000)
-                            logger.info("[UpSeller] Clicou 'Imprimir em Massa' via locator")
-                        else:
-                            logger.error("[UpSeller] Botao 'Imprimir em Massa' nao encontrado")
-                            await self.screenshot("etiquetas_sem_botao_imprimir")
-                            return []
-                    else:
-                        logger.info(f"[UpSeller] Clicou 'Imprimir em Massa': {clicou}")
+                if await trigger.count() == 0:
+                    trigger = self._page.locator(
+                        'a.ant-btn-link:has-text("Imprimir Etiquetas")'
+                    ).first
 
+                if await trigger.count() == 0:
+                    trigger = self._page.locator(
+                        'a:has-text("Imprimir em Massa")'
+                    ).first
+
+                if await trigger.count() == 0:
+                    logger.error("[UpSeller] Botao 'Imprimir Etiquetas' nao encontrado na barra")
+                    await self.screenshot("etiquetas_sem_botao_imprimir")
+                    return []
+
+                # HOVER para abrir o dropdown (Ant Design usa hover, nao click)
+                print("[baixar_etiquetas] Fazendo HOVER no trigger do dropdown...")
+                logger.info("[UpSeller] Fazendo hover em 'Imprimir Etiquetas' para abrir dropdown...")
+                await trigger.hover()
+                await self._page.wait_for_timeout(1500)
+
+                await self.screenshot("etiquetas_03_dropdown_aberto")
+
+                # Clicar na opcao "Imprimir Etiquetas" dentro do dropdown visivel
+                opcao = self._page.locator(
+                    '.ant-dropdown-menu-item:has-text("Imprimir Etiquetas")'
+                ).first
+
+                if await opcao.is_visible(timeout=3000):
+                    opcao_text = await opcao.text_content()
+                    logger.info(f"[UpSeller] Clicando opcao do dropdown: '{(opcao_text or '').strip()}'")
+                else:
+                    # Fallback: primeira opcao visivel no dropdown
+                    opcao = self._page.locator(
+                        '.ant-dropdown:not([style*="display: none"]) .ant-dropdown-menu-item'
+                    ).first
+                    logger.warning("[UpSeller] Usando primeira opcao do dropdown como fallback")
+
+                # ---- Capturar DOWNLOAD e POPUP (novo tab) ----
+                # UpSeller pode: (a) baixar PDF, (b) abrir novo tab com PDF,
+                # (c) abrir novo tab com preview HTML
+                _captured_downloads = []
+                _captured_popups = []
+
+                self._page.on('download', lambda d: _captured_downloads.append(d))
+                self._page.context.on('page', lambda p: _captured_popups.append(p))
+
+                # Clicar a opcao do dropdown
+                await opcao.click()
+                print("[baixar_etiquetas] Opcao do dropdown CLICADA, aguardando resposta...")
+                logger.info("[UpSeller] Opcao clicada, aguardando resposta...")
+                await self._page.wait_for_timeout(3000)
+
+                # Se aparece modal de confirmacao, clicar no botao primario
+                try:
+                    modal_btn = await self._page.wait_for_selector(
+                        '.ant-modal button.ant-btn-primary',
+                        timeout=5000
+                    )
+                    if modal_btn:
+                        btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
+                        logger.info(f"[UpSeller] Modal encontrado, botao: '{btn_text}'")
+                        await modal_btn.click()
+                        await self._page.wait_for_timeout(3000)
+                except Exception:
+                    logger.info("[UpSeller] Sem modal de confirmacao")
+
+                await self.screenshot("etiquetas_04_apos_click")
+
+                # Aguardar ate 90s por download ou popup
+                for i in range(45):
+                    if _captured_downloads or _captured_popups:
+                        break
                     await self._page.wait_for_timeout(2000)
-                    await self.screenshot("etiquetas_03_apos_imprimir_massa")
+                    if i % 5 == 4:
+                        logger.info(f"[UpSeller] Aguardando download/popup... ({(i+1)*2}s)")
 
-                    # O "Imprimir em Massa" pode abrir um dropdown com sub-opcoes
-                    # ou iniciar o download direto. Verificar se ha dropdown aberto.
-                    dropdown_items = await self._page.evaluate("""
-                        (() => {
-                            const items = document.querySelectorAll(
-                                '.ant-dropdown:not(.ant-dropdown-hidden) li, ' +
-                                '.ant-dropdown-menu-item'
-                            );
-                            if (items.length === 0) return { hasDropdown: false };
-                            const options = Array.from(items).map(i => i.textContent.trim());
-                            return { hasDropdown: true, options: options };
-                        })()
-                    """)
+                save_path = os.path.join(
+                    self.download_dir,
+                    f"etiquetas_{(filtro_desc or 'todas').replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                )
 
-                    if dropdown_items and dropdown_items.get("hasDropdown"):
-                        logger.info(f"[UpSeller] Dropdown aberto com opcoes: {dropdown_items.get('options')}")
-                        # Clicar na primeira opcao (Imprimir Etiquetas ou similar)
-                        await self._page.evaluate("""
-                            (() => {
-                                const items = document.querySelectorAll(
-                                    '.ant-dropdown:not(.ant-dropdown-hidden) li'
-                                );
-                                for (const item of items) {
-                                    const text = (item.textContent || '').trim().toLowerCase();
-                                    // Priorizar opcao com DDC/casada
-                                    if (text.includes('casada') || text.includes('ddc')) {
-                                        item.click();
-                                        return text;
-                                    }
-                                }
-                                // Fallback: primeira opcao de impressao
-                                for (const item of items) {
-                                    const text = (item.textContent || '').trim().toLowerCase();
-                                    if (text.includes('imprimir') || text.includes('etiqueta')) {
-                                        item.click();
-                                        return text;
-                                    }
-                                }
-                                // Clicar na primeira opcao
-                                if (items.length > 0) { items[0].click(); return items[0].textContent.trim(); }
-                                return null;
-                            })()
-                        """)
-                        await self._page.wait_for_timeout(2000)
+                print(f"[baixar_etiquetas] Resultado: downloads={len(_captured_downloads)}, popups={len(_captured_popups)}")
 
-                    # Se aparece modal de confirmacao, clicar no botao primario
+                if _captured_downloads:
+                    # === Download direto ===
+                    download = _captured_downloads[0]
+                    filename = download.suggested_filename or os.path.basename(save_path)
+                    actual_path = os.path.join(self.download_dir, filename)
+                    await download.save_as(actual_path)
+                    pdfs_baixados.append(actual_path)
+                    logger.info(f"[UpSeller] PDF baixado via download: {actual_path}")
+
+                elif _captured_popups:
+                    # === Novo tab aberto (PDF ou preview) ===
+                    new_page = _captured_popups[0]
+                    logger.info(f"[UpSeller] Novo tab aberto: {new_page.url}")
                     try:
-                        modal_btn = await self._page.wait_for_selector(
-                            '.ant-modal button.ant-btn-primary',
-                            timeout=5000
-                        )
-                        if modal_btn:
-                            btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
-                            logger.info(f"[UpSeller] Modal encontrado, botao: '{btn_text}'")
-                            await modal_btn.click()
-                            await self._page.wait_for_timeout(2000)
+                        await new_page.wait_for_load_state('networkidle', timeout=60000)
                     except Exception:
-                        logger.info("[UpSeller] Sem modal de confirmacao, aguardando download direto...")
+                        await new_page.wait_for_timeout(5000)
 
-                download = await download_info.value
-                filename = download.suggested_filename or f"etiquetas_{filtro_loja or 'todas'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-                save_path = os.path.join(self.download_dir, filename)
-                await download.save_as(save_path)
-                pdfs_baixados.append(save_path)
-                logger.info(f"[UpSeller] PDF baixado: {save_path}")
+                    page_url = new_page.url
+                    logger.info(f"[UpSeller] URL do novo tab: {page_url}")
+
+                    salvo_popup = False
+
+                    # Prioridade: salvar PDF ORIGINAL (evita capturar sidebar/miniaturas do preview).
+                    try:
+                        salvo_popup = await self._salvar_pdf_de_popup(new_page, save_path)
+                    except Exception as popup_err:
+                        logger.warning(f"[UpSeller] Falha ao extrair PDF real do popup: {popup_err}")
+
+                    # Fallback final: print da pagina (pode vir com UI do preview).
+                    if not salvo_popup:
+                        try:
+                            await new_page.pdf(path=save_path, format='A4', print_background=True)
+                            logger.warning(f"[UpSeller] Fallback page.pdf() usado (preview HTML): {save_path}")
+                            salvo_popup = True
+                        except Exception as pdf_err:
+                            logger.error(f"[UpSeller] Erro ao renderizar PDF do popup: {pdf_err}")
+
+                    if salvo_popup and os.path.exists(save_path):
+                        pdfs_baixados.append(save_path)
+
+                    try:
+                        await new_page.close()
+                    except Exception:
+                        pass
+
+                else:
+                    # === Nem download nem popup ===
+                    logger.warning("[UpSeller] Nem download nem popup detectado")
+                    await self.screenshot("etiquetas_sem_download")
+
+                    # Fallback: verificar filesystem
+                    downloads_novos = self._verificar_downloads_novos("*.pdf")
+                    if downloads_novos:
+                        pdfs_baixados.extend(downloads_novos)
+                        logger.info(f"[UpSeller] PDFs encontrados no filesystem: {len(downloads_novos)}")
+                    else:
+                        logger.error("[UpSeller] Nenhum PDF obtido por nenhum metodo")
+
+                if pdfs_baixados and not aba_norm.startswith("falha"):
+                    await _marcar_como_impresso_pos_download()
 
             except Exception as e:
-                logger.warning(f"[UpSeller] Download nao capturado via expect_download: {e}")
-                # Fallback: verificar filesystem por downloads recentes
-                await self._page.wait_for_timeout(5000)
-                downloads_novos = self._verificar_downloads_novos("*.pdf")
-                if downloads_novos:
-                    pdfs_baixados.extend(downloads_novos)
-                    logger.info(f"[UpSeller] PDFs encontrados via filesystem: {len(downloads_novos)}")
-                else:
-                    logger.error("[UpSeller] Nenhum PDF baixado por nenhum metodo")
+                print(f"[baixar_etiquetas] ERRO no processo de impressao: {e}")
+                logger.error(f"[UpSeller] Erro no processo de impressao: {e}")
+                import traceback
+                traceback.print_exc()
 
             await self.screenshot("etiquetas_04_finalizado")
 
         except Exception as e:
             logger.error(f"[UpSeller] Erro ao baixar etiquetas: {e}")
 
+        print(f"[baixar_etiquetas] FIM - Total de PDFs: {len(pdfs_baixados)}")
         logger.info(f"[UpSeller] Total de PDFs baixados: {len(pdfs_baixados)}")
         return pdfs_baixados
 
@@ -2051,7 +6763,11 @@ class UpSellerScraper:
     # EXTRACAO DE DADOS DE PEDIDOS (XLSX)
     # ----------------------------------------------------------------
 
-    async def extrair_dados_pedidos(self, status_filter: str = "para_enviar") -> str:
+    async def extrair_dados_pedidos(
+        self,
+        status_filter: str = "para_imprimir",
+        filtro_loja: Union[str, List[str], None] = None
+    ) -> str:
         """
         Scrapa a lista de pedidos do UpSeller e gera XLSX compativel com
         ProcessadorEtiquetasShopee.
@@ -2069,6 +6785,7 @@ class UpSellerScraper:
 
         Args:
             status_filter: "para_enviar", "para_imprimir", "para_retirada", "para_emitir"
+            filtro_loja: nome da loja (str) ou lista de lojas para aplicar filtro antes da extracao
 
         Retorna: caminho do XLSX gerado (ou "" se falhou)
         """
@@ -2111,6 +6828,30 @@ class UpSellerScraper:
             except Exception:
                 logger.warning(f"[UpSeller] Aba '{tab_text}' nao encontrada, usando pagina atual...")
 
+            # Aplicar filtro de loja quando informado (evita misturar produtos de outras lojas).
+            filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+            if filtro_lojas:
+                try:
+                    if len(filtro_lojas) == 1:
+                        filtrou = await self._aplicar_filtro_loja_seguro(
+                            filtro_lojas[0], contexto=f"extrair_{status_filter}"
+                        )
+                        filtro_desc = filtro_lojas[0]
+                    else:
+                        filtrou = await self._aplicar_filtro_lojas_seguro(
+                            filtro_lojas, contexto=f"extrair_{status_filter}_lote"
+                        )
+                        filtro_desc = f"{len(filtro_lojas)} lojas"
+                    if filtrou:
+                        logger.info(f"[UpSeller] Extracao de pedidos filtrada por loja(s): {filtro_desc}")
+                        await self._page.wait_for_timeout(1200)
+                    else:
+                        logger.error(f"[UpSeller] Nao filtrou loja(s) '{filtro_desc}' para extracao. Abortando.")
+                        return ""
+                except Exception as e_f:
+                    logger.error(f"[UpSeller] Erro ao filtrar loja(s) na extracao: {e_f}. Abortando.")
+                    return ""
+
             # Aguardar tabela carregar
             try:
                 await self._page.wait_for_selector(
@@ -2122,6 +6863,9 @@ class UpSellerScraper:
 
             # Screenshot para debug
             await self.screenshot("pedidos_lista")
+
+            # Selecionar 300/pagina para reduzir paginacao
+            await self._selecionar_300_por_pagina()
 
             # Extrair pedidos de TODAS as paginas
             pagina_num = 1
@@ -2161,6 +6905,100 @@ class UpSellerScraper:
         # Gerar XLSX
         xlsx_path = self._gerar_xlsx_pedidos(pedidos)
         logger.info(f"[UpSeller] XLSX gerado com {len(pedidos)} pedidos: {xlsx_path}")
+        return xlsx_path
+
+    async def extrair_dados_pedidos_em_impressao(self, filtro_loja: Union[str, List[str], None] = None) -> str:
+        """
+        Extrai pedidos diretamente da pagina 'Etiqueta para Impressao'
+        (/pt/order/in-process) e gera XLSX compativel.
+
+        Este metodo e usado como fallback no botao 'Gerar Etiquetas',
+        quando a extracao via /order/to-ship nao retorna pedidos.
+        """
+        if not self._page:
+            await self._iniciar_navegador()
+
+        if not await self._esta_logado():
+            if not await self.login():
+                return ""
+
+        logger.info("[UpSeller] Extraindo dados de pedidos em /pt/order/in-process...")
+        pedidos = []
+
+        try:
+            await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(2500)
+            await self._fechar_popups()
+            await self._fechar_popups()
+
+            filtro_lojas = self._normalizar_lista_lojas_filtro(filtro_loja)
+            if filtro_lojas:
+                try:
+                    if len(filtro_lojas) == 1:
+                        filtrou = await self._aplicar_filtro_loja_seguro(
+                            filtro_lojas[0], contexto="extrair_inprocess"
+                        )
+                        filtro_desc = filtro_lojas[0]
+                    else:
+                        filtrou = await self._aplicar_filtro_lojas_seguro(
+                            filtro_lojas, contexto="extrair_inprocess_lote"
+                        )
+                        filtro_desc = f"{len(filtro_lojas)} lojas"
+                    if filtrou:
+                        logger.info(f"[UpSeller] Extracao (in-process) filtrada por loja(s): {filtro_desc}")
+                        await self._page.wait_for_timeout(1200)
+                    else:
+                        logger.error(f"[UpSeller] Nao filtrou loja(s) '{filtro_desc}' em in-process. Abortando.")
+                        return ""
+                except Exception as e_f:
+                    logger.error(f"[UpSeller] Erro ao filtrar loja(s) em in-process: {e_f}. Abortando.")
+                    return ""
+
+            try:
+                await self._page.wait_for_selector(
+                    'table.my_custom_table, tr.top_row, tr.row.my_table_border',
+                    timeout=12000
+                )
+            except Exception:
+                logger.warning("[UpSeller] Tabela de in-process nao carregou, tentando extrair mesmo assim...")
+
+            await self.screenshot("pedidos_inprocess_lista")
+
+            # Selecionar 300/pagina para reduzir paginacao
+            await self._selecionar_300_por_pagina()
+
+            pagina_num = 1
+            while True:
+                logger.info(f"[UpSeller] In-process: processando pagina {pagina_num}...")
+                pedidos_pagina = await self._extrair_pedidos_pagina()
+                if pedidos_pagina:
+                    pedidos.extend(pedidos_pagina)
+                    logger.info(f"[UpSeller] In-process pagina {pagina_num}: {len(pedidos_pagina)} pedidos extraidos")
+                else:
+                    logger.info(f"[UpSeller] In-process pagina {pagina_num}: nenhum pedido encontrado")
+                    if pagina_num == 1:
+                        pedidos_alt = await self._extrair_pedidos_alternativo()
+                        if pedidos_alt:
+                            pedidos.extend(pedidos_alt)
+                            logger.info(f"[UpSeller] In-process metodo alternativo: {len(pedidos_alt)} pedidos")
+                    break
+
+                proximo = await self._ir_proxima_pagina()
+                if not proximo:
+                    break
+                pagina_num += 1
+                await self._page.wait_for_timeout(1200)
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro ao extrair pedidos em in-process: {e}")
+            await self.screenshot("pedidos_inprocess_erro")
+
+        if not pedidos:
+            logger.warning("[UpSeller] Nenhum pedido encontrado em /pt/order/in-process")
+            return ""
+
+        xlsx_path = self._gerar_xlsx_pedidos(pedidos)
+        logger.info(f"[UpSeller] XLSX (in-process) gerado com {len(pedidos)} pedidos: {xlsx_path}")
         return xlsx_path
 
     async def _extrair_lojas_da_tabela(self, lojas_dict: dict):
@@ -2251,6 +7089,12 @@ class UpSellerScraper:
                         if linhas_cell:
                             order_sn = re.sub(r'\s*(Combinado|Pendente|Processando).*$', '', linhas_cell[0]).strip()
 
+                # Fallback de identificador unico por linha (UP_ID no top_row)
+                up_id = ''
+                m_up = re.search(r'UP[A-Z0-9]{4,}', top_text, flags=re.IGNORECASE)
+                if m_up:
+                    up_id = (m_up.group(0) or '').upper()
+
                 if not loja:
                     loja = 'Desconhecida'
 
@@ -2259,13 +7103,595 @@ class UpSellerScraper:
                 elif marketplace and not lojas_dict[loja]['marketplace']:
                     lojas_dict[loja]['marketplace'] = marketplace
 
-                if order_sn:
-                    lojas_dict[loja]['orders'].add(order_sn)
-                else:
-                    lojas_dict[loja]['orders'].add(f'_pedido_{len(lojas_dict[loja]["orders"])}_{i}')
+                # A chave principal deve ser UP_ID da top_row (quando disponivel),
+                # pois e a referencia mais estavel da linha e evita erro de pareamento
+                # entre top_rows e data_rows.
+                order_key = (up_id or order_sn or '').strip()
+                if not order_key:
+                    # Assinatura estavel para evitar inflar contagem quando order_sn nao aparece.
+                    assinatura = re.sub(r'\s+', ' ', (top_text or '')).strip().encode('utf-8', 'ignore')
+                    digest = hashlib.md5(assinatura).hexdigest()[:12]
+                    order_key = f'_row_{digest}_{i}'
+                lojas_dict[loja]['orders'].add(order_key)
 
             except Exception as e:
                 logger.debug(f"[UpSeller] Erro ao ler linha {i}: {e}")
+
+    async def _contar_lojas_via_pedidos(
+        self,
+        url: Optional[str] = None,
+        nome_aba: Optional[str] = None,
+        clicar_para_enviar: bool = True,
+        exigir_aba: bool = False
+    ) -> List[dict]:
+        """
+        Recalcula contagem por loja de forma manual e agregada:
+        - garante 300/pagina
+        - percorre todas as paginas (1/N, 2/N, ...)
+        - em cada pagina, conta pedidos pelo nome da loja em tr.top_row
+          usando UP_ID/order_sn como chave de deduplicacao.
+
+        Nao usa filtro loja-a-loja (mais rapido e mais estavel para sincronizacao).
+        """
+        lojas = {}  # nome -> {marketplace, orders:set()}
+        url_alvo = (url or UPSELLER_PEDIDOS)
+
+        # Garantir contexto base na pagina alvo.
+        try:
+            await self._page.goto(url_alvo, wait_until="domcontentloaded", timeout=30000)
+            await self._page.wait_for_timeout(1800)
+            await self._fechar_popups()
+            await self._page.wait_for_timeout(300)
+        except Exception:
+            pass
+
+        # Para /order/to-ship, focar explicitamente no item "Para Enviar" do sidebar.
+        if clicar_para_enviar:
+            try:
+                await self._page.evaluate("""
+                    (() => {
+                        const nodes = document.querySelectorAll('li, a, span, div');
+                        for (const el of nodes) {
+                            const t = (el.textContent || '').trim();
+                            if (/^Para Enviar(\\s+\\d+)?$/.test(t)) {
+                                const r = el.getBoundingClientRect();
+                                if (r.width > 5 && r.height > 5 && r.height < 120) {
+                                    el.click();
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    })()
+                """)
+                await self._page.wait_for_timeout(900)
+            except Exception:
+                pass
+
+        # Em paginas com sub-abas, focar na aba desejada (ex.: "Para Emitir", "Para Imprimir").
+        if nome_aba:
+            try:
+                clicou_aba = await self._page.evaluate("""
+                    (nomeAba) => {
+                        const normalize = (s) => (s || '')
+                            .toLowerCase()
+                            .normalize('NFD')
+                            .replace(/[\\u0300-\\u036f]/g, '')
+                            .replace(/\\s+/g, ' ')
+                            .trim();
+                        const target = normalize(nomeAba);
+                        const nodes = Array.from(
+                            document.querySelectorAll(
+                                '[role="tab"], .ant-tabs-tab, .ant-menu-item, li.ant-menu-item, a, button, span'
+                            )
+                        );
+                        let best = null;
+                        let bestScore = -1;
+                        for (const el of nodes) {
+                            const raw = (el.textContent || '').trim();
+                            if (!raw) continue;
+                            const txt = normalize(raw);
+                            let score = -1;
+                            if (txt === target || txt.startsWith(target + ' ')) score = 100;
+                            else if (txt.includes(target)) score = 80;
+                            else continue;
+
+                            const r = el.getBoundingClientRect();
+                            if (r.width <= 8 || r.width >= 720 || r.height <= 8 || r.height >= 120) continue;
+                            if (r.y > 460) score -= 15;
+                            const cls = ((el.className || '') + '').toLowerCase();
+                            const hint = /(tab|menu|item|dropdown|nav)/.test(cls);
+                            if (txt.includes(target) && !(txt === target || txt.startsWith(target + ' ')) && !hint) {
+                                score -= 25;
+                            }
+
+                            if (score > bestScore) {
+                                best = el;
+                                bestScore = score;
+                            }
+                        }
+                        if (!best) return false;
+                        best.click();
+                        return true;
+                    }
+                """, nome_aba)
+                await self._page.wait_for_timeout(900)
+                if exigir_aba and not clicou_aba:
+                    logger.info(
+                        f"[UpSeller] Aba '{nome_aba}' nao encontrada em {url_alvo}; retornando vazio."
+                    )
+                    return []
+            except Exception:
+                if exigir_aba:
+                    logger.info(
+                        f"[UpSeller] Erro ao focar aba '{nome_aba}' em {url_alvo}; retornando vazio."
+                    )
+                    return []
+
+        # Garantir que nao ficou filtro de loja preso da execucao anterior.
+        try:
+            await self._limpar_filtro_loja()
+            await self._page.wait_for_timeout(400)
+        except Exception:
+            pass
+
+        async def _ler_info_paginacao() -> Dict:
+            try:
+                info = await self._page.evaluate("""
+                    (() => {
+                        const out = { current: 1, total_pages: 1, total_itens: 0, page_size: 0 };
+                        const ui = document.querySelector('.my_page_ui');
+                        const txt = (ui ? ui.textContent : document.body.textContent || '') || '';
+
+                        const mTotal = txt.match(/Total\\s*(\\d+)/i);
+                        if (mTotal) out.total_itens = parseInt(mTotal[1], 10) || 0;
+
+                        const curTxt = (document.querySelector('.my_page_ui .hover_cl_link')?.textContent || '').trim();
+                        const mCur = curTxt.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+                        if (mCur) {
+                            out.current = parseInt(mCur[1], 10) || 1;
+                            out.total_pages = parseInt(mCur[2], 10) || 1;
+                        } else {
+                            const mAny = txt.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+                            if (mAny) {
+                                out.current = parseInt(mAny[1], 10) || 1;
+                                out.total_pages = parseInt(mAny[2], 10) || 1;
+                            }
+                        }
+
+                        const sizeTxt = (
+                            document.querySelector('.my_page_ui .ant-select-selection-selected-value')?.textContent ||
+                            document.querySelector('.my_page_ui .ant-select-selection__rendered')?.textContent ||
+                            ''
+                        ).trim();
+                        const mSize = sizeTxt.match(/(\\d+)\\s*\\/\\s*p[áa]g/i);
+                        if (mSize) out.page_size = parseInt(mSize[1], 10) || 0;
+                        return out;
+                    })()
+                """)
+                return info if isinstance(info, dict) else {"current": 1, "total_pages": 1, "total_itens": 0, "page_size": 0}
+            except Exception:
+                return {"current": 1, "total_pages": 1, "total_itens": 0, "page_size": 0}
+
+        async def _garantir_300_por_pagina() -> bool:
+            for _ in range(3):
+                try:
+                    await self._selecionar_300_por_pagina()
+                except Exception:
+                    pass
+                await self._page.wait_for_timeout(700)
+                info = await _ler_info_paginacao()
+                if int(info.get("page_size", 0) or 0) >= 300:
+                    return True
+            return False
+
+        async def _coletar_lojas_pagina_atual(pagina_atual: int, esperado_na_pagina: int) -> int:
+            """
+            Coleta pedidos da pagina atual rolando verticalmente para carregar
+            todos os blocos lazy-load e deduplicando por UP_ID/order_sn.
+            """
+            vistos_pagina = set()
+            sem_novos = 0
+            y_anterior = -1
+            sy_anterior = -1
+
+            try:
+                await self._page.evaluate("""
+                    (() => {
+                        window.scrollTo(0, 0);
+                        const sels = [
+                            '.ant-table-body',
+                            '.list_table .ant-table-body',
+                            '.my_table_body',
+                            '.table_body',
+                            '.my_custom_table_wrap',
+                        ];
+                        for (const s of sels) {
+                            document.querySelectorAll(s).forEach((el) => {
+                                try { el.scrollTop = 0; } catch (_) {}
+                            });
+                        }
+                    })()
+                """)
+            except Exception:
+                pass
+            await self._page.wait_for_timeout(250)
+
+            max_passos = 420
+            passo_px = 1200
+
+            for _ in range(max_passos):
+                leitura = await self._page.evaluate("""
+                    (() => {
+                        const out = { itens: [], y: 0, h: 0, sy: 0, sh: 0, sch: 0 };
+                        const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+                        const rows = document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item');
+
+                        const detectarMarketplace = (txt) => {
+                            const t = (txt || '').toLowerCase();
+                            if (t.includes('shopee')) return 'Shopee';
+                            if (t.includes('shein')) return 'Shein';
+                            if (t.includes('mercado livre') || t.includes('mercado')) return 'Mercado Livre';
+                            if (t.includes('tiktok')) return 'TikTok';
+                            if (t.includes('amazon')) return 'Amazon';
+                            if (t.includes('magalu')) return 'Magalu';
+                            if (t.includes('kwai')) return 'Kwai';
+                            return '';
+                        };
+                        const hashTxt = (s) => {
+                            let h = 0;
+                            const str = s || '';
+                            for (let k = 0; k < str.length; k++) {
+                                h = ((h << 5) - h) + str.charCodeAt(k);
+                                h |= 0;
+                            }
+                            return Math.abs(h).toString(36);
+                        };
+
+                        for (let i = 0; i < rows.length; i++) {
+                            const row = rows[i];
+                            const txt = norm(row.textContent || '');
+                            if (!txt) continue;
+
+                            let loja = '';
+                            const lojaEl = row.querySelector(
+                                'span.d_ib.max_w_160, span[class*="max_w_160"], [class*="shop_name"], [class*="store_name"]'
+                            );
+                            if (lojaEl) loja = norm(lojaEl.textContent || '');
+
+                            let marketplace = detectarMarketplace(txt);
+                            if (!loja) {
+                                const mLojaMp = txt.match(/([^|\\n]{2,})\\|\\s*(Shopee|Shein|Mercado Livre|TikTok|Amazon|Magalu|Kwai)\\s*$/i);
+                                if (mLojaMp) {
+                                    loja = norm(mLojaMp[1] || '');
+                                    marketplace = marketplace || norm(mLojaMp[2] || '');
+                                }
+                            }
+
+                            let upId = '';
+                            const mUp = txt.match(/\\b(UP[A-Z0-9]{4,})\\b/i);
+                            if (mUp) upId = (mUp[1] || '').toUpperCase();
+
+                            let orderSn = '';
+                            if (!upId) {
+                                const dataRow = row.nextElementSibling;
+                                if (dataRow) {
+                                    const tds = dataRow.querySelectorAll('td');
+                                    if (tds && tds.length >= 4) {
+                                        const c3 = norm((tds[3].textContent || '').split('\\n')[0] || '');
+                                        const mOrder = c3.match(/\\b([A-Z0-9]{8,})\\b/i);
+                                        if (mOrder) orderSn = (mOrder[1] || '').toUpperCase();
+                                    }
+                                }
+                            }
+
+                            const key = upId || orderSn || (`_row_${hashTxt(txt)}_${i}`);
+                            if (!loja) loja = 'Desconhecida';
+                            out.itens.push({
+                                key,
+                                loja,
+                                marketplace: marketplace || ''
+                            });
+                        }
+
+                        out.y = window.scrollY || document.documentElement.scrollTop || 0;
+                        out.h = Math.max(
+                            document.body.scrollHeight || 0,
+                            document.documentElement.scrollHeight || 0
+                        );
+                        const cands = Array.from(document.querySelectorAll(
+                            '.ant-table-body, .list_table .ant-table-body, .my_table_body, .table_body, .my_custom_table_wrap'
+                        ));
+                        let best = null;
+                        let bestSpan = 0;
+                        for (const c of cands) {
+                            if (!c) continue;
+                            const span = (c.scrollHeight || 0) - (c.clientHeight || 0);
+                            if (span <= 40) continue;
+                            const r = c.getBoundingClientRect();
+                            if (r.width < 100 || r.height < 40) continue;
+                            if (span > bestSpan) {
+                                best = c;
+                                bestSpan = span;
+                            }
+                        }
+                        if (best) {
+                            out.sy = best.scrollTop || 0;
+                            out.sh = best.scrollHeight || 0;
+                            out.sch = best.clientHeight || 0;
+                        }
+                        return out;
+                    })()
+                """)
+
+                itens = (leitura or {}).get("itens", []) if isinstance(leitura, dict) else []
+                novos = 0
+                for it in itens:
+                    key = (it.get("key") or "").strip()
+                    if not key:
+                        continue
+                    if key in vistos_pagina:
+                        continue
+                    vistos_pagina.add(key)
+                    novos += 1
+
+                    nome = (it.get("loja") or "Desconhecida").strip() or "Desconhecida"
+                    mp = (it.get("marketplace") or "").strip()
+                    if nome not in lojas:
+                        lojas[nome] = {"marketplace": mp, "orders": set()}
+                    elif mp and not lojas[nome].get("marketplace"):
+                        lojas[nome]["marketplace"] = mp
+                    lojas[nome]["orders"].add(key)
+
+                if novos == 0:
+                    sem_novos += 1
+                else:
+                    sem_novos = 0
+
+                if esperado_na_pagina > 0 and len(vistos_pagina) >= esperado_na_pagina:
+                    break
+
+                y = int((leitura or {}).get("y", 0) or 0) if isinstance(leitura, dict) else 0
+                h = int((leitura or {}).get("h", 0) or 0) if isinstance(leitura, dict) else 0
+                sy = int((leitura or {}).get("sy", 0) or 0) if isinstance(leitura, dict) else 0
+                sh = int((leitura or {}).get("sh", 0) or 0) if isinstance(leitura, dict) else 0
+                sch = int((leitura or {}).get("sch", 0) or 0) if isinstance(leitura, dict) else 0
+                fim_tabela = sh > 0 and sy >= max(0, sh - sch - 30)
+
+                # Se nao esta encontrando novos itens por um tempo e ja chegou perto do fim, para.
+                if sem_novos >= 8 and ((h > 0 and y >= (h - 1800)) or fim_tabela):
+                    break
+
+                if y == y_anterior and sy == sy_anterior and sem_novos >= 5:
+                    break
+                y_anterior = y
+                sy_anterior = sy
+
+                try:
+                    await self._page.evaluate("""
+                        (delta) => {
+                            window.scrollBy(0, delta);
+                            const sels = [
+                                '.ant-table-body',
+                                '.list_table .ant-table-body',
+                                '.my_table_body',
+                                '.table_body',
+                                '.my_custom_table_wrap',
+                            ];
+                            for (const s of sels) {
+                                document.querySelectorAll(s).forEach((el) => {
+                                    try {
+                                        const maxTop = Math.max(0, (el.scrollHeight || 0) - (el.clientHeight || 0));
+                                        el.scrollTop = Math.min(maxTop, (el.scrollTop || 0) + delta);
+                                    } catch (_) {}
+                                });
+                            }
+                        }
+                    """, passo_px)
+                except Exception:
+                    pass
+                await self._page.wait_for_timeout(220)
+
+            try:
+                await self._page.evaluate("""
+                    (() => {
+                        window.scrollTo(0, 0);
+                        const sels = [
+                            '.ant-table-body',
+                            '.list_table .ant-table-body',
+                            '.my_table_body',
+                            '.table_body',
+                            '.my_custom_table_wrap',
+                        ];
+                        for (const s of sels) {
+                            document.querySelectorAll(s).forEach((el) => {
+                                try { el.scrollTop = 0; } catch (_) {}
+                            });
+                        }
+                    })()
+                """)
+            except Exception:
+                pass
+            await self._page.wait_for_timeout(220)
+            logger.info(
+                f"[UpSeller] Pagina {pagina_atual}: coletados {len(vistos_pagina)} pedidos "
+                f"(esperado~{esperado_na_pagina})"
+            )
+            return len(vistos_pagina)
+
+        # 1) Garantir 300/pagina antes da contagem manual.
+        garantiu_300 = await _garantir_300_por_pagina()
+        info_pag = await _ler_info_paginacao()
+        logger.info(
+            f"[UpSeller] Contagem manual agregada ({url_alvo}, aba={nome_aba or 'default'}): "
+            f"300/pagina={'ok' if garantiu_300 else 'nao_confirmado'}, paginacao={info_pag}"
+        )
+
+        # 2) Percorrer paginas e agregar por loja sem refiltrar loja-a-loja.
+        pagina = 1
+        max_paginas = 60
+        while pagina <= max_paginas:
+            info_atual = await _ler_info_paginacao()
+            try:
+                cur = int(info_atual.get("current", pagina) or pagina)
+                total_pag = int(info_atual.get("total_pages", 1) or 1)
+                total_itens = int(info_atual.get("total_itens", 0) or 0)
+                page_size = int(info_atual.get("page_size", 300) or 300)
+            except Exception:
+                cur, total_pag, total_itens, page_size = pagina, 1, 0, 300
+
+            if total_pag > 1:
+                pagina = cur
+
+            esperado = 0
+            if total_itens > 0 and page_size > 0:
+                base = (pagina - 1) * page_size
+                esperado = max(0, min(page_size, total_itens - base))
+
+            try:
+                await _coletar_lojas_pagina_atual(pagina, esperado)
+            except Exception as e_pag:
+                logger.debug(f"[UpSeller] Falha na coleta manual da pagina {pagina}: {e_pag}")
+
+            proxima = await self._ir_proxima_pagina()
+            if not proxima:
+                break
+            pagina += 1
+            await self._page.wait_for_timeout(900)
+
+        resultado = []
+        for nome, info in lojas.items():
+            resultado.append({
+                "nome": nome,
+                "marketplace": info.get('marketplace', ''),
+                "pedidos": len(info.get('orders', set())),
+                "orders": [],
+            })
+        resultado.sort(key=lambda x: (-(int(x.get("pedidos", 0) or 0)), (x.get("nome") or "").lower()))
+        return resultado
+
+    async def _contar_linhas_visiveis_tabela(self) -> int:
+        """Conta linhas de pedido visiveis na tabela atual."""
+        try:
+            n = await self._page.evaluate("""
+                (() => {
+                    const rows = document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item');
+                    return rows ? rows.length : 0;
+                })()
+            """)
+            return int(n or 0)
+        except Exception:
+            return 0
+
+    async def _contar_pedidos_loja_filtrada(self, nome_loja: str, max_paginas: int = 20) -> int:
+        """
+        Conta pedidos da loja ja filtrada percorrendo paginacao da tabela.
+        Usa chaves de linha (UP_ID/order_sn) direto do DOM para evitar contaminar
+        com contador global e evitar dependencia do parser de loja.
+        """
+        ids = set()
+        total_comparadas = 0
+        total_ok = 0
+        pagina = 1
+
+        while pagina <= max_paginas:
+            leitura = {}
+            try:
+                leitura = await self._page.evaluate("""
+                    (nomeLoja) => {
+                        const normalize = (s) => (s || '')
+                          .toLowerCase()
+                          .normalize('NFD')
+                          .replace(/[\\u0300-\\u036f]/g, '')
+                          .replace(/[^a-z0-9 ]+/g, ' ')
+                          .replace(/\\s+/g, ' ')
+                          .trim();
+                        const target = normalize(nomeLoja);
+
+                        const out = [];
+                        let comparadas = 0;
+                        let ok = 0;
+                        const topRows = Array.from(document.querySelectorAll('tr.top_row, tr[class*="top_row"], .order_item'));
+                        const normalizeRaw = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+
+                        for (let i = 0; i < topRows.length; i++) {
+                            const row = topRows[i];
+                            const txt = normalizeRaw(row.textContent || '');
+                            let key = '';
+
+                            const lojaEl =
+                              row.querySelector('span.d_ib.max_w_160, span[class*="max_w_160"], [class*="shop"], [class*="store"]');
+                            const lojaTxt = normalize(lojaEl ? lojaEl.textContent : '');
+                            // Sem nome de loja legivel na linha, nao conta (evita total global).
+                            if (!lojaTxt) {
+                                continue;
+                            }
+                            comparadas++;
+                            const matchLoja = lojaTxt === target || lojaTxt.includes(target) || target.includes(lojaTxt);
+                            if (!matchLoja) {
+                                continue;
+                            }
+                            ok++;
+
+                            // 1) UP_ID (mais estavel)
+                            let m = txt.match(/\\b(UP[A-Z0-9]{4,})\\b/i);
+                            if (m) key = (m[1] || '').toUpperCase();
+
+                            // 2) order_sn na linha de dados seguinte
+                            if (!key) {
+                                const dataRow = row.nextElementSibling;
+                                if (dataRow) {
+                                    const tds = dataRow.querySelectorAll('td');
+                                    if (tds && tds.length >= 4) {
+                                        const c3 = normalize((tds[3].textContent || '').split('\\n')[0]);
+                                        m = c3.match(/\\b([A-Z0-9]{8,})\\b/);
+                                        if (m) key = (m[1] || '').toUpperCase();
+                                    }
+                                }
+                            }
+
+                            if (!key) key = `_row_${i}`;
+                            out.push(key);
+                        }
+                        return { keys: out, comparadas, ok };
+                    }
+                """, nome_loja)
+            except Exception:
+                leitura = {"keys": [], "comparadas": 0, "ok": 0}
+
+            chaves_pagina = (leitura.get("keys") or []) if isinstance(leitura, dict) else []
+            try:
+                total_comparadas += int((leitura or {}).get("comparadas", 0) or 0)
+                total_ok += int((leitura or {}).get("ok", 0) or 0)
+            except Exception:
+                pass
+
+            for idx, k in enumerate(chaves_pagina or []):
+                key = (k or '').strip()
+                if not key:
+                    key = f"_p{pagina}_i{idx}"
+                # Evita colisao de fallback "_row_i" entre paginas.
+                if key.startswith("_row_"):
+                    key = f"{key}_p{pagina}"
+                ids.add(key)
+
+            proxima = await self._ir_proxima_pagina()
+            if not proxima:
+                break
+
+            pagina += 1
+            await self._page.wait_for_timeout(800)
+
+        # Se conseguimos ler lojas da tabela e a maioria nao bate com a loja alvo,
+        # considera contagem invalida (provavel filtro nao aplicado).
+        if total_comparadas == 0:
+            return 0
+        if total_comparadas > 0:
+            ratio = (total_ok / max(total_comparadas, 1))
+            if ratio < 0.85:
+                return 0
+
+        return len(ids)
 
     async def _scroll_carregar_todos(self, max_scrolls: int = 30):
         """
@@ -2381,9 +7807,25 @@ class UpSellerScraper:
                 loja_el = await top_row.query_selector('span.d_ib.max_w_160, span[class*="max_w_160"]')
                 if loja_el:
                     loja = (await loja_el.inner_text()).strip()
-                mp_el = await top_row.query_selector('span.f_cl_59:last-of-type')
-                if mp_el:
-                    marketplace = (await mp_el.inner_text()).strip()
+                txt_low = (top_text or '').lower()
+                if 'shopee' in txt_low:
+                    marketplace = 'Shopee'
+                elif 'shein' in txt_low:
+                    marketplace = 'Shein'
+                elif 'mercado livre' in txt_low or 'mercado' in txt_low:
+                    marketplace = 'Mercado Livre'
+                elif 'tiktok' in txt_low:
+                    marketplace = 'TikTok'
+                elif 'amazon' in txt_low:
+                    marketplace = 'Amazon'
+                elif 'magalu' in txt_low:
+                    marketplace = 'Magalu'
+                else:
+                    mp_el = await top_row.query_selector('span.f_cl_59:last-of-type')
+                    if mp_el:
+                        mp_txt = (await mp_el.inner_text()).strip()
+                        if mp_txt.lower() in ('shopee', 'shein', 'mercado livre', 'tiktok', 'amazon', 'magalu'):
+                            marketplace = mp_txt
             except Exception:
                 pass
 
@@ -2866,28 +8308,204 @@ class UpSellerScraper:
 
         return pedidos
 
+    async def _selecionar_300_por_pagina(self):
+        """Seleciona '300/página' no dropdown de paginacao para minimizar navegacao entre paginas."""
+        try:
+            # Procurar o dropdown de tamanho de pagina (ex: "50/página", "100/página")
+            selecionou = await self._page.evaluate("""
+                (() => {
+                    // Tentar select nativo primeiro
+                    const selects = document.querySelectorAll('select');
+                    for (const sel of selects) {
+                        const opts = sel.querySelectorAll('option');
+                        for (const opt of opts) {
+                            if (opt.value === '300' || opt.textContent.includes('300')) {
+                                sel.value = opt.value;
+                                sel.dispatchEvent(new Event('change', {bubbles: true}));
+                                return 'select';
+                            }
+                        }
+                    }
+                    // Procurar dropdown ant-design (.ant-select / .ant-pagination-options-size-changer)
+                    const sizeChanger = document.querySelector('.ant-pagination-options-size-changer, .ant-select[class*="page"]');
+                    if (sizeChanger) {
+                        sizeChanger.click();
+                        return 'ant-clicked';
+                    }
+                    // Procurar dropdown customizado do UpSeller (my_page_ui)
+                    const pageUi = document.querySelector('.my_page_ui');
+                    if (pageUi) {
+                        const btns = pageUi.querySelectorAll('button, div[class*="select"], span[class*="select"]');
+                        for (const btn of btns) {
+                            const t = (btn.textContent || '').trim();
+                            if (/\\d+\\s*\\/\\s*p[áa]g/i.test(t)) {
+                                btn.click();
+                                return 'dropdown-clicked';
+                            }
+                        }
+                    }
+                    return null;
+                })()
+            """)
+
+            if selecionou == 'select':
+                await self._page.wait_for_timeout(2000)
+                logger.info("[UpSeller] Selecionou 300/pagina via <select>")
+                return True
+
+            if selecionou in ('ant-clicked', 'dropdown-clicked'):
+                await self._page.wait_for_timeout(800)
+                # Agora procurar a opcao "300" no dropdown aberto
+                clicou_300 = await self._page.evaluate("""
+                    (() => {
+                        // Procurar em dropdowns abertos (ant-design overlay, ou lista customizada)
+                        const candidates = document.querySelectorAll(
+                            '.ant-select-dropdown .ant-select-item, ' +
+                            '.ant-dropdown li, .ant-dropdown-menu-item, ' +
+                            '[class*="dropdown"] li, [class*="popup"] li, ' +
+                            '[class*="option"], [class*="menu-item"]'
+                        );
+                        for (const el of candidates) {
+                            const t = (el.textContent || '').trim();
+                            if (t.includes('300')) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        // Fallback: qualquer elemento visivel com "300" que parece opcao de paginacao
+                        const all = document.querySelectorAll('li, div, span, a');
+                        for (const el of all) {
+                            const t = (el.textContent || '').trim();
+                            const rect = el.getBoundingClientRect();
+                            if (t.match(/^300\\s*(\\/\\s*p[áa]g)?/i) && rect.width > 20 && rect.height > 10 && rect.height < 60) {
+                                el.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    })()
+                """)
+                if clicou_300:
+                    await self._page.wait_for_timeout(2500)
+                    logger.info("[UpSeller] Selecionou 300/pagina via dropdown")
+                    return True
+                else:
+                    logger.warning("[UpSeller] Dropdown abriu mas nao encontrou opcao 300")
+                    # Fechar dropdown (clicar fora)
+                    await self._page.evaluate("document.body.click()")
+                    await self._page.wait_for_timeout(500)
+
+            logger.debug("[UpSeller] Dropdown de paginacao nao encontrado")
+            return False
+
+        except Exception as e:
+            logger.debug(f"[UpSeller] Erro ao selecionar 300/pagina: {e}")
+            return False
+
     async def _ir_proxima_pagina(self) -> bool:
         """Tenta navegar para a proxima pagina da lista de pedidos."""
         try:
-            # Seletores comuns de paginacao
-            next_btn = await self._page.query_selector(
-                'button[class*="next"], a[class*="next"], '
-                'li.next a, li.next button, '
-                '.pagination .next, .ant-pagination-next, '
-                'button:has-text(">"), a:has-text(">"), '
-                'button:has-text("Proximo"), a:has-text("Proximo"), '
-                'button:has-text("Próximo"), a:has-text("Próximo")'
-            )
+            info_before = await self._page.evaluate("""
+                () => {
+                    const out = { raw: null, cur: 1, tot: 1 };
+                    const txtCur = (document.querySelector('.my_page_ui .hover_cl_link')?.textContent || '').trim();
+                    const txtUi = (document.querySelector('.my_page_ui')?.textContent || '').trim();
+                    const txt = txtCur || txtUi || '';
+                    const m = txt.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+                    if (m) {
+                        out.raw = `${m[1]}/${m[2]}`;
+                        out.cur = parseInt(m[1], 10) || 1;
+                        out.tot = parseInt(m[2], 10) || 1;
+                    }
+                    return out;
+                }
+            """)
+            cur_before = int((info_before or {}).get("cur", 1) or 1)
+            tot_before = int((info_before or {}).get("tot", 1) or 1)
+            if cur_before >= tot_before:
+                return False
 
-            if next_btn:
-                is_disabled = await next_btn.get_attribute('disabled')
-                class_name = await next_btn.get_attribute('class') or ''
-                if is_disabled or 'disabled' in class_name:
-                    return False
+            selectors = [
+                ".my_page_ui button[title*='Página Seguinte']",
+                ".my_page_ui button[title*='Pagina Seguinte']",
+                ".my_page_ui button[title*='Próxima']",
+                ".my_page_ui button[title*='Proxima']",
+                ".my_page_ui button[title*='Próximo']",
+                ".my_page_ui button[title*='Proximo']",
+                ".ant-pagination-next button",
+                ".ant-pagination-next",
+                "button[aria-label='next']",
+                "a[aria-label='next']",
+            ]
 
-                await next_btn.click()
-                await self._page.wait_for_load_state("domcontentloaded", timeout=15000)
-                return True
+            async def _pagina_atual():
+                try:
+                    info = await self._page.evaluate("""
+                        () => {
+                            const txtCur = (document.querySelector('.my_page_ui .hover_cl_link')?.textContent || '').trim();
+                            const txtUi = (document.querySelector('.my_page_ui')?.textContent || '').trim();
+                            const txt = txtCur || txtUi || '';
+                            const m = txt.match(/(\\d+)\\s*\\/\\s*(\\d+)/);
+                            if (!m) return {cur: null, raw: null};
+                            return {cur: parseInt(m[1], 10) || null, raw: `${m[1]}/${m[2]}`};
+                        }
+                    """)
+                    return info or {"cur": None, "raw": None}
+                except Exception:
+                    return {"cur": None, "raw": None}
+
+            # 1) Tentativa principal: botao "proxima".
+            clicou = False
+            for sel in selectors:
+                loc = self._page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                try:
+                    disabled = await loc.get_attribute("disabled")
+                    aria = (await loc.get_attribute("aria-disabled") or "").lower()
+                    cls = (await loc.get_attribute("class") or "").lower()
+                    if disabled is not None or aria == "true" or "disabled" in cls:
+                        continue
+                    await loc.click(timeout=2500)
+                    clicou = True
+                    break
+                except Exception:
+                    continue
+
+            if clicou:
+                await self._page.wait_for_timeout(1100)
+                after = await _pagina_atual()
+                if int((after or {}).get("cur") or 0) > cur_before:
+                    return True
+
+            # 2) Fallback: selecionar pagina alvo no combobox "1/2".
+            alvo_raw = f"{cur_before + 1}/{tot_before}"
+            tentou_combo = await self._page.evaluate("""
+                (alvoRaw) => {
+                    const trigger =
+                        document.querySelector('.my_page_ui .my_combobox_box .input_box') ||
+                        document.querySelector('.my_page_ui .my_combobox_box .hover_cl_link') ||
+                        document.querySelector('.my_page_ui .my_combobox_box');
+                    if (!trigger) return false;
+                    trigger.click();
+                    const itens = Array.from(document.querySelectorAll('.my_page_ui .combobox_item, .combobox_item'));
+                    for (const it of itens) {
+                        const t = (it.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (t === alvoRaw) {
+                            it.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """, alvo_raw)
+            if tentou_combo:
+                await self._page.wait_for_timeout(1200)
+                after = await _pagina_atual()
+                if int((after or {}).get("cur") or 0) > cur_before:
+                    return True
+
+            return False
 
         except Exception as e:
             logger.debug(f"[UpSeller] Sem proxima pagina: {e}")
@@ -3024,9 +8642,18 @@ class UpSellerScraper:
                 resumo["erros"].append(erro)
                 logger.error(f"[UpSeller] {erro}")
 
-        # Copiar XLSX
-        xlsx_path = resultado.get("xlsx", "")
-        if xlsx_path and os.path.exists(xlsx_path):
+        # Copiar XLSX principal + extras (quando extracao for por loja)
+        xlsx_paths = []
+        xlsx_main = resultado.get("xlsx", "")
+        if xlsx_main:
+            xlsx_paths.append(xlsx_main)
+        for xp in resultado.get("xlsx_extra", []) or []:
+            if xp:
+                xlsx_paths.append(xp)
+
+        for xlsx_path in xlsx_paths:
+            if not xlsx_path or not os.path.exists(xlsx_path):
+                continue
             try:
                 destino = os.path.join(pasta_entrada, os.path.basename(xlsx_path))
                 shutil.copy2(xlsx_path, destino)
@@ -3109,14 +8736,23 @@ async def executar_download_completo(config: dict, incluir_xlsx: bool = True) ->
             resultado["erro"] = "Falha no login do UpSeller"
             return resultado
 
-        # 1. Extrair dados de pedidos e gerar XLSX (ANTES de baixar etiquetas)
+        # 1. Baixar Lista de Resumo (XLSX) antes das etiquetas.
         if incluir_xlsx:
             try:
-                xlsx_path = await scraper.extrair_dados_pedidos()
-                resultado["xlsx"] = xlsx_path
-                logger.info(f"[UpSeller] XLSX de pedidos: {xlsx_path}")
+                xlsx_lista = await scraper.baixar_lista_resumo()
+                if isinstance(xlsx_lista, list) and xlsx_lista:
+                    resultado["xlsx"] = xlsx_lista[0]
+                elif isinstance(xlsx_lista, str):
+                    resultado["xlsx"] = xlsx_lista
+
+                # Fallback legado caso Lista de Resumo nao retorne arquivo.
+                if not resultado["xlsx"]:
+                    xlsx_path = await scraper.extrair_dados_pedidos()
+                    resultado["xlsx"] = xlsx_path or ""
+
+                logger.info(f"[UpSeller] XLSX para processamento: {resultado['xlsx']}")
             except Exception as e:
-                logger.warning(f"[UpSeller] Erro ao extrair dados de pedidos (continuando): {e}")
+                logger.warning(f"[UpSeller] Erro ao obter XLSX (continuando): {e}")
 
         # 2. Baixar etiquetas (PDFs)
         resultado["pdfs"] = await scraper.baixar_etiquetas()
@@ -3202,3 +8838,4 @@ async def executar_pipeline_completo(config: dict, pasta_entrada: str) -> dict:
         await scraper.fechar()
 
     return resultado_final
+

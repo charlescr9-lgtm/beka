@@ -833,6 +833,9 @@
     <div class="nav-tab" data-tab="automacao" onclick="trocarTab('automacao')">
         <i class="fas fa-robot"></i> Automacao
     </div>
+    <div class="nav-tab" data-tab="automacao-api" onclick="trocarTab('automacao-api')">
+        <i class="fas fa-plug"></i> Automacao API
+    </div>
     <div class="nav-tab" data-tab="admin" onclick="trocarTab('admin')" id="navAdmin" style="display:none;">
         <i class="fas fa-shield-alt"></i> Admin
     </div>
@@ -1142,10 +1145,58 @@
 
     <!-- ==================== AUTOMACAO ==================== -->
     <div class="tab-content" id="tab-automacao">
-        <h3 class="section-title"><i class="fas fa-robot"></i> Automacao - UpSeller + WhatsApp</h3>
+        <h3 class="section-title" id="automacaoTitulo"><i class="fas fa-robot"></i> Automacao - UpSeller + WhatsApp</h3>
+
+        <!-- MARKETPLACE API (ASSINANTE) -->
+        <div class="card" id="marketplaceApiCard" style="margin-bottom:20px; display:none;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-plug"></i> Shopee - Modo Assinante</span>
+                <span id="marketplaceApiStatus" class="badge" style="font-size:11px;">Desconectado</span>
+            </div>
+            <div style="padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.02); margin-bottom:10px;">
+                <div style="font-size:12px; color:var(--text-primary); font-weight:600; margin-bottom:4px;">
+                    <i class="fas fa-user-check" style="color:var(--accent);"></i> Conectar conta Shopee
+                </div>
+                <div style="font-size:11px; color:var(--text-secondary); line-height:1.45;">
+                    Esta area e simplificada para assinantes. As chaves da API ficam na aba <b>Admin</b>.
+                    Aqui voce so faz login na Shopee e sincroniza.
+                </div>
+            </div>
+            <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
+                <button class="btn btn-primary" onclick="iniciarLoginShopeeMarketplace()" style="font-size:12px;">
+                    <i class="fas fa-sign-in-alt"></i> Login Shopee
+                </button>
+                <button class="btn btn-secondary" onclick="testarMarketplaceApiConexao()" style="font-size:12px;">
+                    <i class="fas fa-wifi"></i> Verificar API
+                </button>
+                <button class="btn btn-primary" id="btnSincronizarMarketplaceApi" onclick="sincronizarMarketplaceApi()" style="font-size:12px;">
+                    <i class="fas fa-sync-alt"></i> Sincronizar Agora
+                </button>
+                <button class="btn btn-secondary" id="btnAbrirMarketplaceAdmin" onclick="abrirConfigMarketplaceAdmin()" style="font-size:12px; display:none;">
+                    <i class="fas fa-shield-alt"></i> Configuracao ADM
+                </button>
+            </div>
+            <div id="marketplaceSyncProgressContainer" style="display:none; margin-top:12px; padding:0 10px;">
+                <div style="background:var(--bg-tertiary); border-radius:8px; overflow:hidden; height:22px; position:relative;">
+                    <div id="marketplaceSyncProgressBar" style="
+                        height:100%; border-radius:8px; transition: width 0.5s ease;
+                        background: linear-gradient(90deg, #2196F3, #1565C0);
+                        width:0%; display:flex; align-items:center; justify-content:center;
+                    ">
+                        <span id="marketplaceSyncProgressPercent" style="color:white; font-size:10px; font-weight:600; text-shadow:0 1px 2px rgba(0,0,0,0.3);"></span>
+                    </div>
+                </div>
+                <p id="marketplaceSyncProgressText" style="font-size:11px; color:var(--text-secondary); margin-top:4px; text-align:center;"></p>
+            </div>
+            <p id="marketplaceUltimaSync" style="font-size:11px; color:var(--text-secondary); margin-top:8px; text-align:center;"></p>
+            <div id="marketplaceApiHint" style="font-size:11px; color:var(--text-secondary); margin-top:6px; text-align:center;">
+                Aguarde o administrador configurar as credenciais tecnicas da API Shopee.
+            </div>
+            <div id="marketplaceRedirectInfo" style="font-size:11px; color:var(--text-secondary); margin-top:4px; text-align:center; opacity:0.9;"></div>
+        </div>
 
         <!-- UPSELLER CONFIG -->
-        <div class="card" style="margin-bottom:20px;">
+        <div class="card" id="upsellerCard" style="margin-bottom:20px;">
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-plug"></i> Conexao UpSeller</span>
                 <span id="upsellerStatus" class="badge" style="font-size:11px;">Desconectado</span>
@@ -1179,6 +1230,9 @@
                     </button>
                     <button class="btn btn-primary" id="btnSincronizar" onclick="sincronizarUpseller()" style="font-size:12px;">
                         <i class="fas fa-sync-alt"></i> Sincronizar Agora
+                    </button>
+                    <button class="btn" onclick="desconectarUpseller()" style="font-size:12px; background:#e74c3c; color:white; border:none; border-radius:6px; padding:6px 12px; cursor:pointer;">
+                        <i class="fas fa-sign-out-alt"></i> Trocar Conta / Deslogar
                     </button>
                 </div>
                 <!-- Barra de progresso da sincronizacao -->
@@ -1218,6 +1272,13 @@
                     </button>
                 </div>
             </div>
+            <div style="margin-top:10px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; font-size:12px; color:var(--text-secondary);">
+                <label style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+                    <input type="checkbox" id="whatsappAutoSendToggle" onchange="salvarConfigWhatsAppAuto()">
+                    <span><b>Auto-enviar</b> etiquetas após processar</span>
+                </label>
+                <span id="whatsappQueueResumo" style="font-size:11px; color:var(--text-muted);">Fila: -</span>
+            </div>
             <div id="whatsappQRContainer" style="display:none; margin-top:15px; text-align:center;">
                 <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">Escaneie o QR code com seu WhatsApp:</p>
                 <img id="whatsappQRImage" style="max-width:280px; border-radius:8px; border:1px solid var(--border);">
@@ -1236,14 +1297,6 @@
             <div id="formContato" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
                 <div class="form-row" style="flex-wrap:wrap; gap:8px;">
                     <div class="form-group" style="flex:1; min-width:150px;">
-                        <label class="form-label">Loja (CNPJ)</label>
-                        <input class="form-input" id="contatoCNPJ" placeholder="12.345.678/0001-99" style="font-size:12px;">
-                    </div>
-                    <div class="form-group" style="flex:1; min-width:150px;">
-                        <label class="form-label">Nome da Loja</label>
-                        <input class="form-input" id="contatoLoja" placeholder="Loja Example" style="font-size:12px;">
-                    </div>
-                    <div class="form-group" style="flex:1; min-width:150px;">
                         <label class="form-label">WhatsApp</label>
                         <input class="form-input" id="contatoTel" placeholder="5511999999999" style="font-size:12px;">
                     </div>
@@ -1251,6 +1304,16 @@
                         <label class="form-label">Nome Contato</label>
                         <input class="form-input" id="contatoNome" placeholder="Joao" style="font-size:12px;">
                     </div>
+                </div>
+                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
+                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
+                        <i class="fas fa-store"></i> Lojas para este contato
+                    </div>
+                    <div id="waAlvoLojas" style="max-height:120px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                    <div style="font-size:11px; font-weight:600; margin:8px 0 4px 0; color:var(--text-secondary);">
+                        <i class="fas fa-layer-group"></i> Grupos para este contato
+                    </div>
+                    <div id="waAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
                 </div>
                 <div style="display:flex; gap:8px; margin-top:8px;">
                     <button class="btn btn-primary" onclick="salvarContato()" style="font-size:11px;">
@@ -1264,6 +1327,71 @@
             <!-- Tabela de contatos -->
             <div id="tabelaContatos" style="overflow-x:auto;">
                 <p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>
+            </div>
+        </div>
+
+        <!-- CONTATOS EMAIL -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-envelope"></i> Contatos Email</span>
+                <button class="btn btn-primary" onclick="mostrarFormEmail()" style="font-size:11px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Adicionar
+                </button>
+            </div>
+            <div style="margin-bottom:10px; padding:10px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.02);">
+                <div style="font-size:11px; font-weight:600; margin-bottom:6px; color:var(--text-secondary);">
+                    <i class="fas fa-paper-plane"></i> Configurar Remetente
+                </div>
+                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
+                    <div class="form-group" style="flex:1; min-width:220px;">
+                        <label class="form-label">Email Remetente (obrigatorio)</label>
+                        <input class="form-input" id="emailRemetente" placeholder="remetente@dominio.com" style="font-size:12px;" type="email">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:220px;">
+                        <label class="form-label">Senha de app (obrigatoria)</label>
+                        <input class="form-input" id="smtpSenha" placeholder="Senha de app" style="font-size:12px;" type="password">
+                    </div>
+                    <div class="form-group" style="flex:0.7; min-width:190px; display:flex; align-items:flex-end; gap:6px;">
+                        <button class="btn btn-secondary" onclick="validarSalvarEmailRemetente()" style="font-size:11px;">
+                            <i class="fas fa-check-circle"></i> Validar e Salvar
+                        </button>
+                    </div>
+                </div>
+                <input type="hidden" id="emailRemetenteNome" value="Beka MultiPlace">
+                <div id="smtpStatusTxt" style="margin-top:6px; font-size:11px; color:var(--text-secondary);"></div>
+            </div>
+            <div id="formEmail" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
+                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
+                    <div class="form-group" style="flex:1; min-width:150px;">
+                        <label class="form-label">Nome Contato</label>
+                        <input class="form-input" id="emailNomeContato" placeholder="Fulano" style="font-size:12px;">
+                    </div>
+                    <div class="form-group" style="flex:1; min-width:200px;">
+                        <label class="form-label">Email</label>
+                        <input class="form-input" id="emailEndereco" placeholder="fulano@email.com" style="font-size:12px;" type="email">
+                    </div>
+                </div>
+                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
+                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
+                        <i class="fas fa-store"></i> Lojas para este destinatario
+                    </div>
+                    <div id="emailAlvoLojas" style="max-height:120px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                    <div style="font-size:11px; font-weight:600; margin:8px 0 4px 0; color:var(--text-secondary);">
+                        <i class="fas fa-layer-group"></i> Grupos para este destinatario
+                    </div>
+                    <div id="emailAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <button class="btn btn-primary" onclick="salvarContatoEmail()" style="font-size:11px;">
+                        <i class="fas fa-check"></i> Salvar
+                    </button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('formEmail').style.display='none'" style="font-size:11px;">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+            <div id="tabelaContatosEmail" style="overflow-x:auto;">
+                <p style="font-size:12px; color:var(--text-secondary);">Nenhum contato de email cadastrado.</p>
             </div>
         </div>
 
@@ -1304,6 +1432,16 @@
                     <label><input type="checkbox" id="agendProcessar" checked> Processar Etiquetas</label>
                     <label><input type="checkbox" id="agendWhatsapp" checked> Enviar WhatsApp</label>
                 </div>
+                <div style="margin-top:10px; border:1px solid var(--border); border-radius:8px; padding:8px;">
+                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
+                        <i class="fas fa-store"></i> Lojas deste agendamento (opcional)
+                    </div>
+                    <div id="agendAlvoLojas" style="max-height:120px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                    <div style="font-size:11px; font-weight:600; margin:8px 0 4px 0; color:var(--text-secondary);">
+                        <i class="fas fa-layer-group"></i> Grupos deste agendamento (opcional)
+                    </div>
+                    <div id="agendAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                </div>
                 <div style="display:flex; gap:8px; margin-top:10px;">
                     <button class="btn btn-primary" onclick="salvarAgendamento()" style="font-size:11px;">
                         <i class="fas fa-check"></i> Salvar
@@ -1324,7 +1462,7 @@
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-play-circle"></i> Execucao Manual</span>
             </div>
-            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
+            <p id="execucaoManualDescricao" style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
                 Executa o pipeline completo: baixar do UpSeller → processar etiquetas → enviar via WhatsApp.
             </p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
@@ -1333,6 +1471,9 @@
                 </button>
                 <button class="btn btn-secondary" onclick="enviarWhatsAppManual()" style="font-size:12px;">
                     <i class="fab fa-whatsapp"></i> Enviar Ultimo Resultado via WhatsApp
+                </button>
+                <button class="btn btn-secondary" onclick="enviarEmailManual()" style="font-size:12px;">
+                    <i class="fas fa-envelope"></i> Enviar Ultimo Resultado por Email
                 </button>
             </div>
         </div>
@@ -1347,6 +1488,19 @@
             </div>
             <div id="tabelaHistorico" style="overflow-x:auto;">
                 <p style="font-size:12px; color:var(--text-secondary);">Nenhuma execucao registrada.</p>
+            </div>
+        </div>
+
+        <!-- HISTORICO DE GERADAS (24h) - Fixo no final -->
+        <div id="historicoGeradas24hContainer" class="card" style="margin-top:15px;">
+            <div style="background:linear-gradient(135deg,#2a3344,#1f2735);color:#fff;padding:6px 12px;display:flex;justify-content:space-between;align-items:center;border-radius:8px 8px 0 0;">
+                <span style="font-weight:700;font-size:11px;"><i class="fas fa-history"></i> Historico de geradas (24h)</span>
+                <button class="btn btn-secondary" onclick="carregarHistoricoGeradas24h()" style="font-size:9px;padding:2px 6px;">
+                    <i class="fas fa-sync-alt"></i>
+                </button>
+            </div>
+            <div id="historicoGeradas24hBody" style="font-size:11px;color:var(--text-secondary);padding:6px 10px;">
+                Carregando...
             </div>
         </div>
     </div>
@@ -1401,6 +1555,69 @@
             </div>
             <div id="adminListaUsuarios" style="margin-top:12px; overflow-x:auto;"></div>
         </div>
+
+        <!-- Configuracoes tecnicas da API (somente ADM) -->
+        <div class="card" id="adminMarketplaceApiConfigCard" style="margin-top:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-plug"></i> API Shopee (Configuracao Tecnica)</span>
+                <span id="marketplaceApiStatusAdm" class="badge" style="font-size:11px;">Desconectado</span>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
+                Campos tecnicos movidos para a area administrativa.
+            </p>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:8px; margin-bottom:10px;">
+                <div class="form-group">
+                    <label class="form-label">Nome da Loja (opcional)</label>
+                    <input class="form-input" id="mpShopeeLojaNome" placeholder="Ex: BEKA" style="font-size:12px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Partner ID</label>
+                    <input class="form-input" id="mpShopeePartnerId" placeholder="Shopee Partner ID" style="font-size:12px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Shop ID</label>
+                    <input class="form-input" id="mpShopeeShopId" placeholder="Shopee Shop ID" style="font-size:12px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Partner Key (secret)</label>
+                    <input class="form-input" id="mpShopeePartnerKey" type="password" placeholder="Cole somente ao atualizar" style="font-size:12px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Access Token</label>
+                    <input class="form-input" id="mpShopeeAccessToken" placeholder="Cole somente ao atualizar" style="font-size:12px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Refresh Token</label>
+                    <input class="form-input" id="mpShopeeRefreshToken" placeholder="Cole somente ao atualizar" style="font-size:12px;">
+                </div>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                <button class="btn btn-secondary" onclick="salvarMarketplaceApiConfig()" style="font-size:12px;">
+                    <i class="fas fa-save"></i> Salvar Credenciais
+                </button>
+                <button class="btn btn-secondary" onclick="testarMarketplaceApiConexao()" style="font-size:12px;">
+                    <i class="fas fa-wifi"></i> Verificar API
+                </button>
+                <button class="btn btn-secondary" onclick="debugShopeeAssinatura()" style="font-size:12px;">
+                    <i class="fas fa-bug"></i> Debug Assinatura
+                </button>
+                <button class="btn btn-secondary" onclick="iniciarLoginShopeeMarketplace()" style="font-size:12px;">
+                    <i class="fas fa-sign-in-alt"></i> Login Shopee
+                </button>
+                <button class="btn" onclick="desconectarMarketplaceApi()" style="font-size:12px; background:#e74c3c; color:white; border:none; border-radius:6px; padding:6px 12px; cursor:pointer;">
+                    <i class="fas fa-power-off"></i> Desativar API
+                </button>
+            </div>
+            <p id="marketplaceUltimaSyncAdm" style="font-size:11px; color:var(--text-secondary); margin-top:8px;"></p>
+            <div id="marketplaceApiHintAdm" style="font-size:11px; color:var(--text-secondary); margin-top:4px;"></div>
+            <div id="marketplaceRedirectInfoAdm" style="font-size:11px; color:var(--text-secondary); margin-top:4px;"></div>
+            <div id="marketplaceDebugWrap" style="display:none; margin-top:8px; background:var(--bg-input); border:1px solid var(--border); border-radius:8px; padding:8px;">
+                <div style="font-size:11px; color:var(--text-secondary); margin-bottom:6px;">
+                    Debug de assinatura Shopee (tempo real)
+                </div>
+                <pre id="marketplaceDebugOutput" style="margin:0; font-size:10px; line-height:1.35; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; max-height:240px; overflow:auto;"></pre>
+            </div>
+        </div>
     </div>
 
     <!-- ==================== SHOPEE EXPERT ==================== -->
@@ -1415,6 +1632,7 @@ const API = '';
 let pollingInterval = null;
 let logOffset = 0;
 let _ultimoResultadoJSON = '';  // Cache para evitar re-render desnecessario
+let _marketplaceApiBaseAtual = 'https://openplatform.sandbox.test-stable.shopee.sg';
 
 // ================================================================
 // AUTH
@@ -1654,18 +1872,55 @@ function atualizarInfoUsuario(user) {
 // TABS
 // ================================================================
 let configCarregada = false;
+let _automacaoModoAtual = 'upseller'; // upseller | marketplace_api
+
+function _isMarketplaceApiMode() {
+    return _automacaoModoAtual === 'marketplace_api';
+}
+
+function _aplicarModoAutomacaoUI() {
+    const titulo = document.getElementById('automacaoTitulo');
+    const upCard = document.getElementById('upsellerCard');
+    const mpCard = document.getElementById('marketplaceApiCard');
+    const desc = document.getElementById('execucaoManualDescricao');
+
+    if (_isMarketplaceApiMode()) {
+        if (titulo) titulo.innerHTML = '<i class="fas fa-plug"></i> Automacao - API Direta Marketplaces';
+        if (upCard) upCard.style.display = 'none';
+        if (mpCard) mpCard.style.display = '';
+        if (desc) desc.textContent = 'Executa o pipeline por API direta (Shopee), com login simplificado para assinantes.';
+    } else {
+        if (titulo) titulo.innerHTML = '<i class="fas fa-robot"></i> Automacao - UpSeller + WhatsApp';
+        if (upCard) upCard.style.display = '';
+        if (mpCard) mpCard.style.display = 'none';
+        if (desc) desc.textContent = 'Executa o pipeline completo: baixar do UpSeller → processar etiquetas → enviar via WhatsApp.';
+    }
+}
 
 function trocarTab(tab) {
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+
+    const isAutomacaoApiTab = tab === 'automacao-api';
+    const realTab = isAutomacaoApiTab ? 'automacao' : tab;
+
     const navEl = document.querySelector(`[data-tab="${tab}"]`);
-    const tabEl = document.getElementById(`tab-${tab}`);
+    const tabEl = document.getElementById(`tab-${realTab}`);
     if (navEl) navEl.classList.add('active');
     if (tabEl) tabEl.classList.add('active');
+
+    if (tab === 'automacao' || isAutomacaoApiTab) {
+        _automacaoModoAtual = isAutomacaoApiTab ? 'marketplace_api' : 'upseller';
+        _aplicarModoAutomacaoUI();
+    }
+
     // Carregar lojas do Lucro independentemente (via XMLs da pasta_lucro)
-    if (tab === 'lucro') carregarLojasLucro();
-    if (tab === 'automacao') carregarDadosAutomacao();
-    if (tab === 'admin') adminCarregarUsuarios();
+    if (realTab === 'lucro') carregarLojasLucro();
+    if (realTab === 'automacao') carregarDadosAutomacao();
+    if (realTab === 'admin') {
+        adminCarregarUsuarios();
+        carregarMarketplaceApiConfig();
+    }
 }
 
 async function carregarLojasLucro() {
@@ -2834,7 +3089,7 @@ function mostrarAjuda(topico) {
                     <li>O sistema ira automaticamente:
                         <ul>
                             <li>Ler os XLSX para identificar produtos e tracking</li>
-                            <li>Recortar cada etiqueta do PDF</li>
+                            <li>Ler cada etiqueta inteira (sem recorte)</li>
                             <li>Adicionar informacoes do produto (SKU e quantidade) em cada etiqueta</li>
                             <li>Separar por loja e gerar um PDF por loja</li>
                             <li>Gerar um resumo XLSX com todos os SKUs e quantidades</li>
@@ -2927,12 +3182,33 @@ function autoSaveConfig() {
     }, 1000);
 }
 
+function tratarRetornoLoginShopee() {
+    try {
+        const url = new URL(window.location.href);
+        const status = (url.searchParams.get('shopee_login') || '').trim().toLowerCase();
+        if (!status) return;
+        const msg = (url.searchParams.get('msg') || '').trim();
+        if (status === 'ok') {
+            toast('Login Shopee concluido e tokens salvos.', 'success');
+            carregarMarketplaceApiConfig();
+        } else {
+            toast(msg || 'Falha no login Shopee.', 'error');
+        }
+        url.searchParams.delete('shopee_login');
+        url.searchParams.delete('msg');
+        window.history.replaceState({}, '', url.toString());
+    } catch (e) {
+        console.warn('Nao foi possivel tratar retorno Shopee:', e);
+    }
+}
+
 async function init() {
     // Verificar se esta logado
     if (!getToken()) {
         window.location.href = '/login';
         return;
     }
+    tratarRetornoLoginShopee();
 
     await atualizarStatus();
     await atualizarLogs();
@@ -2971,6 +3247,8 @@ async function verificarAdmin() {
     if (res && res.is_admin) {
         _isAdmin = true;
         document.getElementById('navAdmin').style.display = '';
+        const btnCfg = document.getElementById('btnAbrirMarketplaceAdmin');
+        if (btnCfg) btnCfg.style.display = '';
     }
 }
 
@@ -3058,11 +3336,438 @@ async function adminRevogarAcesso() {
 // ================================================================
 
 async function carregarDadosAutomacao() {
-    carregarUpsellerConfig();
+    _aplicarModoAutomacaoUI();
+    await _carregarOpcoesAlvoAutomacao(true);
+    _aplicarPrefixoPaisWhatsApp();
+    if (_isMarketplaceApiMode()) {
+        carregarMarketplaceApiConfig();
+    } else {
+        carregarUpsellerConfig();
+    }
     verificarWhatsApp();
+    carregarConfigWhatsApp();
+    atualizarResumoFilaWhatsApp();
+    iniciarPollingFilaWhatsApp();
+    carregarConfigEmail();
     carregarContatos();
+    carregarContatosEmail();
+    carregarLojasPersistentes();
+    _atualizarCardEnvioDisponivel();
+    carregarHistoricoGeradas24h();
     carregarAgendamentos();
     carregarHistorico();
+}
+
+let _automacaoAlvosCache = { lojas: [], grupos: [] };
+const _WHATSAPP_COUNTRY_KEY = 'beka_whatsapp_country_code';
+
+function _getWhatsAppCountryCode() {
+    try {
+        const v = String(localStorage.getItem(_WHATSAPP_COUNTRY_KEY) || '').replace(/\D/g, '');
+        return v || '55';
+    } catch (e) {
+        return '55';
+    }
+}
+
+function _saveWhatsAppCountryCodeFromPhone(rawPhone) {
+    try {
+        const digits = String(rawPhone || '').replace(/\D/g, '');
+        if (digits.length >= 2) {
+            localStorage.setItem(_WHATSAPP_COUNTRY_KEY, digits.slice(0, 2));
+        }
+    } catch (e) {
+        // sem persistencia: segue com fallback em memoria
+    }
+}
+
+function _normalizeWhatsAppPhone(rawPhone) {
+    try {
+        let digits = String(rawPhone || '').replace(/\D/g, '');
+        const code = _getWhatsAppCountryCode();
+        if (!digits) return code;
+
+        if (code === '55' && (digits.length === 10 || digits.length === 11) && !digits.startsWith('55')) {
+            digits = '55' + digits;
+        } else if (!digits.startsWith(code) && digits.length <= 11) {
+            digits = code + digits;
+        }
+
+        _saveWhatsAppCountryCodeFromPhone(digits);
+        return digits;
+    } catch (e) {
+        return String(rawPhone || '').replace(/\D/g, '');
+    }
+}
+
+function _aplicarPrefixoPaisWhatsApp() {
+    try {
+        const code = _getWhatsAppCountryCode();
+        ['whatsappTesteTel', 'contatoTel'].forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const digits = String(el.value || '').replace(/\D/g, '');
+            if (!digits) el.value = code;
+        });
+    } catch (e) {
+        // nao bloquear a aba de automacao
+    }
+}
+
+async function _carregarOpcoesAlvoAutomacao(force = false) {
+    if (!force && (_automacaoAlvosCache.lojas.length > 0 || _automacaoAlvosCache.grupos.length > 0)) {
+        return _automacaoAlvosCache;
+    }
+    try {
+        const lojasEndpoint = _isMarketplaceApiMode() ? '/api/marketplace/lojas' : '/api/lojas';
+        const [lojasData, gruposData] = await Promise.all([
+            fetchAPI(lojasEndpoint),
+            fetchAPI('/api/agrupamentos')
+        ]);
+        const lojas = ((lojasData && lojasData.lojas) ? lojasData.lojas : [])
+            .map(l => (l && l.nome) ? String(l.nome).trim() : '')
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+        const grupos = ((gruposData && gruposData.agrupamentos) ? gruposData.agrupamentos : [])
+            .map(g => (g && g.nome) ? String(g.nome).trim() : '')
+            .filter(Boolean)
+            .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+
+        _automacaoAlvosCache = { lojas, grupos };
+        _syncGruposAutomacao = (gruposData && gruposData.agrupamentos) ? gruposData.agrupamentos : (_syncGruposAutomacao || []);
+    } catch (e) {
+        console.error('Erro ao carregar opcoes de lojas/grupos:', e);
+    }
+    return _automacaoAlvosCache;
+}
+
+function _renderAlvosFormulario(prefix, selectedLojas = [], selectedGrupos = []) {
+    const lojasBox = document.getElementById(`${prefix}AlvoLojas`);
+    const gruposBox = document.getElementById(`${prefix}AlvoGrupos`);
+    if (!lojasBox || !gruposBox) return;
+
+    const selectedLojasSet = new Set((selectedLojas || []).map(x => String(x).trim()).filter(Boolean));
+    const selectedGruposSet = new Set((selectedGrupos || []).map(x => String(x).trim()).filter(Boolean));
+
+    const lojas = _automacaoAlvosCache.lojas || [];
+    const grupos = _automacaoAlvosCache.grupos || [];
+
+    lojasBox.innerHTML = lojas.length ? lojas.map(nome => `
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+            <input type="checkbox" class="${prefix}-alvo-loja" value="${nome.replace(/"/g, '&quot;')}" ${selectedLojasSet.has(nome) ? 'checked' : ''}>
+            <span>${nome}</span>
+        </label>
+    `).join('') : '<div style="color:var(--text-muted);">Nenhuma loja sincronizada.</div>';
+
+    gruposBox.innerHTML = grupos.length ? grupos.map(nome => `
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;">
+            <input type="checkbox" class="${prefix}-alvo-grupo" value="${nome.replace(/"/g, '&quot;')}" ${selectedGruposSet.has(nome) ? 'checked' : ''}>
+            <span>${nome}</span>
+        </label>
+    `).join('') : '<div style="color:var(--text-muted);">Nenhum grupo salvo.</div>';
+}
+
+function _coletarAlvosFormulario(prefix) {
+    const lojas = Array.from(document.querySelectorAll(`.${prefix}-alvo-loja:checked`))
+        .map(el => String(el.value || '').trim())
+        .filter(Boolean);
+    const grupos = Array.from(document.querySelectorAll(`.${prefix}-alvo-grupo:checked`))
+        .map(el => String(el.value || '').trim())
+        .filter(Boolean);
+    return { lojas, grupos };
+}
+
+function _getAutomacaoAnchorCard() {
+    if (_isMarketplaceApiMode()) {
+        return document.getElementById('marketplaceApiCard');
+    }
+    const upsellerConectado = document.getElementById('upsellerConectado');
+    if (upsellerConectado) {
+        const card = upsellerConectado.closest('.card');
+        if (card) return card;
+    }
+    return document.getElementById('upsellerCard');
+}
+
+function _appendToAutomacaoAnchor(el) {
+    if (!el) return;
+    const anchor = _getAutomacaoAnchorCard();
+    if (anchor) anchor.appendChild(el);
+}
+
+async function sincronizarAutomacao() {
+    // Recarrega toda a aba de automacao e o dashboard principal
+    // para refletir ultimo_resultado e liberar envios imediatamente.
+    await Promise.allSettled([
+        carregarDadosAutomacao(),
+        atualizarStatus()
+    ]);
+}
+
+// --- MARKETPLACE API (Shopee) ---
+function abrirConfigMarketplaceAdmin() {
+    if (!_isAdmin) {
+        toast('Configuracao tecnica disponivel apenas para ADM.', 'warning');
+        return;
+    }
+    trocarTab('admin');
+    setTimeout(() => {
+        const card = document.getElementById('adminMarketplaceApiConfigCard');
+        if (card && card.scrollIntoView) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 120);
+}
+
+async function iniciarLoginShopeeMarketplace() {
+    toast('Abrindo login da Shopee...', 'info');
+    const res = await fetchAPI('/api/marketplace/shopee/login-url');
+    if (res && res.status === 'ok' && res.auth_url) {
+        window.location.href = res.auth_url;
+        return;
+    }
+    toast(res?.erro || 'Nao foi possivel iniciar o login Shopee.', 'error');
+}
+
+async function carregarMarketplaceApiConfig() {
+    const [statusData, cfg] = await Promise.all([
+        fetchAPI('/api/marketplace/status'),
+        fetchAPI('/api/marketplace/config')
+    ]);
+
+    const statusEls = [
+        document.getElementById('marketplaceApiStatus'),
+        document.getElementById('marketplaceApiStatusAdm')
+    ].filter(Boolean);
+    const syncEls = [
+        document.getElementById('marketplaceUltimaSync'),
+        document.getElementById('marketplaceUltimaSyncAdm')
+    ].filter(Boolean);
+    const hintAssinanteEl = document.getElementById('marketplaceApiHint');
+    const hintAdmEl = document.getElementById('marketplaceApiHintAdm');
+    const redirectAssinanteEl = document.getElementById('marketplaceRedirectInfo');
+    const redirectAdmEl = document.getElementById('marketplaceRedirectInfoAdm');
+
+    const lojaEl = document.getElementById('mpShopeeLojaNome');
+    const partnerIdEl = document.getElementById('mpShopeePartnerId');
+    const shopIdEl = document.getElementById('mpShopeeShopId');
+    const partnerKeyEl = document.getElementById('mpShopeePartnerKey');
+    const accessTokenEl = document.getElementById('mpShopeeAccessToken');
+    const refreshTokenEl = document.getElementById('mpShopeeRefreshToken');
+
+    if (cfg) {
+        _marketplaceApiBaseAtual = (cfg.api_base_url || _marketplaceApiBaseAtual || 'https://partner.shopeemobile.com');
+        if (lojaEl) lojaEl.value = cfg.loja_nome || '';
+        if (partnerIdEl) partnerIdEl.value = cfg.partner_id || '';
+        if (shopIdEl) shopIdEl.value = cfg.shop_id || '';
+
+        if (partnerKeyEl) {
+            partnerKeyEl.value = '';
+            partnerKeyEl.placeholder = cfg.has_partner_key ? 'Ja salvo (digite para substituir)' : 'Cole somente ao atualizar';
+        }
+        if (accessTokenEl) {
+            accessTokenEl.value = '';
+            accessTokenEl.placeholder = cfg.has_access_token ? 'Ja salvo (digite para substituir)' : 'Cole somente ao atualizar';
+        }
+        if (refreshTokenEl) {
+            refreshTokenEl.value = '';
+            refreshTokenEl.placeholder = cfg.has_refresh_token ? 'Ja salvo (digite para substituir)' : 'Cole somente ao atualizar';
+        }
+    }
+
+    const conectado = !!(statusData && statusData.status === 'ok');
+    const configurado = !!((statusData && statusData.configurado) || (cfg && cfg.configurado));
+    statusEls.forEach(statusEl => {
+        if (conectado) {
+            statusEl.textContent = 'Conectado';
+            statusEl.style.background = '#25D366';
+        } else if (configurado) {
+            statusEl.textContent = 'Configurado';
+            statusEl.style.background = '#f39c12';
+        } else {
+            statusEl.textContent = 'Desconectado';
+            statusEl.style.background = '#e74c3c';
+        }
+    });
+
+    const ultima = (statusData && statusData.ultima_sincronizacao) || (cfg && cfg.ultima_sincronizacao) || '';
+    syncEls.forEach(syncEl => {
+        syncEl.textContent = ultima ? `Ultima sincronizacao: ${ultima}` : '';
+    });
+
+    if (hintAssinanteEl) {
+        hintAssinanteEl.textContent = configurado
+            ? 'Shopee conectada. Voce pode sincronizar normalmente.'
+            : 'Aguardando configuracao tecnica da API pela aba Admin.';
+    }
+    if (hintAdmEl) {
+        hintAdmEl.textContent = configurado
+            ? 'API pronta. Use "Login Shopee" para autorizacao quando necessario.'
+            : 'Preencha Partner ID, Shop ID, Partner Key e tokens para ativar a API.';
+    }
+
+    if (redirectAssinanteEl) {
+        redirectAssinanteEl.textContent = conectado
+            ? 'Login Shopee pronto para uso.'
+            : 'Clique em "Login Shopee" apos a configuracao da API.';
+    }
+
+    if (redirectAdmEl) {
+        const redirectDomain = (cfg && cfg.redirect_domain) || (statusData && statusData.redirect_domain) || '';
+        const redirectUrl = (cfg && cfg.redirect_url) || (statusData && statusData.redirect_url) || '';
+        redirectAdmEl.innerHTML = redirectDomain
+            ? `Test Redirect URL Domain: <b>${redirectDomain}</b> <span style="opacity:.75;">(${redirectUrl})</span>`
+            : 'Defina NGROK_URL ou SHOPEE_REDIRECT_BASE_URL para preencher o redirect domain automaticamente.';
+    }
+}
+
+async function _salvarMarketplaceApiConfigInterno(silencioso = false) {
+    const loja_nome = (document.getElementById('mpShopeeLojaNome')?.value || '').trim();
+    const partner_id = (document.getElementById('mpShopeePartnerId')?.value || '').trim();
+    const shop_id = (document.getElementById('mpShopeeShopId')?.value || '').trim();
+    const partner_key = (document.getElementById('mpShopeePartnerKey')?.value || '').trim();
+    const access_token = (document.getElementById('mpShopeeAccessToken')?.value || '').trim();
+    const refresh_token = (document.getElementById('mpShopeeRefreshToken')?.value || '').trim();
+
+    if (!partner_id || !shop_id) {
+        if (!silencioso) {
+            toast('API Shopee incompleta. Solicite configuracao na aba Admin (Partner ID / Shop ID).', 'warning');
+        }
+    }
+
+    const payload = {
+        marketplace: 'shopee',
+        loja_nome,
+        partner_id,
+        shop_id,
+        api_base_url: _marketplaceApiBaseAtual || 'https://openplatform.sandbox.test-stable.shopee.sg'
+    };
+    if (partner_key) payload.partner_key = partner_key;
+    if (access_token) payload.access_token = access_token;
+    if (refresh_token) payload.refresh_token = refresh_token;
+
+    const res = await fetchAPI('/api/marketplace/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    if (!res || res.erro) {
+        if (!silencioso) toast(res?.erro || 'Erro ao salvar configuracao API', 'error');
+        return null;
+    }
+
+    ['mpShopeePartnerKey', 'mpShopeeAccessToken', 'mpShopeeRefreshToken'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.value = '';
+    });
+
+    if (!silencioso) toast('Credenciais da Shopee API salvas.', 'success');
+    await carregarMarketplaceApiConfig();
+    return res;
+}
+
+async function salvarMarketplaceApiConfig() {
+    await _salvarMarketplaceApiConfigInterno(false);
+}
+
+async function testarMarketplaceApiConexao() {
+    const partner_id = (document.getElementById('mpShopeePartnerId')?.value || '').trim();
+    const shop_id = (document.getElementById('mpShopeeShopId')?.value || '').trim();
+    if (!partner_id || !shop_id) {
+        toast('Preencha Partner ID e Shop ID antes de testar.', 'warning');
+        return;
+    }
+
+    const salvo = await _salvarMarketplaceApiConfigInterno(true);
+    if (!salvo) return;
+
+    toast('Validando conexao com Shopee API...', 'info');
+    const res = await fetchAPI('/api/marketplace/testar-conexao', { method: 'POST' });
+    if (res && res.status === 'ok') {
+        if (res.shop_name) {
+            const lojaEl = document.getElementById('mpShopeeLojaNome');
+            if (lojaEl && !String(lojaEl.value || '').trim()) {
+                lojaEl.value = String(res.shop_name || '').trim();
+                await _salvarMarketplaceApiConfigInterno(true);
+            }
+        }
+        toast(res.mensagem || 'Conexao Shopee API validada.', 'success');
+    } else {
+        toast(res?.erro || 'Falha na validacao da API Shopee.', 'error');
+    }
+    await carregarMarketplaceApiConfig();
+}
+
+async function debugShopeeAssinatura() {
+    const out = document.getElementById('marketplaceDebugOutput');
+    const wrap = document.getElementById('marketplaceDebugWrap');
+    if (wrap) wrap.style.display = '';
+    if (out) out.textContent = 'Gerando debug...';
+
+    const salvo = await _salvarMarketplaceApiConfigInterno(true);
+    if (!salvo) {
+        if (out) out.textContent = 'Nao foi possivel salvar/ler configuracao antes do debug.';
+        return;
+    }
+
+    const ts = Math.floor(Date.now() / 1000);
+    const res = await fetchAPI('/api/marketplace/shopee/debug-sign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timestamp: ts })
+    });
+
+    if (!res || res.status !== 'ok' || !res.debug) {
+        const msg = res?.erro || 'Falha ao gerar debug da assinatura.';
+        if (out) out.textContent = msg;
+        toast(msg, 'error');
+        return;
+    }
+
+    const dbg = res.debug;
+    const txt = [
+        `api_base_url: ${dbg.api_base_url || ''}`,
+        `path: ${dbg.path || ''}`,
+        `partner_id: ${dbg.partner_id || ''}`,
+        `timestamp: ${dbg.timestamp || ''}`,
+        `base_string: ${dbg.base_string || ''}`,
+        `sign: ${dbg.sign || ''}`,
+        `redirect_url: ${dbg.redirect_url || ''}`,
+        `state: ${dbg.state || ''}`,
+        `auth_url_preview: ${dbg.auth_url_preview || ''}`,
+        '',
+        'test_result:',
+        `  http_status: ${dbg.test_result?.http_status ?? ''}`,
+        `  error: ${dbg.test_result?.error || ''}`,
+        `  message: ${dbg.test_result?.message || ''}`,
+        `  request_id: ${dbg.test_result?.request_id || ''}`,
+        `  location: ${dbg.test_result?.location || ''}`,
+        `  ok: ${String(dbg.test_result?.ok ?? false)}`,
+        `  body_excerpt: ${dbg.test_result?.body_excerpt || ''}`
+    ].join('\n');
+
+    if (out) out.textContent = txt;
+    toast('Debug de assinatura atualizado.', 'success');
+}
+
+async function desconectarMarketplaceApi() {
+    if (!confirm('Deseja desativar a conexao da API direta Shopee?')) return;
+    const limparTokens = confirm('Deseja limpar os tokens salvos?');
+
+    const res = await fetchAPI('/api/marketplace/desconectar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limpar_tokens: limparTokens })
+    });
+
+    if (res && res.status === 'desconectado') {
+        toast(res.mensagem || 'API direta desativada.', 'success');
+    } else {
+        toast(res?.erro || 'Erro ao desativar API direta', 'error');
+    }
+
+    await carregarMarketplaceApiConfig();
+    const panel = document.getElementById('syncResultadoPanel');
+    if (panel) panel.remove();
 }
 
 // --- UPSELLER ---
@@ -3125,7 +3830,99 @@ async function testarUpsellerConexao() {
     }
 }
 
+async function desconectarUpseller() {
+    if (!confirm('Deseja realmente desconectar do UpSeller?\nVoce precisara fazer login novamente.')) return;
+
+    const limparSessao = confirm('Deseja tambem limpar a sessao salva?\n\nSIM = precisa fazer login completo novamente\nNAO = tenta usar cookies salvos ao reconectar');
+
+    toast('Desconectando do UpSeller...', 'info');
+    const res = await fetchAPI('/api/upseller/desconectar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limpar_sessao: limparSessao })
+    });
+
+    if (res && res.status === 'desconectado') {
+        toast(res.mensagem || 'Desconectado do UpSeller!', 'success');
+    } else {
+        toast(res?.erro || 'Erro ao desconectar', 'error');
+    }
+
+    carregarUpsellerConfig();
+
+    // Remover painel de lojas se existir
+    const panel = document.getElementById('syncResultadoPanel');
+    if (panel) panel.remove();
+}
+
 let _syncPollInterval = null;
+
+async function sincronizarMarketplaceApi() {
+    const btn = document.getElementById('btnSincronizarMarketplaceApi');
+    const progressContainer = document.getElementById('marketplaceSyncProgressContainer');
+    const progressBar = document.getElementById('marketplaceSyncProgressBar');
+    const progressPercent = document.getElementById('marketplaceSyncProgressPercent');
+    const progressText = document.getElementById('marketplaceSyncProgressText');
+
+    if (!btn || !progressContainer || !progressBar || !progressPercent || !progressText) return;
+
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sincronizando...';
+
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '5%';
+    progressBar.style.background = 'linear-gradient(90deg, #2196F3, #1565C0)';
+    progressPercent.textContent = '';
+    progressText.textContent = 'Iniciando sincronizacao API...';
+
+    const res = await fetchAPI('/api/marketplace/sincronizar', { method: 'POST' });
+    if (!res || res.erro) {
+        toast(res?.erro || 'Erro ao iniciar sincronizacao API', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sincronizar Agora';
+        progressContainer.style.display = 'none';
+        return;
+    }
+
+    toast('Sincronizacao API iniciada!', 'info');
+
+    if (_syncPollInterval) clearInterval(_syncPollInterval);
+    _syncPollInterval = setInterval(async () => {
+        try {
+            const status = await fetchAPI('/api/marketplace/sincronizar/status');
+            if (!status) return;
+
+            const progresso = status.progresso || 0;
+            progressBar.style.width = Math.max(progresso, 5) + '%';
+            progressPercent.textContent = progresso + '%';
+            progressText.textContent = status.detalhes || status.etapa || '';
+
+            if (status.etapa === 'concluido') {
+                progressBar.style.background = 'linear-gradient(90deg, #25D366, #128C7E)';
+                progressText.textContent = 'OK ' + (status.detalhes || 'Concluido');
+                _finalizarSyncMarketplace(btn, progressContainer, true);
+                return;
+            }
+            if (status.etapa === 'erro') {
+                progressBar.style.background = 'linear-gradient(90deg, #e74c3c, #c0392b)';
+                progressText.textContent = 'ERRO ' + (status.detalhes || 'Falha');
+                _finalizarSyncMarketplace(btn, progressContainer, false);
+                return;
+            }
+            if (status.etapa === 'parcial') {
+                progressBar.style.background = 'linear-gradient(90deg, #f39c12, #e67e22)';
+                progressText.textContent = 'ATENCAO ' + (status.detalhes || 'Parcial');
+                _finalizarSyncMarketplace(btn, progressContainer, false);
+                return;
+            }
+            if (!status.em_andamento && progresso === 0 && status.etapa === 'idle') {
+                _finalizarSyncMarketplace(btn, progressContainer, true);
+            }
+        } catch (e) {
+            console.error('Erro ao checar progresso API:', e);
+        }
+    }, 2000);
+}
 
 async function sincronizarUpseller() {
     const btn = document.getElementById('btnSincronizar');
@@ -3208,6 +4005,7 @@ async function _finalizarSync(btn, progressContainer, sucesso) {
                 const totalPedidos = statusFinal.total_pedidos || 0;
                 const sidebarInfo = statusFinal.sidebar_info || {};
                 _renderPainelLojas(lojas, totalPedidos, statusFinal.detalhes, sidebarInfo);
+                await carregarLojasPersistentes();
             }
         } catch (e) {
             console.error('Erro ao buscar resultado final:', e);
@@ -3224,52 +4022,380 @@ async function _finalizarSync(btn, progressContainer, sucesso) {
     carregarUpsellerConfig();
 }
 
+async function _finalizarSyncMarketplace(btn, progressContainer, sucesso) {
+    if (_syncPollInterval) {
+        clearInterval(_syncPollInterval);
+        _syncPollInterval = null;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Sincronizar Agora';
+
+    if (sucesso) {
+        toast('Sincronizacao API concluida! Escolha as lojas para processar.', 'success');
+        try {
+            const statusFinal = await fetchAPI('/api/marketplace/sincronizar/status');
+            if (statusFinal) {
+                const lojas = statusFinal.lojas_encontradas || [];
+                const totalPedidos = statusFinal.total_pedidos || 0;
+                const sidebarInfo = statusFinal.sidebar_info || {};
+                _renderPainelLojas(lojas, totalPedidos, statusFinal.detalhes, sidebarInfo);
+                await carregarLojasPersistentes();
+            }
+        } catch (e) {
+            console.error('Erro ao buscar resultado final API:', e);
+        }
+    }
+
+    setTimeout(() => {
+        progressContainer.style.display = 'none';
+        const bar = document.getElementById('marketplaceSyncProgressBar');
+        if (bar) bar.style.background = 'linear-gradient(90deg, #2196F3, #1565C0)';
+    }, 3000);
+
+    carregarMarketplaceApiConfig();
+}
+
 let _syncGruposAutomacao = []; // Grupos criados na aba automacao
+
+// --- ATALHOS DO UPSELLER (Emitir, Gerar Pedidos, Gerar Etiquetas) ---
+let _atalhoEmExecucao = null;
+
+async function executarAtalhoUpSeller(tipo) {
+    if (_atalhoEmExecucao) {
+        toast('Aguarde a execucao anterior finalizar...', 'warning');
+        return;
+    }
+
+    const nomes = {
+        'emitir': 'Emitir Notas Fiscais',
+        'programar': 'Gerar Pedidos',
+        'imprimir': 'Gerar Etiquetas'
+    };
+    const nome = nomes[tipo] || tipo;
+    _atalhoEmExecucao = tipo;
+
+    // Mostrar progresso visual no card
+    const card = document.getElementById(`atalho-card-${tipo}`);
+    let originalHTML = '';
+    if (card) {
+        originalHTML = card.innerHTML;
+        card.style.border = '2px solid var(--primary)';
+        card.style.opacity = '0.85';
+        card.innerHTML = `
+            <div style="font-size:18px; color:var(--primary); margin-bottom:4px;">
+                <i class="fas fa-spinner fa-spin"></i>
+            </div>
+            <div style="font-size:11px; font-weight:600; color:var(--primary);">Executando...</div>
+            <div style="font-size:9px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${nome}</div>
+        `;
+    }
+
+    // Enviar lojas selecionadas
+    const { lojas: lojasSel } = _getSelectedStoresInfo();
+    if (lojasSel.length === 0) {
+        toast('Selecione pelo menos uma loja', 'warning');
+        if (card) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+        _atalhoEmExecucao = null;
+        return;
+    }
+
+    toast(`Executando: ${nome} (${lojasSel.length} loja${lojasSel.length > 1 ? 's' : ''})...`, 'info');
+
+    try {
+        const res = await fetchAPI(`/api/upseller/${tipo}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lojas: lojasSel })
+        });
+
+        if (!res) {
+            toast(`Erro ao executar ${nome}`, 'error');
+            if (card) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+            _atalhoEmExecucao = null;
+            return;
+        }
+
+        // Se o endpoint retornou async=true, fazer polling de status
+        if (res.async) {
+            toast(`${nome}: ${res.mensagem}`, 'info');
+            _pollAtalhoStatus(tipo, nome, card, originalHTML);
+            return; // Nao restaurar card — o polling cuida disso
+        }
+
+        if (res.sucesso) {
+            toast(`${nome}: ${res.mensagem}`, 'success');
+            if (res.lojas_ignoradas && res.lojas_ignoradas.length) {
+                toast(`Lojas ignoradas: ${res.lojas_ignoradas.join(', ')}`, 'warning');
+            }
+            if (res.lojas_falha && res.lojas_falha.length) {
+                const falhas = res.lojas_falha
+                    .map(f => `${f.loja}: ${f.motivo}`)
+                    .slice(0, 4)
+                    .join(' | ');
+                toast(`Falhas por loja: ${falhas}`, 'warning');
+            }
+            // Avisos de falhas persistentes de NF-e
+            if (res.aviso_falhas) {
+                setTimeout(() => toast(res.aviso_falhas, 'warning'), 1500);
+            }
+            if (res.motivos_falhas && res.motivos_falhas.length) {
+                setTimeout(() => toast(`Motivos de falha: ${res.motivos_falhas.join(' | ')}`, 'warning'), 2500);
+            }
+            _mostrarCardSucesso(card, nome);
+            setTimeout(() => sincronizarAutomacao(), 3000);
+        } else {
+            toast(`${nome}: ${res.mensagem || 'Erro desconhecido'}`, 'warning');
+            _mostrarCardErro(card, nome, res.mensagem);
+        }
+    } catch (e) {
+        toast(`Erro ao executar ${nome}: ${e.message}`, 'error');
+        if (card) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+    }
+
+    // Restaurar card apos 5s
+    setTimeout(() => {
+        if (card && originalHTML) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+        _atalhoEmExecucao = null;
+    }, 5000);
+}
+
+function _mostrarCardSucesso(card, nome) {
+    if (!card) return;
+    card.style.border = '2px solid #25D366';
+    card.innerHTML = `
+        <div style="font-size:18px; color:#25D366; margin-bottom:4px;">
+            <i class="fas fa-check-circle"></i>
+        </div>
+        <div style="font-size:11px; font-weight:600; color:#25D366;">Concluido!</div>
+        <div style="font-size:9px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${nome}</div>
+    `;
+}
+
+function _mostrarCardErro(card, nome, msg) {
+    if (!card) return;
+    card.style.border = '2px solid #e74c3c';
+    card.innerHTML = `
+        <div style="font-size:18px; color:#e74c3c; margin-bottom:4px;">
+            <i class="fas fa-exclamation-triangle"></i>
+        </div>
+        <div style="font-size:10px; font-weight:600; color:#e74c3c;">${msg || 'Erro'}</div>
+        <div style="font-size:9px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${nome}</div>
+    `;
+}
+
+function _pollAtalhoStatus(tipo, nome, card, originalHTML) {
+    // Polling de status para atalhos async (ex: imprimir → pipeline completo)
+    const statusUrl = `/api/upseller/${tipo}/status`;
+    const pollInterval = setInterval(async () => {
+        try {
+            const status = await fetchAPI(statusUrl);
+            if (!status) return;
+
+            // Atualizar visual do card com progresso
+            if (card) {
+                const pct = status.progresso || 0;
+                const pctNum = Math.max(0, Math.min(100, parseInt(pct, 10) || 0));
+                const etapa = status.detalhes || status.etapa || 'Processando...';
+                card.style.border = '2px solid var(--primary)';
+                card.innerHTML = `
+                    <div style="font-size:14px; color:var(--primary); margin-bottom:4px;">
+                        <i class="fas fa-spinner fa-spin"></i>
+                    </div>
+                    <div style="font-size:18px; font-weight:700; color:var(--primary);">${pctNum}%</div>
+                    <div style="font-size:8px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${etapa}">${etapa}</div>
+                    <div style="margin-top:6px; width:100%; height:5px; border-radius:4px; background:rgba(255,255,255,0.10); overflow:hidden;">
+                        <div style="height:100%; width:${Math.max(6, pctNum)}%; background:linear-gradient(90deg, #22c1ff, #1572ff); transition:width 0.35s ease;"></div>
+                    </div>
+                `;
+            }
+
+            // Verificar se terminou
+            if (!status.em_andamento && status.etapa !== 'iniciando') {
+                clearInterval(pollInterval);
+                let restaurarCardOriginal = false;
+
+                if (status.etapa === 'concluido') {
+                    toast(`${nome}: ${status.detalhes || 'Concluido!'}`, 'success');
+                    _mostrarCardSucesso(card, nome);
+                    if (tipo === 'imprimir') await _atualizarCardEnvioDisponivel();
+                    if (status.aviso_falhas) {
+                        setTimeout(() => toast(status.aviso_falhas, 'warning'), 1200);
+                    }
+                    if (status.lojas_falha && status.lojas_falha.length) {
+                        const amostra = status.lojas_falha.slice(0, 4).map(x => `${x.loja}: ${x.motivo}`).join(' | ');
+                        setTimeout(() => toast(`Falhas ignoradas: ${amostra}`, 'warning'), 2200);
+                    }
+                    if (status.atualizando_pedidos) {
+                        setTimeout(() => toast('Atualizando pedidos, aguarde.', 'info'), 1000);
+                    }
+                    setTimeout(() => sincronizarAutomacao(), 1200);
+                } else if (status.etapa === 'parcial') {
+                    toast(`${nome}: ${status.detalhes}`, 'warning');
+                    _mostrarCardSucesso(card, nome);
+                    if (tipo === 'imprimir') await _atualizarCardEnvioDisponivel();
+                    if (status.aviso_falhas) {
+                        setTimeout(() => toast(status.aviso_falhas, 'warning'), 1200);
+                    }
+                    if (status.lojas_falha && status.lojas_falha.length) {
+                        const amostra = status.lojas_falha.slice(0, 4).map(x => `${x.loja}: ${x.motivo}`).join(' | ');
+                        setTimeout(() => toast(`Falhas ignoradas: ${amostra}`, 'warning'), 2200);
+                    }
+                    if (status.atualizando_pedidos) {
+                        setTimeout(() => toast('Atualizando pedidos, aguarde.', 'info'), 1000);
+                    }
+                    setTimeout(() => sincronizarAutomacao(), 1200);
+                } else if (status.etapa === 'erro') {
+                    toast(`${nome}: ${status.detalhes}`, 'error');
+                    _mostrarCardErro(card, nome, status.detalhes);
+                    restaurarCardOriginal = true;
+                } else if (status.etapa === 'idle') {
+                    // Pipeline nunca iniciou ou ja terminou sem status — ignorar
+                    toast(`${nome}: Nenhuma acao pendente`, 'info');
+                    restaurarCardOriginal = true;
+                }
+
+                if (restaurarCardOriginal) {
+                    // Restaurar card apos 8s apenas quando nao houve acao efetiva.
+                    setTimeout(() => {
+                        if (card && originalHTML) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+                        _atalhoEmExecucao = null;
+                    }, 8000);
+                } else {
+                    _atalhoEmExecucao = null;
+                }
+            }
+        } catch (e) {
+            console.error('Erro no polling de atalho:', e);
+        }
+    }, 2000); // Poll a cada 2s
+
+    // Watchdog estendido: evita timeout prematuro em lotes grandes.
+    setTimeout(() => {
+        clearInterval(pollInterval);
+        if (_atalhoEmExecucao === tipo) {
+            if (card && originalHTML) { card.innerHTML = originalHTML; card.style.border = ''; card.style.opacity = '1'; }
+            _atalhoEmExecucao = null;
+            toast(`${nome}: processo ainda em andamento, atualize o status em instantes.`, 'info');
+        }
+    }, 7200000);
+}
+
+function _toggleTodasLojasCheck() {
+    const checks = Array.from(document.querySelectorAll('.sync-loja-check'))
+        .filter(cb => !cb.disabled && (
+            parseInt(cb.dataset.pedidos || '0', 10) > 0 ||
+            parseInt(cb.dataset.notas || '0', 10) > 0 ||
+            parseInt(cb.dataset.etiquetas || '0', 10) > 0
+        ));
+    if (checks.length === 0) return;
+    const allChecked = checks.every(cb => cb.checked);
+    checks.forEach(cb => cb.checked = !allChecked);
+    _atualizarCardsComSelecionados();
+}
+
+function _getSelectedStoresInfo() {
+    const checked = document.querySelectorAll('.sync-loja-check:checked');
+    const lojas = [];
+    let totalPedidos = 0;
+    let totalNotas = 0;
+    let totalEtiquetas = 0;
+    checked.forEach(cb => {
+        lojas.push(cb.dataset.nome);
+        totalPedidos += parseInt(cb.dataset.pedidos || '0', 10);
+        totalNotas += parseInt(cb.dataset.notas || '0', 10);
+        totalEtiquetas += parseInt(cb.dataset.etiquetas || '0', 10);
+    });
+    return { lojas, totalPedidos, totalNotas, totalEtiquetas };
+}
+
+function _atualizarCardsComSelecionados() {
+    const { totalPedidos, totalNotas, totalEtiquetas } = _getSelectedStoresInfo();
+    const mapa = {
+        emitir:    { valor: totalNotas,     color: '#f39c12' },
+        programar: { valor: totalPedidos,   color: '#2196F3' },
+        imprimir:  { valor: totalEtiquetas, color: '#25D366' },
+    };
+    ['emitir', 'programar', 'imprimir'].forEach(action => {
+        const card = document.getElementById('atalho-card-' + action);
+        if (!card) return;
+        const valorDiv = card.querySelector('[data-card-valor]');
+        if (valorDiv) {
+            const { valor, color } = mapa[action];
+            const isActive = valor > 0;
+            valorDiv.textContent = valor;
+            valorDiv.style.color = isActive ? color : 'var(--text-muted)';
+        }
+    });
+}
 
 function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
     // Remover painel anterior se existir
     const existente = document.getElementById('syncResultadoPanel');
     if (existente) existente.remove();
 
-    const totalLojas = lojas.length;
+    const lojasOrdenadas = [...(lojas || [])].sort((a, b) =>
+        (parseInt(b.pedidos || 0, 10) - parseInt(a.pedidos || 0, 10)) ||
+        (a.nome || '').localeCompare((b.nome || ''), 'pt-BR', { sensitivity: 'base' })
+    );
+    const totalLojas = lojasOrdenadas.length;
+    const totalPedidosCalculado = lojasOrdenadas.reduce((acc, l) => acc + (parseInt(l.pedidos || 0, 10) || 0), 0);
+    totalPedidos = totalPedidosCalculado;
     sidebarInfo = sidebarInfo || {};
+    const origemNome = _isMarketplaceApiMode() ? 'Marketplace API' : 'UpSeller';
 
     // ===== CARDS DE ATALHOS DO UPSELLER (sidebar) =====
     const atalhos = [
-        { key: 'Para Emitir',   icon: 'fa-file-invoice',  color: '#f39c12', bg: 'rgba(243,156,18,0.12)' },
-        { key: 'Para Enviar',   icon: 'fa-shipping-fast',  color: '#2196F3', bg: 'rgba(33,150,243,0.12)' },
-        { key: 'Para Imprimir', icon: 'fa-print',          color: '#25D366', bg: 'rgba(37,211,102,0.12)' },
+        { key: 'Para Emitir',   label: 'Emitir Notas Fiscais', icon: 'fa-file-invoice',  color: '#f39c12', bg: 'rgba(243,156,18,0.12)', action: 'emitir' },
+        { key: 'Para Enviar',   label: 'Gerar Pedidos',        icon: 'fa-shipping-fast',  color: '#2196F3', bg: 'rgba(33,150,243,0.12)', action: 'programar' },
+        { key: 'Para Imprimir', label: 'Gerar Etiquetas',      icon: 'fa-print',          color: '#25D366', bg: 'rgba(37,211,102,0.12)', action: 'imprimir' },
     ];
+    // Valores iniciais per-status = soma das lojas com qualquer pendencia (pedidos/notas/etiquetas)
+    const lojasAtivas = lojasOrdenadas.filter(l =>
+        parseInt(l.pedidos || 0, 10) > 0 ||
+        parseInt(l.notas_pendentes || 0, 10) > 0 ||
+        parseInt(l.etiquetas_pendentes || 0, 10) > 0
+    );
+    const inicialNotas = lojasAtivas.reduce((acc, l) => acc + parseInt(l.notas_pendentes || 0, 10), 0);
+    const inicialPedidos = lojasAtivas.reduce((acc, l) => acc + parseInt(l.pedidos || 0, 10), 0);
+    const inicialEtiquetas = lojasAtivas.reduce((acc, l) => acc + parseInt(l.etiquetas_pendentes || 0, 10), 0);
+    const valoresIniciais = { emitir: inicialNotas, programar: inicialPedidos, imprimir: inicialEtiquetas };
     let atalhosHTML = atalhos.map(a => {
-        const valor = sidebarInfo[a.key] ?? '-';
-        const isActive = typeof valor === 'number' && valor > 0;
-        return `<div style="
+        const valor = valoresIniciais[a.action] || 0;
+        const isActive = valor > 0;
+        return `<div id="atalho-card-${a.action}" onclick="executarAtalhoUpSeller('${a.action}')" style="
             flex:1; min-width:120px; padding:12px 14px; border-radius:10px;
             background:${isActive ? a.bg : 'var(--bg-input)'};
             border:1px solid ${isActive ? a.color + '44' : 'var(--border)'};
-            text-align:center; transition:all 0.2s;
-        ">
+            text-align:center; transition:all 0.2s; cursor:pointer;
+        " onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 4px 15px ${a.color}33'"
+           onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
             <div style="font-size:20px; color:${isActive ? a.color : 'var(--text-muted)'}; margin-bottom:4px;">
                 <i class="fas ${a.icon}"></i>
             </div>
-            <div style="font-size:22px; font-weight:700; color:${isActive ? a.color : 'var(--text-muted)'};">${valor}</div>
-            <div style="font-size:10px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">${a.key}</div>
+            <div data-card-valor style="font-size:22px; font-weight:700; color:${isActive ? a.color : 'var(--text-muted)'};">${valor}</div>
+            <div style="font-size:10px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">${a.label}</div>
         </div>`;
     }).join('');
 
     // Checkboxes de lojas
     let lojasCheckHTML = '';
-    if (lojas.length > 0) {
-        lojasCheckHTML = lojas.map(l => {
+    if (lojasOrdenadas.length > 0) {
+        lojasCheckHTML = lojasOrdenadas.map(l => {
             const pedidos = l.pedidos || 0;
+            const notas = l.notas_pendentes || 0;
+            const etiquetas = l.etiquetas_pendentes || 0;
             const nome = l.nome || 'Desconhecida';
             const marketplace = l.marketplace || '';
-            return `<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background='transparent'">
-                <input type="checkbox" class="sync-loja-check" data-nome="${nome}" checked>
+            const pendente = (pedidos > 0 || notas > 0 || etiquetas > 0);
+            const badgeTxt = pedidos > 0
+                ? `${pedidos} pedido${pedidos !== 1 ? 's' : ''}`
+                : (notas > 0 ? `${notas} nota${notas !== 1 ? 's' : ''}` : `${etiquetas} etiqueta${etiquetas !== 1 ? 's' : ''}`);
+            return `<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;${pendente ? '' : 'opacity:0.5;'}" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background='transparent'">
+                <input type="checkbox" class="sync-loja-check" data-nome="${nome}" data-pedidos="${pedidos}" data-notas="${notas}" data-etiquetas="${etiquetas}" ${pendente ? 'checked' : ''} ${pendente ? '' : 'disabled'}>
                 <i class="fas fa-store" style="color:var(--text-muted);"></i>
                 <span style="flex:1;font-weight:500;">${nome}</span>
                 ${marketplace ? `<span style="background:var(--bg-tertiary);color:var(--text-muted);padding:1px 4px;border-radius:4px;font-size:9px;">${marketplace}</span>` : ''}
-                <span style="background:#2196F3;color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${pedidos} pedido${pedidos !== 1 ? 's' : ''}</span>
+                <span style="background:${pendente ? '#2196F3' : '#555'};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${badgeTxt}</span>
             </label>`;
         }).join('');
     }
@@ -3310,14 +4436,9 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
         <div style="padding:0 15px 12px 15px;">
             <!-- Lojas com checkboxes -->
             <div style="margin-bottom:12px;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                    <div style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">
-                        <i class="fas fa-check-square"></i> Selecione as lojas para processar:
-                    </div>
-                    <div style="display:flex;gap:6px;">
-                        <button onclick="_toggleTodasLojas(true)" style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;color:var(--text-secondary);">Todas</button>
-                        <button onclick="_toggleTodasLojas(false)" style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:2px 6px;cursor:pointer;color:var(--text-secondary);">Nenhuma</button>
-                    </div>
+                <div onclick="_toggleTodasLojasCheck()" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;padding:4px 0;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                    <i class="fas fa-check-square" style="color:var(--primary);"></i>
+                    <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">Selecione as lojas para processar</span>
                 </div>
                 <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
                     ${lojasCheckHTML}
@@ -3342,7 +4463,7 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
             <!-- Botao Gerar -->
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
                 <button onclick="_gerarEnvio()" class="btn btn-primary" style="font-size:13px;padding:8px 20px;flex:1;background:linear-gradient(135deg, #25D366, #128C7E);">
-                    <i class="fas fa-rocket"></i> Gerar Envio
+                    <i class="fas fa-rocket"></i> Gerar notas, pedidos e etiquetas com um click
                 </button>
             </div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:6px;text-align:center;">
@@ -3354,7 +4475,7 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
             <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:10px 12px;">
                 <div style="font-size:12px;color:var(--text-secondary);line-height:1.6;">
                     <i class="fas fa-check-circle" style="color:#25D366;"></i>
-                    <b>Nenhum pedido pendente no UpSeller.</b> Todos os pedidos ja foram processados ou nao ha novos pedidos.
+                    <b>Nenhum pedido pendente no ${origemNome}.</b> Todos os pedidos ja foram processados ou nao ha novos pedidos.
                 </div>
             </div>
             <div style="font-size:10px;color:var(--text-muted);margin-top:6px;text-align:right;">${detalhes || ''}</div>
@@ -3363,21 +4484,38 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
     `;
 
     // Inserir painel
-    const upsellerCard = document.getElementById('upsellerConectado');
-    if (upsellerCard && upsellerCard.closest('.card')) {
-        upsellerCard.closest('.card').appendChild(panel);
-    }
+    _appendToAutomacaoAnchor(panel);
+
+    // Listeners nos checkboxes para atualizar cards dinamicamente
+    document.querySelectorAll('.sync-loja-check').forEach(cb => {
+        cb.addEventListener('change', _atualizarCardsComSelecionados);
+    });
 }
 
 function _toggleTodasLojas(marcar) {
-    document.querySelectorAll('.sync-loja-check').forEach(cb => cb.checked = marcar);
+    Array.from(document.querySelectorAll('.sync-loja-check'))
+        .filter(cb => !cb.disabled && (
+            parseInt(cb.dataset.pedidos || '0', 10) > 0 ||
+            parseInt(cb.dataset.notas || '0', 10) > 0 ||
+            parseInt(cb.dataset.etiquetas || '0', 10) > 0
+        ))
+        .forEach(cb => cb.checked = marcar);
 }
 
-function _adicionarGrupoSync() {
+async function _salvarGruposSyncNoBackend() {
+    const res = await fetchAPI('/api/agrupamentos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
+    });
+    return !!(res && !res.erro);
+}
+
+async function _adicionarGrupoSync() {
     const nome = document.getElementById('syncGrupoNome').value.trim();
     const checked = document.querySelectorAll('.sync-loja-check:checked');
-    if (checked.length < 2) {
-        toast('Selecione 2 ou mais lojas para criar um grupo', 'warning');
+    if (checked.length < 1) {
+        toast('Selecione ao menos 1 loja para criar um grupo', 'warning');
         return;
     }
     if (!nome) {
@@ -3390,12 +4528,12 @@ function _adicionarGrupoSync() {
 
     _syncGruposAutomacao.push({ nome, cnpjs, nomes_lojas });
 
-    // Salvar no backend (reusa o endpoint de agrupamentos)
-    fetchAPI('/api/agrupamentos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
-    });
+    const ok = await _salvarGruposSyncNoBackend();
+    if (!ok) {
+        _syncGruposAutomacao.pop();
+        toast('Falha ao salvar grupo no banco', 'error');
+        return;
+    }
 
     // Atualizar UI
     document.getElementById('syncGrupoNome').value = '';
@@ -3412,16 +4550,19 @@ function _adicionarGrupoSync() {
             </div>
         `).join('');
     }
+    _carregarOpcoesAlvoAutomacao(true);
     toast(`Grupo "${nome}" criado com ${cnpjs.length} lojas`, 'success');
 }
 
-function _removerGrupoSync(index) {
+async function _removerGrupoSync(index) {
+    const backup = JSON.stringify(_syncGruposAutomacao);
     _syncGruposAutomacao.splice(index, 1);
-    fetchAPI('/api/agrupamentos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agrupamentos: _syncGruposAutomacao })
-    });
+    const ok = await _salvarGruposSyncNoBackend();
+    if (!ok) {
+        try { _syncGruposAutomacao = JSON.parse(backup) || []; } catch (_) {}
+        toast('Falha ao remover grupo no banco', 'error');
+        return;
+    }
     // Re-render
     const panel = document.getElementById('syncResultadoPanel');
     if (panel) {
@@ -3439,6 +4580,7 @@ function _removerGrupoSync(index) {
             `).join('');
         }
     }
+    _carregarOpcoesAlvoAutomacao(true);
 }
 
 async function _gerarEnvio() {
@@ -3456,7 +4598,7 @@ async function _gerarEnvio() {
     const lojasSelecionadas = Array.from(lojasChecked).map(cb => cb.dataset.nome);
 
     if (lojasChecked.length === 0) {
-        toast('Selecione pelo menos uma loja para gerar envio', 'warning');
+        toast('Selecione pelo menos uma loja para gerar', 'warning');
         return;
     }
 
@@ -3466,15 +4608,26 @@ async function _gerarEnvio() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lojas: lojasSelecionadas })
     });
-    if (data && data.erro) {
+    if (!data) {
+        toast('Erro de conexao ao iniciar geracao', 'error');
+        return;
+    }
+    if (data.erro) {
         toast(data.erro, 'warning');
         return;
+    }
+    if (data.sucesso === false) {
+        toast(data.mensagem || 'Atualizando pedidos, aguarde.', 'warning');
+        return;
+    }
+    if (data.lojas_ignoradas && data.lojas_ignoradas.length) {
+        toast(`Lojas ignoradas: ${data.lojas_ignoradas.join(', ')}`, 'warning');
     }
 
     const lojasTexto = lojasSelecionadas.length > 3
         ? `${lojasSelecionadas.slice(0,3).join(', ')}... (${lojasSelecionadas.length} lojas)`
         : lojasSelecionadas.join(', ');
-    toast(`Geracao iniciada para: ${lojasTexto}`, 'info');
+    toast(`Gerando notas, pedidos e etiquetas: ${lojasTexto}`, 'info');
 
     // NÃO remove o painel de lojas - ele persiste para referência
     // Apenas esconder temporariamente durante a geração
@@ -3491,7 +4644,7 @@ async function _gerarEnvio() {
     progressDiv.style.cssText = 'margin-top:15px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-primary);';
     progressDiv.innerHTML = `
         <div style="background:linear-gradient(135deg, #25D366, #128C7E);color:#fff;padding:10px 15px;">
-            <span style="font-weight:600;font-size:13px;"><i class="fas fa-spinner fa-spin"></i> Gerando envio...</span>
+            <span style="font-weight:600;font-size:13px;"><i class="fas fa-spinner fa-spin"></i> Gerando notas, pedidos e etiquetas...</span>
         </div>
         <div style="padding:12px 15px;">
             <div id="syncGerarProgress" style="margin-bottom:8px;">
@@ -3504,10 +4657,7 @@ async function _gerarEnvio() {
             </div>
         </div>
     `;
-    const upsellerCard = document.getElementById('upsellerConectado');
-    if (upsellerCard && upsellerCard.closest('.card')) {
-        upsellerCard.closest('.card').appendChild(progressDiv);
-    }
+    _appendToAutomacaoAnchor(progressDiv);
 
     // Polling de status da geracao (endpoint SEPARADO do sync)
     const pollGeracao = setInterval(async () => {
@@ -3525,8 +4675,8 @@ async function _gerarEnvio() {
             }
             if (txt && status.detalhes) txt.textContent = status.detalhes;
 
-            // Verificar se terminou
-            if (status.etapa === 'concluido' || status.etapa === 'parcial') {
+            // Verificar se terminou de fato (backend + finalizacao de arquivos)
+            if ((status.etapa === 'concluido' || status.etapa === 'parcial') && !status.em_andamento) {
                 clearInterval(pollGeracao);
 
                 // Restaurar opacidade do painel de lojas
@@ -3534,7 +4684,12 @@ async function _gerarEnvio() {
                 if (syncPanel) syncPanel.style.opacity = '1';
 
                 // Buscar resultado do processamento
-                const statusFinal = await fetchAPI('/api/status');
+                let statusFinal = await fetchAPI('/api/status');
+                // Pequeno retry para evitar race de gravação do ultimo_resultado.
+                if (!statusFinal || !statusFinal.ultimo_resultado) {
+                    await new Promise(r => setTimeout(r, 1200));
+                    statusFinal = await fetchAPI('/api/status');
+                }
                 const procDiv = document.getElementById('syncProcessandoPanel');
 
                 if (procDiv && statusFinal && statusFinal.ultimo_resultado) {
@@ -3542,7 +4697,7 @@ async function _gerarEnvio() {
                     const lojas = resultado.lojas || [];
                     procDiv.innerHTML = `
                         <div style="background:linear-gradient(135deg, #25D366, #128C7E);color:#fff;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;">
-                            <span style="font-weight:600;font-size:13px;"><i class="fas fa-check-circle"></i> Envio Gerado com Sucesso!</span>
+                            <span style="font-weight:600;font-size:13px;"><i class="fas fa-check-circle"></i> Notas, Pedidos e Etiquetas Gerados!</span>
                             <button onclick="this.closest('#syncProcessandoPanel').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;">&times;</button>
                         </div>
                         <div style="padding:12px 15px;">
@@ -3571,6 +4726,9 @@ async function _gerarEnvio() {
                                 <button class="btn btn-success" onclick="enviarWhatsAppManual()" style="font-size:11px;padding:6px 12px;">
                                     <i class="fab fa-whatsapp"></i> Enviar via WhatsApp
                                 </button>
+                                <button class="btn btn-primary" onclick="enviarEmailManual()" style="font-size:11px;padding:6px 12px;">
+                                    <i class="fas fa-envelope"></i> Enviar por Email
+                                </button>
                                 <button class="btn btn-secondary" onclick="baixarArquivo('/api/download-todos','Etiquetas_prontas.zip')" style="font-size:11px;padding:6px 12px;">
                                     <i class="fas fa-download"></i> Baixar ZIP
                                 </button>
@@ -3585,8 +4743,28 @@ async function _gerarEnvio() {
                     `;
                 }
 
-                toast(status.etapa === 'concluido' ? 'Envio gerado com sucesso!' : status.detalhes, status.etapa === 'concluido' ? 'success' : 'warning');
+                toast(status.etapa === 'concluido' ? 'Notas, pedidos e etiquetas gerados com sucesso!' : status.detalhes, status.etapa === 'concluido' ? 'success' : 'warning');
+                // Avisos de falhas de NF-e persistentes
+                if (status.aviso_falhas) {
+                    setTimeout(() => toast(status.aviso_falhas, 'warning'), 2000);
+                }
+                if (status.motivos_falhas && status.motivos_falhas.length) {
+                    setTimeout(() => toast(`Motivos de falha: ${status.motivos_falhas.join(' | ')}`, 'warning'), 3000);
+                }
+                if (status.lojas_falha && status.lojas_falha.length) {
+                    const amostra = status.lojas_falha.slice(0, 4).map(x => `${x.loja}: ${x.motivo}`).join(' | ');
+                    setTimeout(() => toast(`Falhas ignoradas: ${amostra}`, 'warning'), 3500);
+                }
+                _atualizarCardEnvioDisponivel();
+                if (status.atualizando_pedidos) {
+                    setTimeout(() => toast('Atualizando pedidos, aguarde.', 'info'), 1200);
+                }
+                setTimeout(() => sincronizarAutomacao(), 1200);
 
+            } else if ((status.etapa === 'concluido' || status.etapa === 'parcial') && status.em_andamento) {
+                // Ainda finalizando no backend; manter polling ativo.
+                const txt = document.getElementById('syncGerarText');
+                if (txt) txt.textContent = 'Finalizando arquivos para envio...';
             } else if (status.etapa === 'erro') {
                 clearInterval(pollGeracao);
                 toast(status.detalhes || 'Erro na geracao', 'error');
@@ -3600,10 +4778,60 @@ async function _gerarEnvio() {
             console.error('Erro polling geracao:', e);
         }
     }, 2000);
+
+    // Safety: cancelar polling apos 10 minutos
+    setTimeout(() => {
+        clearInterval(pollGeracao);
+        const procDiv = document.getElementById('syncProcessandoPanel');
+        if (procDiv) procDiv.remove();
+        const syncPanel3 = document.getElementById('syncResultadoPanel');
+        if (syncPanel3) syncPanel3.style.opacity = '1';
+        toast('Geracao: Timeout (10 min). Verifique o status manualmente.', 'warning');
+    }, 600000);
 }
 
 // --- WHATSAPP ---
 let _whatsappQRPolling = null;
+let _whatsappFilaPolling = null;
+
+async function carregarConfigWhatsApp() {
+    const data = await fetchAPI('/api/whatsapp/config');
+    const chk = document.getElementById('whatsappAutoSendToggle');
+    if (chk && data) chk.checked = !!data.auto_send_whatsapp;
+}
+
+async function salvarConfigWhatsAppAuto() {
+    const chk = document.getElementById('whatsappAutoSendToggle');
+    if (!chk) return;
+    const valor = !!chk.checked;
+    const res = await fetchAPI('/api/whatsapp/config', {
+        method: 'POST',
+        body: JSON.stringify({ auto_send_whatsapp: valor })
+    });
+    if (res && !res.erro) {
+        toast(`Auto-envio WhatsApp ${valor ? 'ativado' : 'desativado'}.`, 'success');
+    } else {
+        toast(res?.erro || 'Erro ao salvar configuracao', 'error');
+        chk.checked = !valor;
+    }
+}
+
+async function atualizarResumoFilaWhatsApp() {
+    const el = document.getElementById('whatsappQueueResumo');
+    if (!el) return;
+    const data = await fetchAPI('/api/whatsapp/fila/status');
+    if (!data || !data.counts) {
+        el.textContent = 'Fila: indisponivel';
+        return;
+    }
+    const c = data.counts;
+    el.textContent = `Fila: ${c.pending || 0} pend. | ${c.retry || 0} retry | ${c.sending || 0} enviando | ${c.sent || 0} enviados | ${c.dead || 0} falhas`;
+}
+
+function iniciarPollingFilaWhatsApp() {
+    if (_whatsappFilaPolling) clearInterval(_whatsappFilaPolling);
+    _whatsappFilaPolling = setInterval(atualizarResumoFilaWhatsApp, 5000);
+}
 
 async function verificarWhatsApp() {
     const data = await fetchAPI('/api/whatsapp/status');
@@ -3713,33 +4941,46 @@ function _iniciarPollingQRWhatsApp() {
 }
 
 async function enviarTesteWhatsApp() {
-    const tel = document.getElementById('whatsappTesteTel').value;
-    if (!tel) { toast('Informe um numero', 'warning'); return; }
+    const elTel = document.getElementById('whatsappTesteTel');
+    const tel = _normalizeWhatsAppPhone(elTel?.value || '');
+    if (!tel || tel.length < 10) {
+        toast('Informe um numero valido com DDD', 'warning');
+        return;
+    }
+    if (elTel) elTel.value = tel;
+
     const res = await fetchAPI('/api/whatsapp/enviar-teste', {
         method: 'POST', body: JSON.stringify({ telefone: tel })
     });
-    if (res && res.success) toast('Mensagem de teste enviada!', 'success');
-    else toast(res?.error || 'Erro ao enviar teste', 'error');
+    if (res && res.success) toast(`Mensagem de teste enviada para ${tel}!`, 'success');
+    else toast(res?.erro || res?.error || res?.message || 'Erro ao enviar teste', 'error');
 }
 
 // --- CONTATOS ---
 function mostrarFormContato() {
     document.getElementById('formContato').style.display = 'block';
-    document.getElementById('contatoCNPJ').value = '';
-    document.getElementById('contatoLoja').value = '';
-    document.getElementById('contatoTel').value = '';
+    document.getElementById('contatoTel').value = _getWhatsAppCountryCode();
     document.getElementById('contatoNome').value = '';
+    _renderAlvosFormulario('wa', [], []);
 }
 
 async function salvarContato() {
-    const cnpj = document.getElementById('contatoCNPJ').value;
-    const loja = document.getElementById('contatoLoja').value;
-    const tel = document.getElementById('contatoTel').value;
+    const elTel = document.getElementById('contatoTel');
+    const tel = _normalizeWhatsAppPhone(elTel?.value || '');
+    if (elTel) elTel.value = tel;
     const nome = document.getElementById('contatoNome').value;
-    if (!cnpj || !tel) { toast('CNPJ e telefone obrigatorios', 'warning'); return; }
+    const { lojas, grupos } = _coletarAlvosFormulario('wa');
+    if (!tel || tel.length < 12) { toast('Telefone obrigatorio (com DDD)', 'warning'); return; }
     const res = await fetchAPI('/api/whatsapp/contatos', {
         method: 'POST',
-        body: JSON.stringify({ loja_cnpj: cnpj, loja_nome: loja, telefone: tel, nome_contato: nome })
+        body: JSON.stringify({
+            telefone: tel,
+            nome_contato: nome,
+            lojas,
+            grupos,
+            loja_cnpj: 'ALVO_CUSTOM',
+            loja_nome: lojas[0] || (grupos[0] || 'Todos')
+        })
     });
     if (res && !res.erro) {
         toast('Contato salvo!', 'success');
@@ -3756,12 +4997,14 @@ async function carregarContatos() {
         return;
     }
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
-    html += '<th>Loja</th><th>CNPJ</th><th>WhatsApp</th><th>Contato</th><th>Ativo</th><th></th>';
+    html += '<th>Alvos</th><th>WhatsApp</th><th>Contato</th><th>Ativo</th><th></th>';
     html += '</tr></thead><tbody>';
     data.forEach(c => {
+        const alvos = []
+            .concat((c.lojas || []).map(x => `Loja: ${x}`))
+            .concat((c.grupos || []).map(x => `Grupo: ${x}`));
         html += `<tr>
-            <td>${c.loja_nome}</td>
-            <td style="font-size:11px;">${c.loja_cnpj}</td>
+            <td style="font-size:11px;">${alvos.length ? alvos.join(' | ') : (c.loja_nome || c.loja_cnpj || '-')}</td>
             <td>${c.telefone}</td>
             <td>${c.nome_contato}</td>
             <td>${c.ativo ? '<span style="color:#25D366;">&#10003;</span>' : '<span style="color:#e74c3c;">&#10007;</span>'}</td>
@@ -3779,17 +5022,590 @@ async function removerContato(id) {
     else toast(res?.erro || 'Erro', 'error');
 }
 
+// --- CONTATOS EMAIL ---
+function mostrarFormEmail() {
+    document.getElementById('formEmail').style.display = 'block';
+    document.getElementById('emailNomeContato').value = '';
+    document.getElementById('emailEndereco').value = '';
+    _renderAlvosFormulario('email', [], []);
+}
+
+async function salvarContatoEmail() {
+    const nome = document.getElementById('emailNomeContato').value;
+    const email = document.getElementById('emailEndereco').value;
+    const { lojas, grupos } = _coletarAlvosFormulario('email');
+    if (!email || !email.includes('@')) { toast('Email invalido', 'warning'); return; }
+    const res = await fetchAPI('/api/email/contatos', {
+        method: 'POST',
+        body: JSON.stringify({
+            nome_contato: nome,
+            email: email,
+            lojas,
+            grupos,
+            loja_cnpj: 'ALVO_CUSTOM'
+        })
+    });
+    if (res && !res.erro) {
+        toast('Contato email salvo!', 'success');
+        document.getElementById('formEmail').style.display = 'none';
+        carregarContatosEmail();
+    } else toast(res?.erro || 'Erro', 'error');
+}
+
+async function carregarContatosEmail() {
+    const data = await fetchAPI('/api/email/contatos');
+    const container = document.getElementById('tabelaContatosEmail');
+    if (!data || data.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato de email cadastrado.</p>';
+        return;
+    }
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
+    html += '<th>Alvos</th><th>Email</th><th>Contato</th><th></th>';
+    html += '</tr></thead><tbody>';
+    data.forEach(c => {
+        const alvos = []
+            .concat((c.lojas || []).map(x => `Loja: ${x}`))
+            .concat((c.grupos || []).map(x => `Grupo: ${x}`));
+        html += `<tr>
+            <td style="font-size:11px;">${alvos.length ? alvos.join(' | ') : (c.loja_cnpj || '-')}</td>
+            <td>${c.email}</td>
+            <td>${c.nome_contato}</td>
+            <td><button class="btn btn-secondary" onclick="removerContatoEmail(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button></td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function removerContatoEmail(id) {
+    if (!confirm('Remover este contato de email?')) return;
+    const res = await fetchAPI(`/api/email/contatos/${id}`, { method: 'DELETE' });
+    if (res && !res.erro) { toast('Contato removido', 'success'); carregarContatosEmail(); }
+    else toast(res?.erro || 'Erro', 'error');
+}
+
+async function carregarConfigEmail() {
+    const data = await fetchAPI('/api/email/config');
+    if (!data) return;
+    const inpEmail = document.getElementById('emailRemetente');
+    const inpNome = document.getElementById('emailRemetenteNome');
+    if (inpEmail) inpEmail.value = data.email_remetente || '';
+    if (inpNome) inpNome.value = data.nome_remetente || 'Beka MultiPlace';
+    const st = document.getElementById('smtpStatusTxt');
+    if (st) {
+        if (data.configurado) {
+            st.innerHTML = `<span style="color:#25D366;"><i class="fas fa-check-circle"></i> Remetente validado (${data.smtp_origem || 'usuario'})</span>`;
+        } else {
+            st.innerHTML = '<span style="color:#ffb74d;"><i class="fas fa-exclamation-triangle"></i> Informe email e senha de app para validar.</span>';
+        }
+    }
+}
+
+function _sugerirSMTPPorEmail(email) {
+    const e = String(email || '').trim().toLowerCase();
+    const domain = e.includes('@') ? e.split('@')[1] : '';
+    if (!domain) return { host: '', port: 587 };
+
+    if (domain === 'gmail.com') return { host: 'smtp.gmail.com', port: 587 };
+    if (['outlook.com', 'hotmail.com', 'live.com', 'msn.com'].includes(domain)) {
+        return { host: 'smtp.office365.com', port: 587 };
+    }
+    if (domain === 'yahoo.com' || domain.endsWith('.yahoo.com')) {
+        return { host: 'smtp.mail.yahoo.com', port: 587 };
+    }
+    if (['icloud.com', 'me.com', 'mac.com'].includes(domain)) {
+        return { host: 'smtp.mail.me.com', port: 587 };
+    }
+    return { host: `smtp.${domain}`, port: 587 };
+}
+
+async function salvarConfigEmail() {
+    const email = (document.getElementById('emailRemetente')?.value || '').trim();
+    const nome = (document.getElementById('emailRemetenteNome')?.value || 'Beka MultiPlace').trim();
+    const smtp_pass = (document.getElementById('smtpSenha')?.value || '').trim();
+
+    if (!email || !email.includes('@')) {
+        toast('Email remetente obrigatorio e deve ser valido.', 'warning');
+        return false;
+    }
+
+    if (!smtp_pass) {
+        toast('Senha de app obrigatoria para validar o remetente.', 'warning');
+        return false;
+    }
+
+    const sugestao = _sugerirSMTPPorEmail(email);
+    const smtp_host = sugestao.host;
+    const smtp_port = sugestao.port;
+    const smtp_user = email;
+    const smtp_from = email;
+
+    const res = await fetchAPI('/api/email/config', {
+        method: 'POST',
+        body: JSON.stringify({
+            email_remetente: email,
+            nome_remetente: nome,
+            smtp_host,
+            smtp_port,
+            smtp_user,
+            smtp_from,
+            smtp_pass
+        })
+    });
+
+    if (res && !res.erro) {
+        const senha = document.getElementById('smtpSenha');
+        if (senha) senha.value = '';
+        toast('Configuracao de email salva.', 'success');
+        carregarConfigEmail();
+        return true;
+    } else {
+        toast(res?.erro || 'Erro ao salvar remetente', 'error');
+        return false;
+    }
+}
+
+async function validarSalvarEmailRemetente() {
+    const ok = await salvarConfigEmail();
+    if (!ok) return;
+
+    const res = await fetchAPI('/api/email/validar', { method: 'POST' });
+    if (res && res.sucesso) {
+        toast(res.mensagem || 'Remetente validado com sucesso.', 'success');
+    } else {
+        toast(res?.erro || 'Falha ao validar remetente de email.', 'error');
+    }
+    carregarConfigEmail();
+}
+
+async function limparSenhaSMTP() {
+    const res = await fetchAPI('/api/email/config', {
+        method: 'POST',
+        body: JSON.stringify({
+            email_remetente: (document.getElementById('emailRemetente')?.value || '').trim(),
+            nome_remetente: (document.getElementById('emailRemetenteNome')?.value || 'Beka MultiPlace'),
+            smtp_limpar_senha: true,
+            smtp_pass: ''
+        })
+    });
+    if (res && !res.erro) {
+        const senha = document.getElementById('smtpSenha');
+        if (senha) senha.value = '';
+        toast('Senha SMTP removida.', 'success');
+        carregarConfigEmail();
+        return;
+    }
+    toast(res?.erro || 'Erro ao limpar senha SMTP', 'error');
+}
+
+async function enviarEmailManual() {
+    toast('Enviando etiquetas por email...', 'info');
+    const res = await fetchAPI('/api/email/enviar-lote', { method: 'POST' });
+    if (res && res.mensagem) {
+        toast(res.mensagem, 'success');
+    } else {
+        let msg = res?.erro || 'Erro ao enviar emails';
+        if (res?.diagnostico) {
+            const d = res.diagnostico;
+            msg += ` | sem contato: ${d.lojas_sem_contato || 0}, sem arquivo: ${d.lojas_sem_arquivo || 0}`;
+        }
+        toast(msg, 'error');
+    }
+}
+
+function _renderCardEnvioDisponivel(resultado) {
+    const existente = document.getElementById('envioDisponivelPanel');
+    if (existente) existente.remove();
+    if (!resultado || !resultado.lojas || resultado.lojas.length === 0) return;
+
+    const totalEtiquetas = resultado.total_etiquetas || 0;
+    const totalLojas = resultado.total_lojas || resultado.lojas.length || 0;
+    const horario = resultado.timestamp || '';
+
+    const panel = document.createElement('div');
+    panel.id = 'envioDisponivelPanel';
+    panel.style.cssText = 'margin-top:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--bg-primary);';
+    panel.innerHTML = `
+        <div style="background:linear-gradient(135deg,#25D366,#128C7E);color:#fff;padding:10px 15px;display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-weight:700;font-size:13px;"><i class="fas fa-paper-plane"></i> Etiquetas prontas para envio</span>
+            <button onclick="this.closest('#envioDisponivelPanel').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;">&times;</button>
+        </div>
+        <div style="padding:12px 15px;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px;margin-bottom:12px;">
+                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                    <div style="font-size:18px;font-weight:700;color:#25D366;">${totalEtiquetas}</div>
+                    <div style="font-size:10px;color:var(--text-secondary);">Etiquetas</div>
+                </div>
+                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                    <div style="font-size:18px;font-weight:700;color:var(--primary);">${totalLojas}</div>
+                    <div style="font-size:10px;color:var(--text-secondary);">Lojas</div>
+                </div>
+                <div style="text-align:center;padding:8px;background:var(--bg-secondary);border-radius:6px;">
+                    <div style="font-size:12px;font-weight:700;color:var(--text-muted);">${horario || '-'}</div>
+                    <div style="font-size:10px;color:var(--text-secondary);">Gerado em</div>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="btn btn-success" onclick="enviarWhatsAppManual()" style="font-size:11px;padding:6px 12px;">
+                    <i class="fab fa-whatsapp"></i> Enviar WhatsApp
+                </button>
+                <button class="btn btn-primary" onclick="enviarEmailManual()" style="font-size:11px;padding:6px 12px;">
+                    <i class="fas fa-envelope"></i> Enviar Email
+                </button>
+                <button class="btn btn-secondary" onclick="baixarArquivo('/api/download-todos','Etiquetas_prontas.zip')" style="font-size:11px;padding:6px 12px;">
+                    <i class="fas fa-download"></i> Download ZIP
+                </button>
+            </div>
+        </div>
+    `;
+
+    _appendToAutomacaoAnchor(panel);
+}
+
+function _renderHistoricoGeradas24h(lista) {
+    const body = document.getElementById('historicoGeradas24hBody');
+    if (!body) return;
+
+    if (!lista || lista.length === 0) {
+        body.innerHTML = `<div style="padding:4px 0;font-size:11px;color:var(--text-secondary);">Nenhuma geracao nas ultimas 24h.</div>`;
+        return;
+    }
+
+    const VISIVEL = 3;
+    const temMais = lista.length > VISIVEL;
+
+    function _renderItem(it) {
+        return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border);">
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:10px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.arquivo}</div>
+                <div style="font-size:9px;color:var(--text-secondary);">
+                    ${it.created_at_fmt || '-'} | ${it.total_lojas || 0} lojas | ${it.total_etiquetas || 0} etiq. | ${it.size_fmt || '-'}
+                </div>
+            </div>
+            <button class="btn btn-secondary" onclick="baixarArquivo('${it.download_url}','${it.arquivo}')" style="font-size:9px;padding:2px 6px;">
+                <i class="fas fa-download"></i>
+            </button>
+        </div>`;
+    }
+
+    let html = lista.slice(0, VISIVEL).map(_renderItem).join('');
+
+    if (temMais) {
+        const extras = lista.slice(VISIVEL).map(_renderItem).join('');
+        html += `<div id="historicoGeradasExtras" style="display:none;">${extras}</div>`;
+        html += `<button id="btnVerMaisGeradas" class="btn btn-secondary" onclick="_toggleHistoricoGeradasExtras()" style="width:100%;font-size:10px;padding:3px 0;margin-top:4px;text-align:center;">
+            <i class="fas fa-chevron-down"></i> Ver mais (${lista.length - VISIVEL})
+        </button>`;
+    }
+
+    body.innerHTML = html;
+}
+
+function _toggleHistoricoGeradasExtras() {
+    const extras = document.getElementById('historicoGeradasExtras');
+    const btn = document.getElementById('btnVerMaisGeradas');
+    if (!extras || !btn) return;
+    if (extras.style.display === 'none') {
+        extras.style.display = 'block';
+        btn.innerHTML = '<i class="fas fa-chevron-up"></i> Ver menos';
+    } else {
+        extras.style.display = 'none';
+        const count = extras.querySelectorAll(':scope > div').length;
+        btn.innerHTML = `<i class="fas fa-chevron-down"></i> Ver mais (${count})`;
+    }
+}
+
+async function carregarHistoricoGeradas24h() {
+    try {
+        const data = await fetchAPI('/api/historico-geradas?horas=24');
+        const lista = (data && data.historico) ? data.historico : [];
+        _renderHistoricoGeradas24h(lista);
+    } catch (e) {
+        console.error('Erro ao carregar historico de geradas 24h:', e);
+    }
+}
+
+async function _atualizarCardEnvioDisponivel() {
+    try {
+        const status = await fetchAPI('/api/status');
+        if (status && status.ultimo_resultado) {
+            _renderCardEnvioDisponivel(status.ultimo_resultado);
+        } else {
+            const existente = document.getElementById('envioDisponivelPanel');
+            if (existente) existente.remove();
+        }
+        await carregarHistoricoGeradas24h();
+    } catch (e) {
+        console.error('Erro ao atualizar card de envio:', e);
+    }
+}
+
+async function atualizarLojaIndividual(nomeLoja, btnEl, evt) {
+    try {
+        if (evt) {
+            evt.preventDefault();
+            evt.stopPropagation();
+        }
+    } catch (_) {}
+
+    const nome = (nomeLoja || '').trim();
+    if (!nome) return;
+
+    const oldHtml = btnEl ? btnEl.innerHTML : '';
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    }
+
+    try {
+        const res = await fetchAPI('/api/lojas/atualizar-individual', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ loja: nome })
+        });
+
+        if (res && res.sucesso) {
+            const pedidos = (res.loja && Number.isFinite(parseInt(res.loja.pedidos, 10)))
+                ? parseInt(res.loja.pedidos, 10)
+                : 0;
+            toast(`Loja ${res.loja?.nome || nome}: ${pedidos} pedido(s)`, 'success');
+            await carregarLojasPersistentes();
+        } else {
+            toast(res?.erro || `Falha ao atualizar loja ${nome}`, 'warning');
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.innerHTML = oldHtml;
+            }
+        }
+    } catch (e) {
+        toast(`Erro ao atualizar loja ${nome}`, 'error');
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.innerHTML = oldHtml;
+        }
+    }
+}
+
+async function atualizarTodasLojas(btnEl) {
+    const btn = btnEl || document.getElementById('btnAtualizarTodasLojas');
+    const oldHtml = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Atualizando...';
+    }
+
+    try {
+        toast('Atualizando contagem de todas as lojas (modo preciso)...', 'info');
+        const res = await fetchAPI('/api/lojas/atualizar-todas', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+
+        if (res && res.sucesso) {
+            toast(`Lojas atualizadas: ${res.total_pedidos || 0} pedido(s) pendente(s)`, 'success');
+            if (res.aviso) {
+                toast(res.aviso, 'warning');
+            }
+            await carregarLojasPersistentes();
+        } else {
+            toast(res?.erro || 'Falha ao atualizar lojas', 'warning');
+        }
+    } catch (e) {
+        toast('Erro ao atualizar lojas', 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = oldHtml || '<i class="fas fa-sync-alt"></i> Atualizar Lojas';
+        }
+    }
+}
+
+// --- LOJAS PERSISTENTES ---
+async function carregarLojasPersistentes() {
+    const isMarketplaceMode = _isMarketplaceApiMode();
+    const lojasEndpoint = isMarketplaceMode ? '/api/marketplace/lojas' : '/api/lojas';
+    const normNome = (s) => (s || '')
+        .toString()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+    const checkedPrev = new Set(
+        Array.from(document.querySelectorAll('.sync-loja-check:checked'))
+            .map(cb => normNome(cb.dataset.nome || ''))
+            .filter(Boolean)
+    );
+
+    // Sempre re-renderizar para manter contagens atualizadas apos cada acao.
+    const existente = document.getElementById('syncResultadoPanel');
+    if (existente) existente.remove();
+
+    const data = await fetchAPI(lojasEndpoint);
+    if (!data || !data.lojas || data.lojas.length === 0) return;
+
+    const lojas = [...data.lojas].sort((a, b) =>
+        (parseInt(b.pedidos || 0, 10) - parseInt(a.pedidos || 0, 10)) ||
+        (a.nome || '').localeCompare((b.nome || ''), 'pt-BR', { sensitivity: 'base' })
+    );
+    const totalPedidos = data.total_pedidos;
+    const sidebarInfo = data.sidebar_info || {};
+
+    // Cards de atalho (mesmos do sync panel)
+    const atalhos = [
+        { key: 'Para Emitir',   label: 'Emitir Notas Fiscais', icon: 'fa-file-invoice',  color: '#f39c12', bg: 'rgba(243,156,18,0.12)', action: 'emitir' },
+        { key: 'Para Enviar',   label: 'Gerar Pedidos',        icon: 'fa-shipping-fast',  color: '#2196F3', bg: 'rgba(33,150,243,0.12)', action: 'programar' },
+        { key: 'Para Imprimir', label: 'Gerar Etiquetas',      icon: 'fa-print',          color: '#25D366', bg: 'rgba(37,211,102,0.12)', action: 'imprimir' },
+    ];
+    // Valores iniciais per-status = soma das lojas com qualquer pendencia
+    const deveMarcarFn = (l) => {
+        const p = parseInt(l.pedidos || 0, 10);
+        const n = parseInt(l.notas_pendentes || 0, 10);
+        const e = parseInt(l.etiquetas_pendentes || 0, 10);
+        const pendente = p > 0 || n > 0 || e > 0;
+        return pendente && (checkedPrev.size === 0 || checkedPrev.has(normNome(l.nome || '')));
+    };
+    const lojasAtivas = lojas.filter(deveMarcarFn);
+    const inicialNotas = lojasAtivas.reduce((acc, l) => acc + parseInt(l.notas_pendentes || 0, 10), 0);
+    const inicialPedidos = lojasAtivas.reduce((acc, l) => acc + parseInt(l.pedidos || 0, 10), 0);
+    const inicialEtiquetas = lojasAtivas.reduce((acc, l) => acc + parseInt(l.etiquetas_pendentes || 0, 10), 0);
+    const valoresIniciais = { emitir: inicialNotas, programar: inicialPedidos, imprimir: inicialEtiquetas };
+    let atalhosHTML = atalhos.map(a => {
+        const valor = valoresIniciais[a.action] || 0;
+        const isActive = valor > 0;
+        return `<div id="atalho-card-${a.action}" onclick="executarAtalhoUpSeller('${a.action}')" style="
+            flex:1; min-width:90px; padding:10px 8px; border-radius:10px;
+            background:${isActive ? a.bg : 'var(--bg-input)'}; border:1px solid ${isActive ? a.color + '44' : 'var(--border)'};
+            text-align:center; transition:all 0.2s; cursor:pointer;
+        " onmouseover="this.style.transform='scale(1.04)';this.style.boxShadow='0 4px 15px ${a.color}33'"
+           onmouseout="this.style.transform='scale(1)';this.style.boxShadow='none'">
+            <div style="font-size:18px; color:${isActive ? a.color : 'var(--text-muted)'}; margin-bottom:2px;">
+                <i class="fas ${a.icon}"></i>
+            </div>
+            <div data-card-valor style="font-size:16px; font-weight:700; color:${isActive ? a.color : 'var(--text-muted)'};">${valor}</div>
+            <div style="font-size:9px; color:var(--text-secondary); font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${a.label}</div>
+        </div>`;
+    }).join('');
+
+    // Construir checkboxes de lojas (mesmo estilo do sync)
+    let lojasHTML = lojas.map(l => {
+        const pedidos = l.pedidos || 0;
+        const notas = l.notas_pendentes || 0;
+        const etiquetas = l.etiquetas_pendentes || 0;
+        const nomeSafe = String(l.nome || '').replace(/"/g, '&quot;');
+        const pendente = pedidos > 0 || notas > 0 || etiquetas > 0;
+        const deveMarcar = pendente && (checkedPrev.size === 0 || checkedPrev.has(normNome(l.nome || '')));
+        const badgeTxt = pedidos > 0
+            ? `${pedidos} pedido${pedidos !== 1 ? 's' : ''}`
+            : (notas > 0 ? `${notas} nota${notas !== 1 ? 's' : ''}` : `${etiquetas} etiqueta${etiquetas !== 1 ? 's' : ''}`);
+        return `<label style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px;${pendente ? '' : 'opacity:0.5;'}" onmouseover="this.style.background='var(--bg-tertiary)'" onmouseout="this.style.background='transparent'">
+            <input type="checkbox" class="sync-loja-check" data-nome="${nomeSafe}" data-pedidos="${pedidos}" data-notas="${notas}" data-etiquetas="${etiquetas}" ${deveMarcar ? 'checked' : ''} ${pendente ? '' : 'disabled'}>
+            <i class="fas fa-store" style="color:var(--text-muted);"></i>
+            <span style="flex:1;font-weight:500;">${l.nome}</span>
+            <span style="background:var(--bg-tertiary);color:var(--text-muted);padding:1px 4px;border-radius:4px;font-size:9px;">${l.marketplace || 'Shopee'}</span>
+            <span style="background:${pendente ? '#2196F3' : '#555'};color:#fff;padding:1px 6px;border-radius:8px;font-size:10px;">${badgeTxt}</span>
+            <button type="button"
+                class="btn btn-secondary"
+                data-nome="${nomeSafe}"
+                onclick="${isMarketplaceMode ? 'sincronizarMarketplaceApi()' : 'atualizarLojaIndividual(this.dataset.nome, this, event)'}"
+                title="${isMarketplaceMode ? 'Sincronizar API agora' : 'Atualizar somente esta loja'}"
+                style="font-size:10px;padding:2px 6px;margin-left:6px;">
+                <i class="fas fa-sync-alt"></i>
+            </button>
+        </label>`;
+    }).join('');
+
+    // Grupos salvos (card de agrupamento)
+    let gruposSalvosHTML = '';
+    if (_syncGruposAutomacao.length > 0) {
+        gruposSalvosHTML = _syncGruposAutomacao.map((g, i) => `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;margin-bottom:4px;">
+                <i class="fas fa-layer-group" style="color:var(--primary);"></i>
+                <div style="flex:1;">
+                    <div style="font-size:12px;font-weight:600;">${g.nome}</div>
+                    <div style="font-size:10px;color:var(--text-muted);">${(g.nomes_lojas || []).join(', ')}</div>
+                </div>
+                <button onclick="_removerGrupoSync(${i})" style="background:none;border:none;color:#e74c3c;cursor:pointer;font-size:14px;" title="Remover grupo">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        `).join('');
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'syncResultadoPanel';
+    panel.style.cssText = 'margin-top:15px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-primary);';
+    panel.innerHTML = `
+        <div style="background:linear-gradient(135deg, ${totalPedidos > 0 ? '#1a6b35, #145528' : '#333, #444'}); color:#fff; padding:10px 15px; display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:600; font-size:13px;">
+                <i class="fas fa-store"></i>
+                ${lojas.length} Loja${lojas.length !== 1 ? 's' : ''} - ${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''} pendente${totalPedidos !== 1 ? 's' : ''}
+            </span>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <button id="btnAtualizarTodasLojas" class="btn btn-secondary" onclick="${isMarketplaceMode ? 'sincronizarMarketplaceApi()' : 'atualizarTodasLojas(this)'}" style="font-size:10px;padding:3px 8px;">
+                    <i class="fas fa-sync-alt"></i> ${isMarketplaceMode ? 'Sincronizar API' : 'Atualizar Lojas'}
+                </button>
+                <span style="font-size:10px; opacity:0.7;">Salvo no banco</span>
+            </div>
+        </div>
+
+        <!-- Atalhos do UpSeller -->
+        <div style="display:flex;gap:8px;padding:10px 15px;flex-wrap:wrap;">
+            ${atalhosHTML}
+        </div>
+
+        <div style="padding:0 15px 12px 15px;">
+            <div onclick="_toggleTodasLojasCheck()" style="display:flex;align-items:center;gap:6px;margin-bottom:6px;cursor:pointer;padding:4px 0;" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                <i class="fas fa-check-square" style="color:var(--primary);"></i>
+                <span style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;">Selecione as lojas para processar</span>
+            </div>
+            <div style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">
+                ${lojasHTML}
+            </div>
+            <div style="margin-top:10px; border:1px solid var(--border); border-radius:6px; padding:10px;">
+                <div style="font-size:11px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;margin-bottom:6px;">
+                    <i class="fas fa-layer-group"></i> Agrupamento de Lojas (opcional)
+                </div>
+                <div id="syncGruposSalvos">${gruposSalvosHTML}</div>
+                <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">
+                    Selecione 2+ lojas acima e crie um grupo para gerar PDF unificado:
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <input id="syncGrupoNome" class="form-input" type="text" placeholder="Nome do grupo" style="font-size:11px;flex:1;padding:4px 8px;">
+                    <button onclick="_adicionarGrupoSync()" class="btn btn-primary" style="font-size:11px;padding:4px 10px;white-space:nowrap;">
+                        <i class="fas fa-plus"></i> Criar Grupo
+                    </button>
+                </div>
+            </div>
+            <div style="margin-top:10px;">
+                <button class="btn btn-primary" onclick="_gerarEnvio()" style="font-size:12px; width:100%;">
+                    <i class="fas fa-rocket"></i> Gerar notas, pedidos e etiquetas com um click
+                </button>
+            </div>
+        </div>
+    `;
+
+    _appendToAutomacaoAnchor(panel);
+
+    // Atualizar cards quando checkboxes mudam
+    panel.querySelectorAll('.sync-loja-check').forEach(cb => {
+        cb.addEventListener('change', _atualizarCardsComSelecionados);
+    });
+}
+
 // --- AGENDAMENTOS ---
 function mostrarFormAgendamento() {
     document.getElementById('formAgendamento').style.display = 'block';
     document.getElementById('agendNome').value = '';
     document.getElementById('agendHora').value = '08:00';
+    _renderAlvosFormulario('agend', [], []);
 }
 
 async function salvarAgendamento() {
     const nome = document.getElementById('agendNome').value || 'Agendamento';
     const hora = document.getElementById('agendHora').value;
     const dias = Array.from(document.querySelectorAll('.agendDia:checked')).map(cb => cb.value).join(',') || 'todos';
+    const { lojas, grupos } = _coletarAlvosFormulario('agend');
     const res = await fetchAPI('/api/agendamentos', {
         method: 'POST',
         body: JSON.stringify({
@@ -3797,6 +5613,8 @@ async function salvarAgendamento() {
             baixar_upseller: document.getElementById('agendUpseller').checked,
             processar_etiquetas: document.getElementById('agendProcessar').checked,
             enviar_whatsapp: document.getElementById('agendWhatsapp').checked,
+            lojas,
+            grupos,
         })
     });
     if (res && !res.erro) {
@@ -3814,15 +5632,19 @@ async function carregarAgendamentos() {
         return;
     }
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
-    html += '<th>Nome</th><th>Horario</th><th>Dias</th><th>Proxima</th><th>Ultimo</th><th>Status</th><th></th>';
+    html += '<th>Nome</th><th>Horario</th><th>Dias</th><th>Alvos</th><th>Proxima</th><th>Ultimo</th><th>Status</th><th></th>';
     html += '</tr></thead><tbody>';
     data.forEach(s => {
         const statusColor = s.ultimo_status === 'sucesso' ? '#25D366' : s.ultimo_status === 'erro' ? '#e74c3c' : s.ultimo_status === 'parcial' ? '#f39c12' : 'var(--text-secondary)';
         const ativoIcon = s.ativo ? '&#9654;' : '&#9646;&#9646;';
+        const alvos = []
+            .concat((s.lojas || []).map(x => `Loja: ${x}`))
+            .concat((s.grupos || []).map(x => `Grupo: ${x}`));
         html += `<tr>
             <td>${s.nome}</td>
             <td>${s.hora}</td>
             <td style="font-size:10px;">${s.dias_semana}</td>
+            <td style="font-size:10px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${alvos.join(' | ')}">${alvos.length ? alvos.join(' | ') : 'Todas'}</td>
             <td style="font-size:10px;">${s.proxima_execucao || '-'}</td>
             <td style="font-size:10px;">${s.ultima_execucao || '-'}</td>
             <td><span style="color:${statusColor}; font-weight:bold;">${s.ultimo_status || '-'}</span></td>
@@ -3866,8 +5688,55 @@ async function executarPipelineAgora() {
 async function enviarWhatsAppManual() {
     if (!confirm('Enviar ultimo resultado via WhatsApp para todos os contatos?')) return;
     const res = await fetchAPI('/api/whatsapp/enviar-lote', { method: 'POST' });
-    if (res && !res.erro) toast(res.mensagem || 'Enviando...', 'success');
-    else toast(res?.erro || 'Erro', 'error');
+    if (res && !res.erro) {
+        const total = res.total_entregas || 0;
+        toast(res.mensagem || `Enviando ${total} arquivo(s)...`, 'success');
+        atualizarResumoFilaWhatsApp();
+        _iniciarPollingEnvioWhatsApp();
+    } else {
+        let msg = res?.erro || 'Erro';
+        if (res?.diagnostico) {
+            const d = res.diagnostico;
+            msg += ` | sem contato: ${d.lojas_sem_contato || 0}, sem arquivo: ${d.lojas_sem_arquivo || 0}`;
+        }
+        toast(msg, 'error');
+    }
+}
+
+let _pollWhatsAppEnvio = null;
+let _lastWhatsAppEnvioMsg = '';
+function _iniciarPollingEnvioWhatsApp() {
+    if (_pollWhatsAppEnvio) clearInterval(_pollWhatsAppEnvio);
+    _lastWhatsAppEnvioMsg = '';
+    _pollWhatsAppEnvio = setInterval(async () => {
+        try {
+            const st = await fetchAPI('/api/whatsapp/enviar-lote/status');
+            if (!st) return;
+            if (st.em_andamento) {
+                const txt = st.detalhes || `Enviando WhatsApp (${st.progresso || 0}%)`;
+                const nivel = st.erros > 0 ? 'warning' : 'info';
+                if (txt !== _lastWhatsAppEnvioMsg) {
+                    _lastWhatsAppEnvioMsg = txt;
+                    toast(txt, nivel);
+                }
+                return;
+            }
+            clearInterval(_pollWhatsAppEnvio);
+            _pollWhatsAppEnvio = null;
+            if (st.etapa === 'concluido') {
+                toast(st.detalhes || 'Envio WhatsApp concluido', 'success');
+            } else if (st.etapa === 'parcial') {
+                toast(st.detalhes || 'Envio WhatsApp concluido com falhas', 'warning');
+            } else if (st.etapa === 'erro') {
+                toast(st.detalhes || 'Erro no envio WhatsApp', 'error');
+            }
+            atualizarResumoFilaWhatsApp();
+            carregarHistorico();
+        } catch (e) {
+            clearInterval(_pollWhatsAppEnvio);
+            _pollWhatsAppEnvio = null;
+        }
+    }, 2500);
 }
 
 // --- HISTORICO ---

@@ -21,9 +21,27 @@ EMAILS_VITALICIO = [
 ]
 
 
+def _normalizar_email(email):
+    return str(email or "").strip().lower()
+
+
+EMAILS_VITALICIO_SET = {_normalizar_email(e) for e in EMAILS_VITALICIO if _normalizar_email(e)}
+
+# Admins do sistema (podem acessar aba Admin sem necessariamente serem plano vitalicio)
+# - inclui os vitalicios
+# - inclui conta administrativa local
+# - permite extensao por variavel de ambiente ADMIN_EMAILS (separada por virgula)
+_admins_env = {
+    _normalizar_email(e)
+    for e in (os.environ.get("ADMIN_EMAILS", "") or "").split(",")
+    if _normalizar_email(e)
+}
+ADMIN_EMAILS_SET = set(EMAILS_VITALICIO_SET) | {"admin@beka.com"} | _admins_env
+
+
 def _garantir_vitalicio(user):
     """Se o email esta na lista VIP, garante plano empresarial."""
-    if user.email in EMAILS_VITALICIO and user.plano != "empresarial":
+    if _normalizar_email(getattr(user, "email", "")) in EMAILS_VITALICIO_SET and user.plano != "empresarial":
         user.plano = "empresarial"
         db.session.commit()
 
@@ -318,9 +336,18 @@ def reset_password():
 # ================================================================
 
 def _is_admin(user_id):
-    """Verifica se o usuario e admin (email na lista VIP)."""
+    """Verifica se o usuario e admin."""
     user = User.query.get(int(user_id))
-    return user and user.email in EMAILS_VITALICIO
+    if not user:
+        return False
+    email = _normalizar_email(getattr(user, "email", ""))
+    if email in ADMIN_EMAILS_SET:
+        return True
+    # Fallback: primeiro usuario da base costuma ser o proprietario em instalacoes locais.
+    try:
+        return int(user.id) == 1
+    except Exception:
+        return False
 
 
 @auth_bp.route('/api/admin/usuarios')
@@ -334,7 +361,7 @@ def admin_listar_usuarios():
     usuarios = User.query.order_by(User.created_at.desc()).all()
     lista = []
     for u in usuarios:
-        vitalicio = u.email in EMAILS_VITALICIO
+        vitalicio = _normalizar_email(getattr(u, "email", "")) in EMAILS_VITALICIO_SET
         if vitalicio:
             expira_str = "Vitalicio"
         elif u.plano_expira:
@@ -416,7 +443,7 @@ def admin_revogar_acesso():
     if not user:
         return jsonify({"erro": f"Usuario '{email}' nao encontrado"}), 404
 
-    if user.email in EMAILS_VITALICIO:
+    if _normalizar_email(getattr(user, "email", "")) in EMAILS_VITALICIO_SET:
         return jsonify({"erro": "Nao e possivel revogar acesso de um administrador"}), 400
 
     user.plano = 'free'

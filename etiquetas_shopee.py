@@ -15,7 +15,10 @@ import fitz  # PyMuPDF
 import re
 import os
 import io
+import glob
 import zipfile
+import collections
+import unicodedata
 from datetime import datetime
 from collections import defaultdict, OrderedDict
 
@@ -47,6 +50,9 @@ class ProcessadorEtiquetasShopee:
         self.exibicao_produto = 'sku'  # 'sku', 'titulo' ou 'ambos'
         self.dados_xlsx_global = {}    # order_sn -> {produtos, total_itens, total_qtd}
         self.dados_xlsx_tracking = {}  # tracking_number -> order_sn
+        self.dados_lista_global = {}   # chave pedido/tracking -> {produtos, total_itens, total_qtd}
+        self.dados_lista_seq_por_pdf = {}  # caminho_pdf -> [dados_pedido em ordem]
+        self._easyocr_reader = None    # OCR lazy-load para fallback sem XLSX/XML
 
     # ----------------------------------------------------------------
     # LEITURA DOS XMLs
@@ -186,20 +192,32 @@ class ProcessadorEtiquetasShopee:
             return False
 
     def carregar_todos_pdfs(self, pasta):
-        """Carrega etiquetas de TODOS os PDFs da pasta (exceto especiais e Shein).
-        Retorna (etiquetas_normais, etiquetas_cpf_detectadas, pdfs_shein_detectados).
-        Etiquetas CPF detectadas automaticamente (sem NF real) sao separadas
-        para processamento especial.
-        PDFs Shein detectados por conteudo sao retornados como lista de caminhos.
+        """Carrega etiquetas sem recorte (compatibilidade).
+
+        Regra atual do sistema: nao recortar etiqueta, apenas organizar ordem.
+        """
+        return self.carregar_todos_pdfs_sem_recorte(pasta)
+
+    def carregar_todos_pdfs_sem_recorte(self, pasta):
+        """Carrega etiquetas da pasta sem recortar pagina (1 etiqueta por pagina).
+
+        Usado no fluxo novo da aba Automacao/UpSeller, onde o PDF ja vem
+        pronto em formato 10x15 por pagina.
         """
         especiais_lower = [p.lower() for p in self.PDFS_ESPECIAIS]
+        # Carregar lista de separacao (quando presente) para preencher rodape
+        # mesmo com XLSX vindo sem product_info.
+        try:
+            self.carregar_todas_listas_separacao(pasta)
+        except Exception as e:
+            print(f"  Aviso: falha ao carregar lista de separacao: {e}")
+
         pdfs = [f for f in os.listdir(pasta)
                 if f.lower().endswith('.pdf')
                 and not f.startswith('etiquetas_prontas')
-                and not f.lower().startswith('lanim')  # CPF processado separadamente
+                and not f.lower().startswith('lanim')
                 and f.lower() not in especiais_lower]
 
-        # Primeiro, detectar PDFs Shein por conteudo para excluir do processamento normal
         pdfs_shein_detectados = []
         pdfs_normais = []
         for pdf_name in pdfs:
@@ -214,18 +232,332 @@ class ProcessadorEtiquetasShopee:
         etiquetas_cpf_auto = []
         for pdf_name in pdfs_normais:
             caminho = os.path.join(pasta, pdf_name)
-            etqs = self._carregar_pdf(caminho)
+            etqs = self.carregar_pdf_pagina_inteira(caminho, 'retirada')
             for etq in etqs:
                 if etq.get('tipo_especial') == 'cpf':
                     etiquetas_cpf_auto.append(etq)
                 else:
                     todas_etiquetas.append(etq)
+
         if etiquetas_cpf_auto:
             print(f"  CPF detectadas automaticamente: {len(etiquetas_cpf_auto)} etiquetas")
         if pdfs_shein_detectados:
             print(f"  Shein detectados automaticamente: {len(pdfs_shein_detectados)} PDF(s)")
-        print(f"  Total: {len(todas_etiquetas)} etiquetas normais de {len(pdfs_normais)} PDF(s)")
+        print(f"  Total (sem recorte): {len(todas_etiquetas)} etiquetas normais de {len(pdfs_normais)} PDF(s)")
         return todas_etiquetas, etiquetas_cpf_auto, pdfs_shein_detectados
+
+    @staticmethod
+    def _remover_acentos(texto):
+        txt = str(texto or '')
+        return ''.join(ch for ch in unicodedata.normalize('NFD', txt) if unicodedata.category(ch) != 'Mn')
+
+    @staticmethod
+    def _normalizar_chave_pedido(chave):
+        return re.sub(r'[^A-Z0-9]', '', str(chave or '').upper())
+
+    def _extrair_chaves_pedido_texto(self, texto):
+        """Extrai possiveis chaves de pedido/tracking de um texto qualquer."""
+        txt = str(texto or '').upper()
+        txt = txt.replace('[', ' ').replace(']', ' ')
+        candidatos = []
+        padroes = [
+            r'\bBR[0-9A-Z]{10,24}\b',         # tracking BR...
+            r'\b\d{6}[A-Z0-9]{6,12}\b',       # order_sn Shopee
+            r'\bUP[0-9A-Z]{6,20}\b',          # codigo UP...
+            r'\bMEL[0-9A-Z]{6,20}\b',         # codigo MEL...
+            r'\b\d{11,20}\b',                 # ids numericos longos
+        ]
+        for pad in padroes:
+            for m in re.finditer(pad, txt):
+                candidatos.append(self._normalizar_chave_pedido(m.group(0)))
+
+        out = []
+        vistos = set()
+        for c in candidatos:
+            if c and c not in vistos:
+                vistos.add(c)
+                out.append(c)
+        return out
+
+    @staticmethod
+    def _agrupar_linhas_words(words, tol=2.2):
+        """Agrupa palavras em linhas por coordenada Y."""
+        itens = []
+        for w in words:
+            try:
+                x0, y0, x1, y1, t = w[:5]
+                texto = str(t or '').strip()
+                if not texto:
+                    continue
+                yc = (float(y0) + float(y1)) / 2.0
+                itens.append({'x0': float(x0), 'x1': float(x1), 'y': yc, 't': texto})
+            except Exception:
+                continue
+
+        itens.sort(key=lambda k: (k['y'], k['x0']))
+        linhas = []
+        for it in itens:
+            if not linhas or abs(it['y'] - linhas[-1]['y']) > tol:
+                linhas.append({'y': it['y'], 'w': [it]})
+            else:
+                linhas[-1]['w'].append(it)
+
+        for ln in linhas:
+            ln['w'].sort(key=lambda k: k['x0'])
+            ln['txt'] = ' '.join(x['t'] for x in ln['w'])
+
+        return linhas
+
+    @staticmethod
+    def _construir_dados_produtos(produtos, fonte='lista_separacao'):
+        lista = []
+        for p in (produtos or []):
+            if not isinstance(p, dict):
+                continue
+            codigo = str(p.get('codigo', '') or '').strip()
+            descricao = str(p.get('descricao', '') or '').strip()
+            variacao = str(p.get('variacao', '') or '').strip()
+            qtd_raw = p.get('qtd', '1')
+            try:
+                qtd_int = max(1, int(float(qtd_raw)))
+            except Exception:
+                qtd_int = 1
+            if codigo or descricao or variacao:
+                lista.append({
+                    'codigo': codigo,
+                    'descricao': descricao,
+                    'variacao': variacao,
+                    'qtd': str(qtd_int),
+                })
+
+        return {
+            'produtos': lista,
+            'total_itens': len(lista),
+            'total_qtd': sum(int(float(x.get('qtd', '1') or '1')) for x in lista),
+            'fonte_dados': fonte,
+        }
+
+    def _mesclar_dados_produtos(self, existente, novo):
+        """Mescla produtos sem duplicar linha (codigo+descricao+variacao)."""
+        if not existente:
+            return {
+                'produtos': list((novo or {}).get('produtos', [])),
+                'total_itens': int((novo or {}).get('total_itens', 0) or 0),
+                'total_qtd': int((novo or {}).get('total_qtd', 0) or 0),
+                'fonte_dados': (novo or {}).get('fonte_dados', 'lista_separacao'),
+            }
+
+        produtos = list((existente or {}).get('produtos', []))
+        chaves = set()
+        for p in produtos:
+            chaves.add((p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', '')))
+
+        for p in (novo or {}).get('produtos', []):
+            k = (p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', ''))
+            if k not in chaves:
+                produtos.append(p)
+                chaves.add(k)
+
+        return self._construir_dados_produtos(produtos, fonte=(novo or {}).get('fonte_dados', 'lista_separacao'))
+
+    def _extrair_itens_lista_separacao_pagina(self, pagina):
+        """Extrai linhas da tabela da Lista de Separacao.
+
+        Retorna lista de dict:
+          {'chaves': [...], 'produto': {codigo, descricao, variacao, qtd}}
+        """
+        words = pagina.get_text("words")
+        if not words:
+            return []
+
+        linhas = self._agrupar_linhas_words(words)
+        if not linhas:
+            return []
+
+        larg = float(pagina.rect.width)
+        x_titulo = None
+        x_sku = None
+        x_qtd = None
+        y_header = None
+
+        for ln in linhas:
+            txt_norm = self._remover_acentos(ln['txt']).upper()
+            if ('TITULO' in txt_norm or 'VARIACAO' in txt_norm) and 'SKU' in txt_norm:
+                y_header = ln['y']
+                for w in ln['w']:
+                    wt = self._remover_acentos(w['t']).upper()
+                    if x_titulo is None and ('TITULO' in wt or 'VARIACAO' in wt):
+                        x_titulo = w['x0']
+                    if x_sku is None and wt == 'SKU':
+                        x_sku = w['x0']
+                    if x_qtd is None and wt.startswith('QTD'):
+                        x_qtd = w['x0']
+                break
+
+        if x_titulo is None:
+            x_titulo = larg * 0.30
+        if x_sku is None:
+            x_sku = larg * 0.62
+        if x_qtd is None:
+            x_qtd = larg * 0.90
+
+        itens = []
+        chaves_atuais = []
+
+        for ln in linhas:
+            if y_header is not None and ln['y'] <= y_header + 2.0:
+                continue
+
+            txt_linha = re.sub(r'\s+', ' ', ln['txt']).strip()
+            if not txt_linha:
+                continue
+
+            up = self._remover_acentos(txt_linha).upper()
+            if (
+                'NOTAS DO COMPRADOR' in up or
+                'OBSERVACOES' in up or
+                'CUSTOMER NOTES' in up or
+                'INTERNAL NOTES' in up
+            ):
+                continue
+
+            col_order = []
+            col_title = []
+            col_sku = []
+            col_qtd = []
+            for w in ln['w']:
+                cx = (w['x0'] + w['x1']) / 2.0
+                if cx < x_titulo:
+                    col_order.append(w['t'])
+                elif cx < x_sku:
+                    col_title.append(w['t'])
+                elif cx < x_qtd:
+                    col_sku.append(w['t'])
+                else:
+                    col_qtd.append(w['t'])
+
+            txt_order = ' '.join(col_order).strip()
+            txt_title = ' '.join(col_title).strip()
+            txt_sku = ' '.join(col_sku).strip()
+            txt_qtd = ' '.join(col_qtd).strip()
+
+            chaves_linha = self._extrair_chaves_pedido_texto(txt_order or txt_linha)
+            if chaves_linha:
+                chaves_atuais = chaves_linha
+
+            if not chaves_atuais:
+                continue
+
+            m_qtd = re.search(r'(\d{1,4})\s*$', txt_qtd) or re.search(r'\bQTD\.?\s*[:\-]?\s*(\d{1,4})\b', up)
+            if not m_qtd:
+                m_qtd = re.search(r'\b(\d{1,4})\b', txt_qtd)
+            qtd = m_qtd.group(1) if m_qtd else ''
+
+            sku = ''
+            for tok in re.split(r'\s+', txt_sku):
+                t = tok.strip()
+                if not t:
+                    continue
+                t_up = self._normalizar_chave_pedido(t)
+                if t_up in ('SKU', 'ARMAZEM', 'ESTANTE'):
+                    continue
+                if re.match(r'^[A-Z0-9][A-Z0-9._/-]{1,}$', t_up):
+                    sku = t_up
+                    break
+
+            variacao = re.sub(r'\s+', ' ', txt_title).strip()
+            if not variacao and not sku:
+                continue
+            if not qtd:
+                qtd = '1'
+
+            item_prod = {
+                'codigo': sku,
+                'descricao': '',
+                'variacao': variacao,
+                'qtd': qtd,
+            }
+            itens.append({
+                'chaves': list(chaves_atuais),
+                'produto': item_prod,
+            })
+
+        return itens
+
+    def carregar_todas_listas_separacao(self, pasta):
+        """Escaneia PDFs e popula mapa de produtos via Lista de Separacao."""
+        self.dados_lista_global = {}
+        self.dados_lista_seq_por_pdf = {}
+
+        pdfs = [f for f in os.listdir(pasta)
+                if f.lower().endswith('.pdf')
+                and not f.startswith('etiquetas_prontas')]
+        total_pedidos = 0
+        total_produtos = 0
+
+        for pdf_nome in sorted(pdfs):
+            caminho_pdf = os.path.join(pasta, pdf_nome)
+            try:
+                doc = fitz.open(caminho_pdf)
+            except Exception:
+                continue
+
+            seq = []
+            try:
+                por_chave = OrderedDict()
+                for i in range(len(doc)):
+                    pag = doc[i]
+                    texto = pag.get_text()
+                    if not self._eh_pagina_lista_separacao(texto):
+                        continue
+                    itens_pag = self._extrair_itens_lista_separacao_pagina(pag)
+                    for it in itens_pag:
+                        chaves = list(it.get('chaves', []) or [])
+                        prod = dict(it.get('produto', {}) or {})
+                        if not chaves:
+                            continue
+                        prim = None
+                        chaves_set = set(chaves)
+                        for chave_existente, entry_existente in por_chave.items():
+                            if chaves_set.intersection(set(entry_existente.get('chaves', []))):
+                                prim = chave_existente
+                                break
+
+                        if prim is None:
+                            prim = chaves[0]
+                            por_chave[prim] = {
+                                'chaves': list(chaves),
+                                'produtos': [],
+                            }
+
+                        for k in chaves:
+                            if k not in por_chave[prim]['chaves']:
+                                por_chave[prim]['chaves'].append(k)
+                        por_chave[prim]['produtos'].append(prod)
+
+                if por_chave:
+                    for entry in por_chave.values():
+                        dados = self._construir_dados_produtos(entry.get('produtos', []), fonte='lista_separacao')
+                        if not dados.get('produtos'):
+                            continue
+                        seq.append(dados)
+                        total_pedidos += 1
+                        total_produtos += len(dados.get('produtos', []))
+                        for chave in entry.get('chaves', []):
+                            k = self._normalizar_chave_pedido(chave)
+                            if not k:
+                                continue
+                            existente = self.dados_lista_global.get(k)
+                            self.dados_lista_global[k] = self._mesclar_dados_produtos(existente, dados)
+            finally:
+                doc.close()
+
+            if seq:
+                self.dados_lista_seq_por_pdf[os.path.realpath(caminho_pdf)] = seq
+                print(f"    Lista separacao: {pdf_nome} -> {len(seq)} pedido(s)")
+
+        if total_pedidos > 0:
+            print(f"  Lista separacao: {total_pedidos} pedido(s), {total_produtos} produto(s)")
 
     def _carregar_pdf(self, caminho_pdf):
         """Carrega e recorta etiquetas de um PDF."""
@@ -335,6 +667,36 @@ class ProcessadorEtiquetasShopee:
                     return linha
 
         return None
+
+    def _inferir_loja_por_nome_arquivo(self, caminho_pdf):
+        """Infere nome da loja a partir do nome do arquivo de etiqueta do UpSeller.
+
+        Ex.: etiquetas_BEKA_20260227_171152.pdf -> BEKA
+        """
+        try:
+            base = os.path.splitext(os.path.basename(caminho_pdf))[0].strip()
+            m = re.match(r'^etiquetas_(.+?)_\d{8}_\d{6}$', base, flags=re.IGNORECASE)
+            if not m:
+                return None
+            loja_raw = (m.group(1) or '').strip()
+            if not loja_raw or loja_raw.lower() in ('todas', 'all', 'geral'):
+                return None
+            loja = re.sub(r'\s+', ' ', loja_raw.replace('_', ' ')).strip()
+            loja = re.sub(r'[<>:"/\\|?*]', '', loja).strip().rstrip('.')
+            return loja or None
+        except Exception:
+            return None
+
+    def _registrar_loja_sintetica(self, nome_loja, prefixo='LOJA'):
+        """Registra loja sintética no mapa CNPJ->nome e retorna a chave."""
+        nome_loja = (nome_loja or '').strip()
+        if not nome_loja:
+            return ''
+        cnpj_sintetico = f"{prefixo}_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
+        if cnpj_sintetico not in self.cnpj_loja:
+            self.cnpj_loja[cnpj_sintetico] = nome_loja
+            self.cnpj_nome[cnpj_sintetico] = nome_loja
+        return cnpj_sintetico
 
     def get_nome_loja(self, cnpj):
         """Retorna nome da loja: primeiro tenta cnpj_loja (Shopee), depois cnpj_nome (XML)."""
@@ -509,9 +871,10 @@ class ProcessadorEtiquetasShopee:
                 nf = order_sn_txt
 
             # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
-            if self.dados_xlsx_global:
-                dados_xlsx, order_sn_xlsx = self._buscar_dados_xlsx(texto_quad)
+            if self.dados_xlsx_global or self.dados_lista_global:
+                dados_xlsx, chave_dados = self._buscar_dados_xlsx(texto_quad)
                 if dados_xlsx:
+                    origem_dados = dados_xlsx.get('fonte_dados', 'xlsx')
                     dados_nf = {
                         'nf': nf,
                         'serie': '',
@@ -522,9 +885,9 @@ class ProcessadorEtiquetasShopee:
                         'produtos': dados_xlsx['produtos'],
                         'total_itens': dados_xlsx['total_itens'],
                         'total_qtd': dados_xlsx['total_qtd'],
-                        'fonte_dados': 'xlsx',
+                        'fonte_dados': origem_dados,
                     }
-                    print(f"    Pag {pagina.number} Q{idx}: Dados XLSX (order_sn={order_sn_xlsx})")
+                    print(f"    Pag {pagina.number} Q{idx}: Dados {origem_dados} ({chave_dados})")
 
             # FALLBACK: XML (se XLSX nao encontrou produtos) - apenas para CNPJ
             if tipo_etiqueta == 'cnpj' and not dados_nf.get('produtos') and nf in self.dados_xml:
@@ -540,16 +903,12 @@ class ProcessadorEtiquetasShopee:
             # Extrair nome da loja do REMETENTE do texto da etiqueta
             nome_loja = self._extrair_nome_loja_remetente(texto_quad)
             if not cnpj:
+                if not nome_loja:
+                    # Fallback para fluxo UpSeller: usar nome da loja do arquivo.
+                    nome_loja = self._inferir_loja_por_nome_arquivo(caminho_pdf)
                 if nome_loja:
-                    if tipo_etiqueta == 'cpf':
-                        # Loja CPF: prefixo CPF_ para agrupar separadamente
-                        cnpj_sintetico = f"CPF_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
-                    else:
-                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
-                    cnpj = cnpj_sintetico
-                    if cnpj not in self.cnpj_loja:
-                        self.cnpj_loja[cnpj] = nome_loja
-                        self.cnpj_nome[cnpj] = nome_loja
+                    prefixo = 'CPF' if tipo_etiqueta == 'cpf' else 'LOJA'
+                    cnpj = self._registrar_loja_sintetica(nome_loja, prefixo=prefixo)
             elif cnpj not in self.cnpj_loja:
                 if nome_loja:
                     self.cnpj_loja[cnpj] = nome_loja
@@ -593,9 +952,25 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     def _ordenar_etiquetas(self, etiquetas):
         """Ordena etiquetas na mesma ordem do resumo XLSX:
-        SKU > Cor > Numero para unitarias (total_qtd=1),
-        etiquetas com total_qtd > 1 vao para o final ordenadas por qtd crescente.
+        - qtd=1 primeiro, qtd>1 ao final
+        - dentro de cada bloco: SKU > Quantidade > Cor > Numero
         """
+        def _total_qtd(etq):
+            dados = etq.get('dados_xml', {}) or {}
+            total = dados.get('total_qtd', None)
+            try:
+                if total is not None:
+                    return max(1, int(float(total)))
+            except Exception:
+                pass
+            soma = 0
+            for p in (dados.get('produtos', []) or []):
+                try:
+                    soma += int(float(p.get('qtd', 1) or 1))
+                except Exception:
+                    soma += 1
+            return max(1, soma or 1)
+
         def _chave_etiqueta(etq):
             """Extrai (sku, cor, numero) do primeiro produto da etiqueta."""
             dados = etq.get('dados_xml', {})
@@ -617,25 +992,26 @@ class ProcessadorEtiquetasShopee:
             # Extrair valor numerico para ordenacao correta (35 antes de 36)
             m = re.search(r'(\d+)', num_str)
             num_val = int(m.group(1)) if m else 99999
-            return (sku, cor, num_val, num_str)
+            return ((sku or '').casefold(), (cor or '').casefold(), num_val, (num_str or '').casefold())
+
+        def _chave_ordenacao(etq):
+            sku, cor, num_val, num_str = _chave_etiqueta(etq)
+            return (sku, _total_qtd(etq), cor, num_val, num_str)
 
         simples = []
         multiplos = []
         for e in etiquetas:
-            total_qtd = e.get('dados_xml', {}).get('total_qtd', 1)
+            total_qtd = _total_qtd(e)
             if total_qtd > 1:
                 multiplos.append(e)
             else:
                 simples.append(e)
 
-        # Simples: SKU > Cor > Numero (mesma ordem do resumo XLSX)
-        simples.sort(key=_chave_etiqueta)
+        # Simples: SKU > Quantidade > Cor > Numero
+        simples.sort(key=_chave_ordenacao)
 
-        # Multiplos: por quantidade total crescente (maior qtd mais ao final)
-        multiplos.sort(key=lambda e: (
-            e.get('dados_xml', {}).get('total_qtd', 1),
-            _chave_etiqueta(e)
-        ))
+        # Multiplos: continuam no final, ordenados por SKU > Quantidade > Cor > Numero
+        multiplos.sort(key=_chave_ordenacao)
 
         return simples + multiplos, len(simples), len(multiplos)
 
@@ -679,10 +1055,123 @@ class ProcessadorEtiquetasShopee:
             _numero_sort_key(_separar_cor_numero(p.get('variacao', ''))[1]),
         ))
 
-        # Multiplos: ordenar por quantidade crescente (maior qtd mais ao final)
-        multiplos.sort(key=lambda p: int(float(p.get('qtd', '1'))))
+        # Multiplos: SKU > Quantidade > Cor > Numero
+        multiplos.sort(key=lambda p: (
+            p.get('codigo', ''),
+            int(float(p.get('qtd', '1'))),
+            _separar_cor_numero(p.get('variacao', ''))[0],
+            _numero_sort_key(_separar_cor_numero(p.get('variacao', ''))[1]),
+        ))
 
         return unitarios + multiplos
+
+    @staticmethod
+    def _limpar_texto_tabela(texto):
+        """Normaliza texto para exibicao em tabela."""
+        return re.sub(r'\s+', ' ', str(texto or '')).strip()
+
+    @staticmethod
+    def _parece_texto_metadado(texto):
+        """Detecta textos tecnicos/ruidosos do rodape original da etiqueta."""
+        t = (texto or '').upper()
+        if not t:
+            return False
+        marcadores = (
+            'SKU:',
+            'TOTAL ITEMS',
+            'TOTAL ITENS',
+            'DEADLINE',
+            '#UP',
+            'PEDIDO:'
+        )
+        return any(m in t for m in marcadores)
+
+    @staticmethod
+    def _truncate_por_largura(texto, max_largura, fontname, fontsize):
+        """Trunca string por largura real em pontos (fallback por caracteres)."""
+        txt = str(texto or '').strip()
+        if not txt:
+            return ''
+        try:
+            if fitz.get_text_length(txt, fontname=fontname, fontsize=fontsize) <= max_largura:
+                return txt
+            base = txt
+            while base and fitz.get_text_length(base + '..', fontname=fontname, fontsize=fontsize) > max_largura:
+                base = base[:-1]
+            return (base + '..') if base else ''
+        except Exception:
+            max_chars = max(1, int(max_largura / max(1, fontsize * 0.55)))
+            return txt if len(txt) <= max_chars else (txt[:max_chars - 2] + '..')
+
+    def _normalizar_linha_tabela(self, produto):
+        """Normaliza uma linha de produto para o layout limpo do rodape."""
+        codigo = self._limpar_texto_tabela(produto.get('codigo', ''))
+        descricao = self._limpar_texto_tabela(produto.get('descricao', ''))
+        variacao = self._limpar_texto_tabela(produto.get('variacao', ''))
+        qtd_raw = str(produto.get('qtd', '1') or '1').strip()
+
+        if self._parece_texto_metadado(codigo):
+            base = variacao or descricao
+            base = re.sub(r'^\d+\.\s*', '', base)
+            codigo = re.split(r'[-,(;/\s]', base, maxsplit=1)[0].strip() if base else ''
+
+        if not codigo:
+            base = variacao or descricao
+            base = re.sub(r'^\d+\.\s*', '', base)
+            codigo = re.split(r'[-,(;/\s]', base, maxsplit=1)[0].strip() if base else ''
+
+        if codigo and len(codigo) > 16 and '-' in codigo:
+            codigo = codigo.split('-', 1)[0].strip()
+
+        detalhe = variacao or descricao or '-'
+        detalhe = re.sub(r'^\d+\.\s*', '', detalhe)
+        detalhe = re.sub(r'\s*[\*\-xX]\s*\d+\s*$', '', detalhe).strip()
+        if self._parece_texto_metadado(detalhe):
+            detalhe = descricao or variacao or '-'
+
+        if not codigo:
+            codigo = '-'
+        if not detalhe:
+            detalhe = '-'
+
+        try:
+            qtd = str(max(1, int(float(qtd_raw))))
+        except Exception:
+            qtd = '1'
+
+        return codigo, detalhe, qtd
+
+    @staticmethod
+    def _mascarar_rodape_original(pagina, area_etiqueta):
+        """Cobre o rodape original da etiqueta para evitar duplicidade de informacao.
+
+        Retorna o retangulo mascarado para permitir posicionar o novo rodape
+        encostado na area do codigo de barras.
+        """
+        try:
+            altura_total = float(area_etiqueta.height)
+            # Faixa mais ampla para remover completamente o rodape antigo
+            # (linha SKU/Deadline e eventuais residuos da tabela anterior).
+            faixa_alt = max(66.0, min(120.0, altura_total * 0.18))
+            respiro_inf = max(3.0, min(8.0, altura_total * 0.012))
+            y1 = max(float(area_etiqueta.y0) + 12.0, float(area_etiqueta.y1) - respiro_inf)
+            y0 = max(float(area_etiqueta.y0), y1 - faixa_alt)
+            faixa = fitz.Rect(
+                float(area_etiqueta.x0) + 1.0,
+                y0,
+                float(area_etiqueta.x1) - 1.0,
+                y1,
+            )
+            pagina.draw_rect(
+                faixa,
+                color=(1, 1, 1),
+                fill=(1, 1, 1),
+                width=0,
+                overlay=True,
+            )
+            return faixa
+        except Exception:
+            return None
 
     # ----------------------------------------------------------------
     # GERACAO DO CODIGO DE BARRAS
@@ -718,6 +1207,7 @@ class ProcessadorEtiquetasShopee:
 
         doc_saida = fitz.open()
         area_util_larg = self.LARGURA_PT - self.MARGEM_ESQUERDA - self.MARGEM_DIREITA
+        image_crop_cache = {}
 
         com_xml = 0
         sem_xml = 0
@@ -727,6 +1217,7 @@ class ProcessadorEtiquetasShopee:
             clip = etq['clip']
             pag_idx = etq['pagina_idx']
             dados = etq.get('dados_xml', {})
+            render_imagem_meta = etq.get('render_imagem_meta') or {}
             numero_ordem = idx + 1
             pdf_path = etq['caminho_pdf']
             doc_entrada = docs_abertos[pdf_path]
@@ -737,8 +1228,13 @@ class ProcessadorEtiquetasShopee:
             )
             pag_principal_idx = len(doc_saida) - 1  # indice da pagina principal
 
-            quad_larg = clip.width
-            quad_alt = clip.height
+            if render_imagem_meta.get('xref') and render_imagem_meta.get('crop_img'):
+                ix0, iy0, ix1, iy1 = render_imagem_meta.get('crop_img')
+                quad_larg = max(1.0, float(ix1 - ix0))
+                quad_alt = max(1.0, float(iy1 - iy0))
+            else:
+                quad_larg = clip.width
+                quad_alt = clip.height
             escala = area_util_larg / quad_larg
             alt_etiqueta = quad_alt * escala
 
@@ -749,8 +1245,9 @@ class ProcessadorEtiquetasShopee:
             if tem_dados_produto:
                 # Espaco necessario: barcode(37 se tem chave) + cabecalho(~36) + linhas(line_h cada) + margem(15)
                 # line_h deve corresponder ao usado em _desenhar_secao_produtos: fs_qtd + 2
-                fs_dest = int(round(self.fonte_produto * 1.5))
-                fs_qtd = int(round(fs_dest * 1.5))
+                fs_base_prev = max(7, int(round(self.fonte_produto * 1.30)))
+                fs_dest = max(10, int(round(fs_base_prev * 1.35)))
+                fs_qtd = max(18, int(round(fs_dest * 1.55)))
                 line_h = fs_qtd + 2
                 espaco_barcode = 37 if tem_chave else 0
                 espaco_cabecalho = line_h * 2 + 4  # duas linhas de cabecalho + separadores
@@ -767,10 +1264,33 @@ class ProcessadorEtiquetasShopee:
                 self.MARGEM_TOPO + alt_etiqueta
             )
 
-            nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
+            if render_imagem_meta.get('xref') and render_imagem_meta.get('crop_img'):
+                xref = int(render_imagem_meta['xref'])
+                ix0, iy0, ix1, iy1 = [int(v) for v in render_imagem_meta['crop_img']]
+                key = (pdf_path, xref, ix0, iy0, ix1, iy1)
+                pix_crop = image_crop_cache.get(key)
+                if pix_crop is None:
+                    pix_full = fitz.Pixmap(doc_entrada, xref)
+                    if pix_full.n > 3:
+                        pix_full = fitz.Pixmap(fitz.csRGB, pix_full)
+                    crop_rect = fitz.IRect(ix0, iy0, ix1, iy1)
+                    pix_crop = fitz.Pixmap(pix_full.colorspace, crop_rect, pix_full.alpha)
+                    pix_crop.copy(pix_full, crop_rect)
+                    image_crop_cache[key] = pix_crop
+                nova_pag.insert_image(dest_rect, pixmap=pix_crop, keep_proportion=False)
+            else:
+                nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
 
             if tem_dados_produto:
-                y_inicio = self.MARGEM_TOPO + alt_etiqueta + 2
+                # Remove o rodape original (SKU/Total Items/Deadline) antes do novo layout.
+                faixa_mascara = self._mascarar_rodape_original(nova_pag, dest_rect)
+                y_inicio_default = self.MARGEM_TOPO + alt_etiqueta + 2
+                if faixa_mascara is not None:
+                    # Alinha o novo rodape na mesma faixa do texto antigo (junto ao codigo de barras).
+                    y_alinhado = float(faixa_mascara.y0) + 4.0
+                    y_inicio = min(y_inicio_default, y_alinhado)
+                else:
+                    y_inicio = y_inicio_default
                 prox_prod = self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
                 com_xml += 1
 
@@ -798,7 +1318,7 @@ class ProcessadorEtiquetasShopee:
                     )
                     # Numero de ordem na continuacao
                     pag_cont.insert_text(
-                        (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                        (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 14),
                         f"p.{numero_ordem} (cont.{cont_num})",
                         fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
                     )
@@ -811,7 +1331,7 @@ class ProcessadorEtiquetasShopee:
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
+                (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 14),
                 f"p.{numero_ordem}",
                 fontsize=9,
                 fontname="hebo",
@@ -819,6 +1339,7 @@ class ProcessadorEtiquetasShopee:
             )
 
         # Fechar docs de entrada
+        image_crop_cache.clear()
         for doc in docs_abertos.values():
             doc.close()
 
@@ -834,15 +1355,20 @@ class ProcessadorEtiquetasShopee:
         Retorna indice do proximo produto nao desenhado (len(produtos) se todos couberam).
         """
         preto = (0, 0, 0)
+        cinza_linha = (0.55, 0.55, 0.55)
         fonte = "helv"
         fonte_bold = "hebo"
         margem_esq = self.MARGEM_ESQUERDA
         margem_dir = self.MARGEM_DIREITA
         larg = self.LARGURA_PT
-        fs = self.fonte_produto
-        fs_destaque = int(round(fs * 1.5))  # 50% maior para SKU
-        fs_qtd = int(round(fs_destaque * 1.5))  # quantidade 50% maior que destaque
-        line_h = fs_qtd + 2  # espacamento acomoda a fonte da quantidade
+
+        # Dados de envio/produto 30% maiores para melhorar leitura na separacao.
+        fs_base = max(7, int(round(self.fonte_produto * 1.30)))
+        fs_header = max(fs_base, int(round(fs_base * 1.05)))
+        fs_texto = max(10, int(round(fs_base * 1.35)))
+        fs_qtd = max(18, int(round(fs_texto * 1.55)))
+        line_h_header = fs_header + 4
+        line_h = max(fs_qtd + 2, fs_texto + 4)
 
         nf = dados.get('nf', '')
         chave = dados.get('chave', '')
@@ -865,143 +1391,62 @@ class ProcessadorEtiquetasShopee:
             except Exception:
                 y += 5
 
-        # --- Tabela de produtos ---
-        col_codigo = margem_esq + 2
-        col_prod = margem_esq + 95
-        col_qtd = larg - margem_dir - 25
+        # --- Tabela de produtos (layout limpo) ---
+        col1_w = 62
+        col3_w = 30
+        col_codigo = margem_esq + 3
+        x_div1 = margem_esq + col1_w
+        col_prod = x_div1 + 4
+        x_div2 = larg - margem_dir - col3_w
+        col_qtd = x_div2 + 7
+        x_direita = larg - margem_dir
 
-        # Linha superior da tabela
-        pagina.draw_line(
-            (margem_esq, y), (larg - margem_dir, y),
-            color=preto, width=0.8
-        )
+        w_codigo = max(20, x_div1 - col_codigo - 5)
+        w_prod = max(40, x_div2 - col_prod - 6)
+        w_qtd = max(10, x_direita - col_qtd - 3)
+
         y_tabela_topo = y
-        y += line_h
+        pagina.draw_line((margem_esq, y), (x_direita, y), color=preto, width=0.8)
 
-        # Cabecalho - depende do modo de exibicao
-        modo = getattr(self, 'exibicao_produto', 'sku')
-
-        if modo == 'titulo':
-            header_col1 = "PRODUTO"
-        elif modo == 'ambos':
-            header_col1 = "CODIGO"
-        else:
-            header_col1 = "CODIGO"
-
+        y += line_h_header
         continuacao_txt = f" (cont. {prod_inicio + 1}-)" if prod_inicio > 0 else ""
-        pagina.insert_text(
-            (col_codigo, y), header_col1,
-            fontsize=fs, fontname=fonte_bold, color=preto
-        )
-
+        header_col1 = "CODIGO"
         header_prod = f"VAR. (NF: {nf} T-ITENS: {total_itens} T-QUANT: {total_qtd}){continuacao_txt}"
-        pagina.insert_text(
-            (col_prod, y), header_prod,
-            fontsize=fs, fontname=fonte_bold, color=preto
-        )
+        header_prod = self._truncate_por_largura(header_prod, w_prod, fonte_bold, fs_header)
 
-        pagina.insert_text(
-            (col_qtd, y), "Q.",
-            fontsize=fs, fontname=fonte_bold, color=preto
-        )
+        pagina.insert_text((col_codigo, y), header_col1, fontsize=fs_header, fontname=fonte_bold, color=preto)
+        pagina.insert_text((col_prod, y), header_prod, fontsize=fs_header, fontname=fonte_bold, color=preto)
+        pagina.insert_text((col_qtd, y), "Q.", fontsize=fs_header, fontname=fonte_bold, color=preto)
 
         y += 2
-        pagina.draw_line(
-            (margem_esq, y), (larg - margem_dir, y),
-            color=preto, width=0.5
-        )
+        pagina.draw_line((margem_esq, y), (x_direita, y), color=preto, width=0.5)
         y += line_h
 
-        # Limite inferior
         y_limite = self.ALTURA_PT - self.MARGEM_INFERIOR - 10
-
-        # Linhas de produtos (sem limite fixo, respeita y_limite)
         ultimo_desenhado = prod_inicio
-        for i_abs in range(prod_inicio, len(produtos)):
-            prod = produtos[i_abs]
-            codigo = prod.get('codigo', '')
-            descricao = prod.get('descricao', '')
-            variacao = prod.get('variacao', '')
-            qtd = str(int(float(prod.get('qtd', '1'))))
 
+        for i_abs in range(prod_inicio, len(produtos)):
             if y + line_h > y_limite:
                 break
 
-            if modo == 'titulo':
-                # Coluna principal: titulo/descricao
-                texto_principal = descricao or codigo
-                max_chars = 40
-                if len(texto_principal) > max_chars:
-                    texto_principal = texto_principal[:max_chars - 2] + '..'
-                pagina.insert_text(
-                    (col_codigo, y), texto_principal,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
-                # Coluna 2: variacao (cor/tamanho)
-                if variacao:
-                    var_trunc = variacao[:30] + '..' if len(variacao) > 30 else variacao
-                    pagina.insert_text(
-                        (col_prod, y), var_trunc,
-                        fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                    )
-            elif modo == 'ambos':
-                # Coluna 1: codigo, Coluna 2: descricao + variacao
-                pagina.insert_text(
-                    (col_codigo, y), codigo,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
-                texto2 = variacao or descricao
-                max_desc = 30
-                if len(texto2) > max_desc:
-                    texto2 = texto2[:max_desc - 2] + '..'
-                pagina.insert_text(
-                    (col_prod, y), texto2,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
-            else:
-                # Modo SKU (padrao): codigo + variacao
-                pagina.insert_text(
-                    (col_codigo, y), codigo,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
-                texto2 = variacao or "-"
-                if len(texto2) > 30:
-                    texto2 = texto2[:28] + '..'
-                pagina.insert_text(
-                    (col_prod, y), texto2,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
+            codigo, detalhe, qtd = self._normalizar_linha_tabela(produtos[i_abs])
+            codigo = self._truncate_por_largura(codigo, w_codigo, fonte_bold, fs_texto)
+            detalhe = self._truncate_por_largura(detalhe, w_prod, fonte_bold, fs_texto)
+            qtd = self._truncate_por_largura(qtd, w_qtd, fonte_bold, fs_qtd)
 
-            pagina.insert_text(
-                (col_qtd, y), qtd,
-                fontsize=fs_qtd, fontname=fonte_bold, color=preto
-            )
+            pagina.insert_text((col_codigo, y), codigo or "-", fontsize=fs_texto, fontname=fonte_bold, color=preto)
+            pagina.insert_text((col_prod, y), detalhe or "-", fontsize=fs_texto, fontname=fonte_bold, color=preto)
+            pagina.insert_text((col_qtd, y), qtd or "1", fontsize=fs_qtd, fontname=fonte_bold, color=preto)
+
             y += line_h
             ultimo_desenhado = i_abs + 1
 
-            # Linha divisoria entre produtos (exceto apos o ultimo)
             if i_abs < len(produtos) - 1 and y + line_h <= y_limite:
-                pagina.draw_line(
-                    (margem_esq, y - 1), (larg - margem_dir, y - 1),
-                    color=(0.6, 0.6, 0.6), width=0.3
-                )
+                pagina.draw_line((margem_esq, y - 1), (x_direita, y - 1), color=cinza_linha, width=0.3)
 
-        # Linha inferior da tabela
-        pagina.draw_line(
-            (margem_esq, y), (larg - margem_dir, y),
-            color=preto, width=0.8
-        )
-
-        # Linhas verticais da tabela
-        y_top = y_tabela_topo + 5
-        pagina.draw_line(
-            (col_prod - 5, y_top), (col_prod - 5, y),
-            color=preto, width=0.5
-        )
-        pagina.draw_line(
-            (col_qtd - 5, y_top), (col_qtd - 5, y),
-            color=preto, width=0.5
-        )
+        pagina.draw_line((margem_esq, y), (x_direita, y), color=preto, width=0.8)
+        pagina.draw_line((x_div1, y_tabela_topo), (x_div1, y), color=preto, width=0.5)
+        pagina.draw_line((x_div2, y_tabela_topo), (x_div2, y), color=preto, width=0.5)
 
         return ultimo_desenhado
 
@@ -1145,6 +1590,41 @@ class ProcessadorEtiquetasShopee:
 
         return produtos
 
+    def _normalizar_coluna_xlsx(self, nome_coluna):
+        txt = self._remover_acentos(str(nome_coluna or ''))
+        txt = re.sub(r'[\r\n\t]+', ' ', txt)
+        txt = re.sub(r'\s+', ' ', txt).strip().lower()
+        return txt
+
+    def _escolher_chave_principal_resumo(self, chaves):
+        """Escolhe chave principal de pedido e tracking a partir das chaves extraidas."""
+        chaves = [c for c in (chaves or []) if c]
+        if not chaves:
+            return '', ''
+
+        tracking_key = ''
+        for c in chaves:
+            if c.startswith('BR'):
+                tracking_key = c
+                break
+
+        # Preferir order_sn Shopee (YYMMDD + alfanumerico)
+        for c in chaves:
+            if re.match(r'^\d{6}[A-Z0-9]{6,12}$', c):
+                return c, tracking_key
+
+        # Depois codigos comuns de pedido
+        for c in chaves:
+            if c.startswith('UP') or c.startswith('MEL'):
+                return c, tracking_key
+
+        # Evitar usar tracking como chave principal se houver outra opcao
+        for c in chaves:
+            if not c.startswith('BR'):
+                return c, tracking_key
+
+        return chaves[0], tracking_key
+
     def carregar_todos_xlsx(self, pasta):
         """Carrega dados de TODOS os XLSX da pasta para fallback quando XML nao existe.
         Popula self.dados_xlsx_global (order_sn -> dados) e
@@ -1171,38 +1651,24 @@ class ProcessadorEtiquetasShopee:
                 cabecalho = {}
                 for idx, cell in enumerate(ws[1]):
                     if cell.value:
-                        cabecalho[str(cell.value).strip().lower()] = idx
+                        cabecalho[self._normalizar_coluna_xlsx(cell.value)] = idx
 
-                idx_tracking = cabecalho.get('tracking_number', -1)
-                idx_order = cabecalho.get('order_sn', -1)
-                idx_product = cabecalho.get('product_info', -1)
+                idx_tracking = cabecalho.get('tracking_number', cabecalho.get('tracking number', -1))
+                idx_order = cabecalho.get('order_sn', cabecalho.get('order sn', -1))
+                idx_product = cabecalho.get('product_info', cabecalho.get('product info', -1))
 
-                if idx_order == -1 or idx_product == -1:
-                    wb.close()
-                    continue  # XLSX sem colunas relevantes
-
-                count = 0
-                for row in ws.iter_rows(min_row=2, values_only=True):
-                    if row is None:
-                        continue
-                    order_sn = str(row[idx_order] or '').strip() if len(row) > idx_order else ''
-                    tracking = str(row[idx_tracking] or '').strip() if idx_tracking >= 0 and len(row) > idx_tracking else ''
-                    product_info = str(row[idx_product] or '').strip() if len(row) > idx_product else ''
-
-                    if not order_sn or not product_info:
-                        continue
-
-                    produtos = self._parsear_product_info(product_info)
-
-                    if order_sn not in self.dados_xlsx_global:
-                        self.dados_xlsx_global[order_sn] = {
-                            'produtos': produtos,
+                def _registrar_produtos(order_key, produtos, tracking_key=''):
+                    if not order_key or not produtos:
+                        return
+                    if order_key not in self.dados_xlsx_global:
+                        self.dados_xlsx_global[order_key] = {
+                            'produtos': list(produtos),
                             'total_itens': len(produtos),
-                            'total_qtd': sum(int(float(p.get('qtd', 1))) for p in produtos),
+                            'total_qtd': sum(int(float(p.get('qtd', 1) or 1)) for p in produtos),
+                            'fonte_dados': 'xlsx',
                         }
                     else:
-                        # Adicionar apenas produtos que ainda nao existem (evita duplicacao)
-                        existentes = self.dados_xlsx_global[order_sn]['produtos']
+                        existentes = self.dados_xlsx_global[order_key]['produtos']
                         chaves_existentes = set()
                         for p in existentes:
                             chaves_existentes.add((p.get('codigo', ''), p.get('descricao', ''), p.get('variacao', '')))
@@ -1211,14 +1677,131 @@ class ProcessadorEtiquetasShopee:
                             if chave_p not in chaves_existentes:
                                 existentes.append(p)
                                 chaves_existentes.add(chave_p)
-                        self.dados_xlsx_global[order_sn]['total_itens'] = len(existentes)
-                        self.dados_xlsx_global[order_sn]['total_qtd'] = sum(
-                            int(float(p.get('qtd', 1))) for p in existentes)
+                        self.dados_xlsx_global[order_key]['total_itens'] = len(existentes)
+                        self.dados_xlsx_global[order_key]['total_qtd'] = sum(
+                            int(float(p.get('qtd', 1) or 1)) for p in existentes
+                        )
+                        self.dados_xlsx_global[order_key]['fonte_dados'] = 'xlsx'
+                    if tracking_key:
+                        self.dados_xlsx_tracking[tracking_key] = order_key
 
-                    if tracking:
-                        self.dados_xlsx_tracking[tracking] = order_sn
+                count = 0
+                if idx_order != -1 and idx_product != -1:
+                    # Formato legado: colunas order_sn/tracking_number/product_info
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row is None:
+                            continue
+                        order_sn = str(row[idx_order] or '').strip() if len(row) > idx_order else ''
+                        tracking = str(row[idx_tracking] or '').strip() if idx_tracking >= 0 and len(row) > idx_tracking else ''
+                        product_info = str(row[idx_product] or '').strip() if len(row) > idx_product else ''
 
-                    count += 1
+                        if not order_sn or not product_info:
+                            continue
+
+                        produtos = self._parsear_product_info(product_info)
+                        if not produtos:
+                            continue
+
+                        order_key = self._normalizar_chave_pedido(order_sn)
+                        tracking_key = self._normalizar_chave_pedido(tracking)
+                        if not order_key:
+                            continue
+
+                        _registrar_produtos(order_key, produtos, tracking_key=tracking_key)
+                        count += 1
+                else:
+                    # Formato "Lista de Resumo" do UpSeller (colunas visuais da tabela)
+                    idx_col_pedido = -1
+                    idx_col_titulo = -1
+                    idx_col_sku = -1
+                    idx_col_qtd = -1
+
+                    for nome, idx in cabecalho.items():
+                        if idx_col_pedido == -1 and (
+                            'pedido' in nome or 'rastreio' in nome or 'order' in nome or 'tracking' in nome
+                        ):
+                            idx_col_pedido = idx
+                        if idx_col_titulo == -1 and (
+                            'titulo' in nome or 'title' in nome or 'variacao' in nome or 'variation' in nome
+                        ):
+                            idx_col_titulo = idx
+                        if idx_col_sku == -1 and ('sku' == nome or nome.startswith('sku ' ) or nome.startswith('sku(')):
+                            idx_col_sku = idx
+                        if idx_col_qtd == -1 and ('qtd' in nome or 'quant' in nome or 'qty' in nome):
+                            idx_col_qtd = idx
+
+                    if idx_col_pedido == -1 and ws.max_column >= 2:
+                        idx_col_pedido = 1  # coluna 2 no layout padrao da lista
+                    if idx_col_titulo == -1 and ws.max_column >= 3:
+                        idx_col_titulo = 2
+                    if idx_col_sku == -1 and ws.max_column >= 4:
+                        idx_col_sku = 3
+                    if idx_col_qtd == -1 and ws.max_column >= 6:
+                        idx_col_qtd = 5
+
+                    if idx_col_pedido == -1 or (idx_col_titulo == -1 and idx_col_sku == -1):
+                        wb.close()
+                        continue
+
+                    ultimo_order_key = ''
+                    for row in ws.iter_rows(min_row=2, values_only=True):
+                        if row is None:
+                            continue
+
+                        pedido_raw = str(row[idx_col_pedido] or '').strip() if len(row) > idx_col_pedido else ''
+                        titulo_raw = str(row[idx_col_titulo] or '').strip() if idx_col_titulo >= 0 and len(row) > idx_col_titulo else ''
+                        sku_raw = str(row[idx_col_sku] or '').strip() if idx_col_sku >= 0 and len(row) > idx_col_sku else ''
+                        qtd_raw = row[idx_col_qtd] if idx_col_qtd >= 0 and len(row) > idx_col_qtd else 1
+
+                        chaves = self._extrair_chaves_pedido_texto(pedido_raw)
+                        order_key, tracking_key = self._escolher_chave_principal_resumo(chaves)
+                        if order_key:
+                            ultimo_order_key = order_key
+                        else:
+                            order_key = ultimo_order_key
+
+                        if not order_key:
+                            continue
+
+                        # Linhas de observacoes/notas nao sao produtos.
+                        titulo_norm = self._remover_acentos(titulo_raw).lower()
+                        if (
+                            'notas do comprador' in titulo_norm or
+                            'observacoes' in titulo_norm or
+                            'internal notes' in titulo_norm or
+                            'customer notes' in titulo_norm
+                        ):
+                            continue
+
+                        linhas_titulo = [ln.strip() for ln in re.split(r'[\r\n]+', titulo_raw) if str(ln).strip()]
+                        descricao = linhas_titulo[0] if linhas_titulo else ''
+                        variacao = ' / '.join(linhas_titulo[1:]) if len(linhas_titulo) > 1 else ''
+
+                        # Sem info de produto, ignora a linha.
+                        if not sku_raw and not descricao and not variacao:
+                            continue
+
+                        try:
+                            qtd_val = int(float(str(qtd_raw).replace(',', '.')))
+                        except Exception:
+                            qtd_val = 1
+                        if qtd_val <= 0:
+                            qtd_val = 1
+
+                        produto = {
+                            'codigo': sku_raw,
+                            'descricao': descricao,
+                            'variacao': variacao,
+                            'qtd': str(qtd_val),
+                        }
+                        _registrar_produtos(order_key, [produto], tracking_key=tracking_key)
+
+                        # Mapeia outras chaves extraidas (UP/MEL/etc) para o mesmo pedido.
+                        for chave_extra in chaves:
+                            if chave_extra and chave_extra != order_key:
+                                self.dados_xlsx_tracking[chave_extra] = order_key
+
+                        count += 1
 
                 wb.close()
                 if count > 0:
@@ -1252,31 +1835,813 @@ class ProcessadorEtiquetasShopee:
         """Busca dados do XLSX usando order_sn ou tracking extraidos do texto.
         Retorna (dados_pedido, order_sn) ou (None, None).
         """
-        if not self.dados_xlsx_global:
-            return None, None
-
-        # Tentar por order_sn
+        # Consolidar chaves candidatas presentes na etiqueta.
+        chaves = []
         order_sn = self._extrair_pedido_texto(texto_quadrante)
-        if order_sn and order_sn in self.dados_xlsx_global:
-            return self.dados_xlsx_global[order_sn], order_sn
+        if order_sn:
+            k = self._normalizar_chave_pedido(order_sn)
+            if k:
+                chaves.append(k)
 
-        # Tentar por tracking -> order_sn
         tracking = self._extrair_tracking_quadrante(texto_quadrante)
         if tracking:
-            # Match exato primeiro
-            if tracking in self.dados_xlsx_tracking:
-                order_sn_via_tracking = self.dados_xlsx_tracking[tracking]
-                if order_sn_via_tracking in self.dados_xlsx_global:
-                    return self.dados_xlsx_global[order_sn_via_tracking], order_sn_via_tracking
+            k = self._normalizar_chave_pedido(tracking)
+            if k and k not in chaves:
+                chaves.append(k)
 
-            # Match parcial: XLSX pode ter sufixo extra no tracking
-            # (ex: etiqueta=BR2699130341698, XLSX=BR2699130341698SPXLM13556762)
+        for k in self._extrair_chaves_pedido_texto(texto_quadrante):
+            if k not in chaves:
+                chaves.append(k)
+
+        # 1) PRIORIDADE: Lista de separacao (modelo mais confiavel para layout novo)
+        dados_lista = None
+        chave_lista = None
+
+        for chave in chaves:
+            if chave in self.dados_lista_global:
+                d = dict(self.dados_lista_global[chave])
+                d.setdefault('fonte_dados', 'lista_separacao')
+                if dados_lista is None:
+                    dados_lista = d
+                    chave_lista = chave
+                else:
+                    dados_lista = self._mesclar_dados_produtos(dados_lista, d)
+
+        if dados_lista:
+            dados_lista['fonte_dados'] = 'lista_separacao'
+            return dados_lista, (chave_lista or (chaves[0] if chaves else ''))
+
+        # 2) Fallback: XLSX
+        acumulado = None
+        chave_referencia = None
+        def _acumular(dados, chave, fonte):
+            nonlocal acumulado, chave_referencia
+            if not dados:
+                return
+            d = dict(dados)
+            d.setdefault('fonte_dados', fonte)
+            if acumulado is None:
+                acumulado = d
+                chave_referencia = chave
+            else:
+                acumulado = self._mesclar_dados_produtos(acumulado, d)
+
+        for chave in chaves:
+            if chave in self.dados_xlsx_global:
+                _acumular(self.dados_xlsx_global[chave], chave, 'xlsx')
+            if chave in self.dados_xlsx_tracking:
+                order_k = self.dados_xlsx_tracking[chave]
+                if order_k in self.dados_xlsx_global:
+                    _acumular(self.dados_xlsx_global[order_k], order_k, 'xlsx')
+            # Match parcial de tracking
             for tracking_xlsx, osn in self.dados_xlsx_tracking.items():
-                if tracking_xlsx.startswith(tracking) or tracking.startswith(tracking_xlsx):
+                if tracking_xlsx.startswith(chave) or chave.startswith(tracking_xlsx):
                     if osn in self.dados_xlsx_global:
-                        return self.dados_xlsx_global[osn], osn
+                        _acumular(self.dados_xlsx_global[osn], osn, 'xlsx')
+
+        if acumulado:
+            acumulado['fonte_dados'] = 'xlsx'
+            return acumulado, (chave_referencia or (chaves[0] if chaves else ''))
 
         return None, None
+
+    def _eh_pagina_lista_separacao(self, texto):
+        """Detecta pagina de 'Lista de Separacao' exportada junto das etiquetas."""
+        if not texto:
+            return False
+        up = (texto or "").upper()
+        up = up.replace("Ç", "C").replace("Ã", "A").replace("Á", "A").replace("Â", "A")
+        up = up.replace("É", "E").replace("Ê", "E").replace("Í", "I").replace("Ó", "O")
+        up = up.replace("Ô", "O").replace("Õ", "O").replace("Ú", "U")
+
+        if "LISTA DE SEPARACAO" not in up:
+            return False
+        if "SKU" not in up:
+            return False
+        if "TITULO" not in up and "VARIACAO" not in up:
+            return False
+        if "PEDIDO" not in up:
+            return False
+        return True
+
+    def _extrair_dados_rodape_por_texto(self, texto_etiqueta):
+        """Fallback leve: extrai produtos do texto nativo do rodape antigo.
+
+        Funciona quando o PDF ainda expõe texto selecionavel (sem precisar OCR).
+        """
+        if not texto_etiqueta:
+            return None
+
+        linhas = []
+        for ln in str(texto_etiqueta).splitlines():
+            norm = re.sub(r'\s+', ' ', str(ln or '')).strip()
+            if norm:
+                linhas.append(norm)
+
+        if not linhas:
+            return None
+
+        sku_line = ''
+        for ln in linhas:
+            if 'SKU:' in ln.upper():
+                sku_line = ln
+                break
+
+        start_idx = 0
+        if sku_line:
+            for i_ln, ln in enumerate(linhas):
+                if ln == sku_line:
+                    start_idx = i_ln + 1
+                    break
+
+        # Capturar linhas de item no formato "1. PRODUTO ... (*1)".
+        produtos = []
+        idx = start_idx
+        while idx < len(linhas):
+            ln = linhas[idx]
+            # Exigir "1. " para evitar confundir datas/tempos/indices tecnicos.
+            m_item = re.match(r'^\s*(\d{1,2})\.\s+(.+?)\s*(?:[\*\-xX]\s*(\d+))?\s*$', ln)
+            if not m_item:
+                idx += 1
+                continue
+
+            corpo = (m_item.group(2) or '').strip()
+            qtd = None
+            if m_item.group(3):
+                try:
+                    qtd = max(1, int(m_item.group(3)))
+                except Exception:
+                    qtd = 1
+
+            # Quantidade pode vir na proxima linha: "*1"
+            if qtd is None and idx + 1 < len(linhas):
+                m_next = re.match(r'^[\*\-xX]\s*(\d+)\s*$', linhas[idx + 1])
+                if m_next:
+                    try:
+                        qtd = max(1, int(m_next.group(1)))
+                    except Exception:
+                        qtd = 1
+                    idx += 1
+
+            if qtd is None:
+                qtd = 1
+
+            if not corpo or self._parece_texto_metadado(corpo):
+                idx += 1
+                continue
+            # Ignorar linhas numericas/tecnicas que nao sao produto.
+            if re.match(r'^\d{1,2}/\d{1,2}$', corpo):
+                idx += 1
+                continue
+            if re.match(r'^\d{1,2}[-/]\d{1,2}[-/]\d{2,4}', corpo):
+                idx += 1
+                continue
+
+            # Ex: "FH-Caramelo-37/38 (Caramelo,37/38)"
+            variacao = ''
+            m_par = re.match(r'^(.*?)\s*\((.*?)\)\s*$', corpo)
+            if m_par:
+                base = m_par.group(1).strip()
+                variacao = m_par.group(2).strip()
+            else:
+                base = corpo
+
+            base = self._corrigir_texto_ocr_produto(base)
+            variacao = self._corrigir_texto_ocr_produto(variacao)
+
+            codigo = re.split(r'[-\s]', base, maxsplit=1)[0].strip()
+            if not codigo:
+                codigo = re.split(r'[-\s]', corpo, maxsplit=1)[0].strip() or 'SEM_SKU'
+            codigo = codigo.upper()
+
+            produtos.append({
+                'codigo': codigo,
+                'descricao': '',
+                'variacao': variacao or base,
+                'qtd': str(qtd),
+            })
+            idx += 1
+
+        if not produtos:
+            return None
+
+        total_itens = len(produtos)
+        m_tot = re.search(r'TOTAL\s*(?:ITEMS|ITENS)\s*[:;]?\s*(\d+)', sku_line.upper()) if sku_line else None
+        if m_tot:
+            try:
+                total_itens = max(total_itens, int(m_tot.group(1)))
+            except Exception:
+                pass
+
+        total_qtd = 0
+        for p in produtos:
+            try:
+                total_qtd += max(1, int(float(p.get('qtd', 1))))
+            except Exception:
+                total_qtd += 1
+
+        return {
+            'produtos': produtos,
+            'total_itens': total_itens,
+            'total_qtd': total_qtd,
+            'fonte_dados': 'texto_rodape',
+        }
+
+    def _get_easyocr_reader(self):
+        """Inicializa leitor OCR sob demanda (quando falta XLSX/XML)."""
+        if self._easyocr_reader is not None:
+            return self._easyocr_reader
+        try:
+            import easyocr
+            self._easyocr_reader = easyocr.Reader(['pt', 'en'], gpu=False, verbose=False)
+        except Exception:
+            self._easyocr_reader = None
+        return self._easyocr_reader
+
+    def _extrair_dados_rodape_por_ocr(self, pagina, clip):
+        """Fallback: extrai produto do rodape original da etiqueta via OCR.
+
+        Usado quando nao existe XML/XLSX para montar o novo rodape.
+        """
+        try:
+            import cv2
+            import numpy as np
+        except Exception:
+            return None
+
+        reader = self._get_easyocr_reader()
+        if reader is None:
+            return None
+
+        try:
+            # Renderizar somente a area da etiqueta para OCR.
+            pix = pagina.get_pixmap(
+                matrix=fitz.Matrix(2.3, 2.3),
+                clip=clip,
+                alpha=False
+            )
+            img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
+            h = img.shape[0]
+
+            # Rodape antigo costuma ficar no terco inferior da etiqueta.
+            y0 = int(h * 0.68)
+            y1 = int(h * 0.92)
+            if y1 <= y0 + 10:
+                return None
+            crop = img[y0:y1, :]
+            crop_bgr = cv2.cvtColor(crop, cv2.COLOR_RGB2BGR)
+
+            linhas_raw = reader.readtext(crop_bgr, detail=0, paragraph=False)
+            linhas = []
+            for t in linhas_raw:
+                t_norm = re.sub(r'\s+', ' ', str(t or '')).strip()
+                if t_norm:
+                    linhas.append(t_norm)
+
+            if not linhas:
+                return None
+
+            sku_line = ''
+            produto_line = ''
+            for ln in linhas:
+                up = ln.upper()
+                if 'SKU' in up and not sku_line:
+                    sku_line = ln
+                if re.search(r'^\s*[0-9IVl]+[\.\-)]\s*', ln):
+                    if len(ln) > len(produto_line):
+                        produto_line = ln
+
+            # fallback: linha com cara de variacao/produto
+            if not produto_line:
+                for ln in linhas:
+                    up = ln.upper()
+                    if 'SKU' in up:
+                        continue
+                    if any(k in up for k in ('DMEVA', 'MINIE', 'PRETO', 'BRANCO', 'AZUL', 'ROSA', 'BEGE')):
+                        produto_line = ln
+                        break
+
+            if not produto_line:
+                return None
+
+            qtd = 1
+            up_sku = sku_line.upper() if sku_line else ''
+            # tolerante a OCR: Total Itens / Totan Man2 / etc.
+            m_qtd = re.search(r'TOT\w*\s*[I1L]T\w*[:;\s]*([0-9]{1,3})', up_sku)
+            if m_qtd:
+                try:
+                    qtd = max(1, int(m_qtd.group(1)))
+                except Exception:
+                    qtd = 1
+            else:
+                m_qtd2 = re.search(r'[\*\-xX]\s*([0-9]{1,3})\s*$', produto_line)
+                if m_qtd2:
+                    try:
+                        qtd = max(1, int(m_qtd2.group(1)))
+                    except Exception:
+                        qtd = 1
+
+            prod_txt = re.sub(r'^\s*[0-9IVl]+[\.\-)]\s*', '', produto_line).strip()
+            prod_txt = re.sub(r'\s*[\*\-xX]\s*[0-9]{1,3}\s*$', '', prod_txt).strip()
+            if not prod_txt:
+                return None
+
+            codigo = prod_txt.split('-', 1)[0].strip()
+            if not codigo:
+                codigo = prod_txt.split(' ', 1)[0].strip()
+            if not codigo:
+                codigo = 'SEM_SKU'
+
+            return {
+                'produtos': [{
+                    'codigo': codigo,
+                    'descricao': '',
+                    'variacao': self._corrigir_texto_ocr_produto(prod_txt),
+                    'qtd': str(qtd),
+                }],
+                'total_itens': 1,
+                'total_qtd': qtd,
+                'fonte_dados': 'ocr_rodape',
+            }
+        except Exception:
+            return None
+
+    @staticmethod
+    def _levenshtein(a, b):
+        """Distancia de Levenshtein pequena para correcao de tokens OCR."""
+        if a == b:
+            return 0
+        if not a:
+            return len(b)
+        if not b:
+            return len(a)
+        prev = list(range(len(b) + 1))
+        for i, ca in enumerate(a, 1):
+            curr = [i]
+            for j, cb in enumerate(b, 1):
+                curr.append(min(
+                    prev[j] + 1,
+                    curr[j - 1] + 1,
+                    prev[j - 1] + (0 if ca == cb else 1)
+                ))
+            prev = curr
+        return prev[-1]
+
+    def _corrigir_texto_ocr_produto(self, texto):
+        """Corrige erros comuns de OCR em descricao/variacao de produto."""
+        txt = re.sub(r'\s+', ' ', str(texto or '')).strip()
+        if not txt:
+            return txt
+
+        # Correcoes diretas mais frequentes observadas nas etiquetas.
+        diretas = {
+            r'\bplelo\b': 'preto',
+            r'\bprelo\b': 'preto',
+            r'\bp?reio\b': 'preto',
+            r'\bslilch\b': 'stitch',
+            r'\bslich\b': 'stitch',
+            r'\bstilch\b': 'stitch',
+            r'\ba2ul\b': 'azul',
+            r'\bazui\b': 'azul',
+            r'\bazu1\b': 'azul',
+            r'\bminie\b': 'minnie',
+            r'\bmmnie\b': 'minnie',
+            r'\broial\b': 'royal',
+            r'\broval\b': 'royal',
+            r'\broyai\b': 'royal',
+            r'\broya1\b': 'royal',
+            r'\besquerdo\b': 'esquerdo',
+        }
+        low = txt.lower()
+        for patt, rep in diretas.items():
+            low = re.sub(patt, rep, low, flags=re.IGNORECASE)
+
+        # Correcao fuzzy por vocabulario (cores / termos de calcado).
+        vocab = [
+            'preto', 'branco', 'azul', 'rosa', 'royal', 'bege', 'marrom', 'nude', 'caramelo',
+            'stitch', 'minnie', 'mickey', 'esquerdo', 'direito',
+            'infantil', 'adulto', 'menina', 'menino',
+        ]
+
+        def _corrigir_token(tok):
+            if len(tok) < 4 or not tok.isalpha():
+                return tok
+            # Blindagem para cor "royal": evita cair em "rosa" por fuzzy.
+            if tok.startswith('roy'):
+                if self._levenshtein(tok, 'royal') <= 2:
+                    return 'royal'
+                return tok
+            best = tok
+            best_d = 99
+            for v in vocab:
+                d = self._levenshtein(tok, v)
+                if d < best_d:
+                    best_d = d
+                    best = v
+            if best_d <= 2:
+                return best
+            return tok
+
+        tokens = re.split(r'(\W+)', low)
+        tokens = [_corrigir_token(t) for t in tokens]
+        corr = ''.join(tokens)
+
+        # Ajustes de formato comuns.
+        corr = corr.replace(' ,', ',').replace(' /', '/').replace('/ ', '/')
+        corr = re.sub(r'\s+', ' ', corr).strip()
+
+        # Preserva caixa inicial semelhante ao texto original.
+        return corr
+
+    def _calcular_clip_conteudo_pagina(self, pagina):
+        """Detecta a area util da etiqueta em pagina inteira.
+
+        Nao divide a etiqueta em quadrantes; apenas remove margens vazias
+        quando o PDF vem em A4/preview com a etiqueta pequena no canto.
+        """
+        # 1) Caso especial: etiqueta dentro de imagem grande (preview renderizado)
+        clip_img = self._detectar_clip_por_imagem_principal(pagina)
+        if clip_img is not None:
+            return clip_img
+
+        # 2) Caso especial: PDF de preview (fundo escuro + etiqueta branca)
+        clip_preview = self._detectar_clip_preview_escuro(pagina)
+        if clip_preview is not None:
+            return clip_preview
+
+        # 3) Fallback por objetos da pagina (texto/imagem)
+        rects = []
+
+        # Blocos de texto
+        try:
+            for b in pagina.get_text("blocks"):
+                x0, y0, x1, y1 = b[:4]
+                if (x1 - x0) > 2 and (y1 - y0) > 2:
+                    rects.append((x0, y0, x1, y1))
+        except Exception:
+            pass
+
+        # Imagens (QR/barcode rasterizados entram aqui)
+        try:
+            for img in pagina.get_images(full=True):
+                xref = img[0]
+                for r in pagina.get_image_rects(xref):
+                    if r and r.width > 2 and r.height > 2:
+                        rects.append((r.x0, r.y0, r.x1, r.y1))
+        except Exception:
+            pass
+
+        if not rects:
+            return pagina.rect
+
+        x0 = min(r[0] for r in rects)
+        y0 = min(r[1] for r in rects)
+        x1 = max(r[2] for r in rects)
+        y1 = max(r[3] for r in rects)
+
+        # Margem de seguranca para nao cortar elementos de borda
+        pad_x = max(10, pagina.rect.width * 0.03)
+        pad_y = max(12, pagina.rect.height * 0.03)
+
+        clip = fitz.Rect(
+            max(0, x0 - pad_x),
+            max(0, y0 - pad_y),
+            min(pagina.rect.width, x1 + pad_x),
+            min(pagina.rect.height, y1 + pad_y),
+        )
+
+        # Fallback defensivo
+        if clip.width < 30 or clip.height < 30:
+            return pagina.rect
+
+        return clip
+
+    def _detectar_clip_por_imagem_principal(self, pagina, retornar_meta=False):
+        """Detecta etiqueta dentro de imagem grande incorporada no PDF.
+
+        Quando retornar_meta=True, retorna (clip, meta_imagem).
+        meta_imagem contem xref e crop em coordenadas da imagem.
+        """
+        try:
+            imgs = pagina.get_images(full=True)
+            if not imgs:
+                return (None, None) if retornar_meta else None
+
+            page_rect = pagina.rect
+            page_area = page_rect.width * page_rect.height
+            melhor_ref = None  # (vis_area, xref, src_w, src_h, rect)
+
+            for img in imgs:
+                xref = img[0]
+                src_w = int(img[2] or 0)
+                src_h = int(img[3] or 0)
+                if src_w < 250 or src_h < 250:
+                    continue
+                try:
+                    rects = pagina.get_image_rects(xref)
+                except Exception:
+                    rects = []
+                for r in rects:
+                    vis = r & page_rect
+                    vis_area = vis.width * vis.height if vis else 0
+                    if vis_area < page_area * 0.12:
+                        continue
+                    if melhor_ref is None or vis_area > melhor_ref[0]:
+                        melhor_ref = (vis_area, xref, src_w, src_h, r)
+
+            if melhor_ref is None:
+                return (None, None) if retornar_meta else None
+
+            _, xref, src_w, src_h, rect_img = melhor_ref
+            doc = pagina.parent
+            if doc is None:
+                return (None, None) if retornar_meta else None
+
+            pix = fitz.Pixmap(doc, xref)
+            if pix.n > 3:
+                pix = fitz.Pixmap(fitz.csRGB, pix)
+            iw, ih = pix.width, pix.height
+            if iw < 20 or ih < 20:
+                return (None, None) if retornar_meta else None
+
+            # Downsample simples para reduzir custo em imagens grandes
+            step = 2 if (iw * ih) > 300000 else 1
+            dw = max(1, iw // step)
+            dh = max(1, ih // step)
+            total = dw * dh
+            data = pix.samples
+            thr = 242
+
+            bright = bytearray(total)
+            bright_count = 0
+            for y in range(dh):
+                yy = y * step
+                row_off = yy * iw * 3
+                off = y * dw
+                for x in range(dw):
+                    xx = x * step
+                    i = row_off + xx * 3
+                    r, g, b = data[i:i + 3]
+                    if r >= thr and g >= thr and b >= thr:
+                        bright[off + x] = 1
+                        bright_count += 1
+
+            dark_fraction = 1.0 - (bright_count / max(1, total))
+            if dark_fraction < 0.15:
+                return (None, None) if retornar_meta else None
+
+            visited = bytearray(total)
+            min_bbox_area = int(total * 0.04)
+            max_bbox_area = int(total * 0.80)
+            melhor_comp = None  # (score, minx, miny, maxx, maxy)
+
+            for idx in range(total):
+                if not bright[idx] or visited[idx]:
+                    continue
+
+                dq = collections.deque([idx])
+                visited[idx] = 1
+                area = 0
+                minx = maxx = idx % dw
+                miny = maxy = idx // dw
+
+                while dq:
+                    cur = dq.popleft()
+                    area += 1
+                    x = cur % dw
+                    y = cur // dw
+                    if x < minx:
+                        minx = x
+                    if x > maxx:
+                        maxx = x
+                    if y < miny:
+                        miny = y
+                    if y > maxy:
+                        maxy = y
+
+                    if x > 0:
+                        n = cur - 1
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if x < dw - 1:
+                        n = cur + 1
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if y > 0:
+                        n = cur - dw
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if y < dh - 1:
+                        n = cur + dw
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+
+                bw = maxx - minx + 1
+                bh = maxy - miny + 1
+                bbox_area = bw * bh
+                if bbox_area < min_bbox_area or bbox_area > max_bbox_area:
+                    continue
+
+                bright_fill = area / max(1, bbox_area)
+                if bright_fill > 0.88 or bright_fill < 0.40:
+                    continue
+
+                width_frac = bw / max(1, dw)
+                height_frac = bh / max(1, dh)
+                if width_frac < 0.15 or width_frac > 0.85:
+                    continue
+                if height_frac < 0.20 or height_frac > 0.95:
+                    continue
+
+                score = bbox_area * (1.0 - abs(bright_fill - 0.65))
+                if melhor_comp is None or score > melhor_comp[0]:
+                    melhor_comp = (score, minx, miny, maxx, maxy)
+
+            if melhor_comp is None:
+                return (None, None) if retornar_meta else None
+
+            _, minx, miny, maxx, maxy = melhor_comp
+
+            # Converter bbox (imagem) -> bbox na pagina
+            ix0 = minx * step
+            iy0 = miny * step
+            ix1 = min(iw, (maxx + 1) * step)
+            iy1 = min(ih, (maxy + 1) * step)
+
+            px0 = rect_img.x0 + (ix0 / max(1, iw)) * rect_img.width
+            py0 = rect_img.y0 + (iy0 / max(1, ih)) * rect_img.height
+            px1 = rect_img.x0 + (ix1 / max(1, iw)) * rect_img.width
+            py1 = rect_img.y0 + (iy1 / max(1, ih)) * rect_img.height
+
+            clip = fitz.Rect(px0, py0, px1, py1) & page_rect
+
+            # margem de seguranca
+            pad_x = max(8.0, page_rect.width * 0.02)
+            pad_y = max(10.0, page_rect.height * 0.02)
+            clip = fitz.Rect(
+                max(0.0, clip.x0 - pad_x),
+                max(0.0, clip.y0 - pad_y),
+                min(page_rect.width, clip.x1 + pad_x),
+                min(page_rect.height, clip.y1 + pad_y),
+            )
+
+            if clip.width < 30 or clip.height < 30:
+                return (None, None) if retornar_meta else None
+
+            if retornar_meta:
+                return clip, {
+                    "xref": int(xref),
+                    "crop_img": (int(ix0), int(iy0), int(ix1), int(iy1)),
+                    "img_size": (int(iw), int(ih)),
+                }
+            return clip
+        except Exception:
+            return (None, None) if retornar_meta else None
+
+    def _detectar_clip_preview_escuro(self, pagina):
+        """Detecta bloco da etiqueta em PDFs de preview com fundo escuro.
+
+        Estrategia:
+        - Render reduzido (0.5x) para performance
+        - Encontrar componentes conectados de pixels claros
+        - Escolher o maior bloco com densidade de branco compativel com etiqueta
+          (nao painel quase vazio / nao pagina inteira)
+        """
+        try:
+            scale = 0.5
+            inv_scale = 1.0 / scale
+            pix = pagina.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+            w, h = pix.width, pix.height
+            if w < 20 or h < 20:
+                return None
+
+            data = pix.samples
+            total = w * h
+            thr = 242
+
+            bright = bytearray(total)
+            bright_count = 0
+            for y in range(h):
+                row = data[y * w * 3:(y + 1) * w * 3]
+                off = y * w
+                for x in range(w):
+                    r, g, b = row[x * 3:x * 3 + 3]
+                    if r >= thr and g >= thr and b >= thr:
+                        bright[off + x] = 1
+                        bright_count += 1
+
+            dark_fraction = 1.0 - (bright_count / max(1, total))
+            # Se nao houver fundo escuro relevante, nao e caso de preview.
+            if dark_fraction < 0.20:
+                return None
+
+            visited = bytearray(total)
+            min_bbox_area = int(total * 0.02)   # ignora blocos muito pequenos
+            max_bbox_area = int(total * 0.70)   # ignora blocos quase pagina inteira
+            melhor = None  # (score, minx, miny, maxx, maxy)
+
+            for idx in range(total):
+                if not bright[idx] or visited[idx]:
+                    continue
+
+                dq = collections.deque([idx])
+                visited[idx] = 1
+                area = 0
+                minx = maxx = idx % w
+                miny = maxy = idx // w
+
+                while dq:
+                    cur = dq.popleft()
+                    area += 1
+                    x = cur % w
+                    y = cur // w
+                    if x < minx:
+                        minx = x
+                    if x > maxx:
+                        maxx = x
+                    if y < miny:
+                        miny = y
+                    if y > maxy:
+                        maxy = y
+
+                    if x > 0:
+                        n = cur - 1
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if x < w - 1:
+                        n = cur + 1
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if y > 0:
+                        n = cur - w
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+                    if y < h - 1:
+                        n = cur + w
+                        if bright[n] and not visited[n]:
+                            visited[n] = 1
+                            dq.append(n)
+
+                bw = maxx - minx + 1
+                bh = maxy - miny + 1
+                bbox_area = bw * bh
+                if bbox_area < min_bbox_area or bbox_area > max_bbox_area:
+                    continue
+
+                width_frac = bw / max(1, w)
+                height_frac = bh / max(1, h)
+                # Blocos muito largos/altos normalmente sao painel/fundo do preview
+                if width_frac > 0.78 or height_frac > 0.95:
+                    continue
+
+                bright_fill = area / max(1, bbox_area)
+                # Etiqueta costuma ser bloco claro com bastante texto/codigo,
+                # portanto o preenchimento branco nao e extremo.
+                if bright_fill > 0.84 or bright_fill < 0.30:
+                    continue
+
+                # Penalizar componentes colados nas bordas da pagina
+                borda = 0
+                if minx <= 1:
+                    borda += 1
+                if miny <= 1:
+                    borda += 1
+                if maxx >= w - 2:
+                    borda += 1
+                if maxy >= h - 2:
+                    borda += 1
+
+                score = bbox_area * (1.0 - max(0, borda - 1) * 0.25)
+                if melhor is None or score > melhor[0]:
+                    melhor = (score, minx, miny, maxx, maxy)
+
+            if melhor is None:
+                return None
+
+            _, minx, miny, maxx, maxy = melhor
+
+            # Converter para coordenadas da pagina original + margem de seguranca
+            pad_x = max(8.0, pagina.rect.width * 0.02)
+            pad_y = max(10.0, pagina.rect.height * 0.02)
+
+            x0 = max(0.0, (minx * inv_scale) - pad_x)
+            y0 = max(0.0, (miny * inv_scale) - pad_y)
+            x1 = min(pagina.rect.width, ((maxx + 1) * inv_scale) + pad_x)
+            y1 = min(pagina.rect.height, ((maxy + 1) * inv_scale) + pad_y)
+
+            clip = fitz.Rect(x0, y0, x1, y1)
+            if clip.width < 30 or clip.height < 30:
+                return None
+            return clip
+        except Exception:
+            return None
 
     def carregar_pdf_pagina_inteira(self, caminho_pdf, tipo, dados_xlsx=None):
         """Carrega etiquetas de PDF com 1 etiqueta por pagina (pagina inteira).
@@ -1287,10 +2652,19 @@ class ProcessadorEtiquetasShopee:
         print(f"  Carregando ({tipo}): {os.path.basename(caminho_pdf)}")
         doc = fitz.open(caminho_pdf)
         etiquetas = []
+        caminho_pdf_real = os.path.realpath(caminho_pdf)
+        lista_seq = self.dados_lista_seq_por_pdf.get(caminho_pdf_real, [])
+        idx_seq_rotulo = 0
 
         for num_pag in range(len(doc)):
             pagina = doc[num_pag]
             texto = pagina.get_text()
+            render_imagem_meta = None
+
+            # Pagina de lista de separacao nao e etiqueta de envio.
+            if tipo == 'retirada' and self._eh_pagina_lista_separacao(texto):
+                print(f"    Pag {num_pag}: lista de separacao detectada (ignorada no PDF de etiquetas)")
+                continue
 
             if tipo == 'cpf':
                 # Auto-crop: detectar bounding box do conteudo real
@@ -1309,7 +2683,28 @@ class ProcessadorEtiquetasShopee:
                 else:
                     clip = pagina.rect
             else:
-                clip = pagina.rect  # pagina inteira
+                # Mantem 1 etiqueta por pagina, com trim automatico de margens vazias
+                clip_img, meta_img = self._detectar_clip_por_imagem_principal(
+                    pagina, retornar_meta=True
+                )
+                if clip_img is not None:
+                    clip = clip_img
+                    render_imagem_meta = meta_img
+                else:
+                    clip = self._calcular_clip_conteudo_pagina(pagina)
+
+            if tipo == 'retirada':
+                # Log de debug quando houver ajuste de margem relevante
+                try:
+                    pw, ph = pagina.rect.width, pagina.rect.height
+                    cw, ch = clip.width, clip.height
+                    if cw < (pw * 0.97) or ch < (ph * 0.97):
+                        print(
+                            f"    Pag {num_pag}: ajuste de margem "
+                            f"({int(cw)}x{int(ch)} de {int(pw)}x{int(ph)})"
+                        )
+                except Exception:
+                    pass
 
             if tipo == 'retirada':
                 # Extrair NF do texto
@@ -1335,9 +2730,10 @@ class ProcessadorEtiquetasShopee:
                     dados_nf = {}
 
                 # FONTE PRIMARIA: XLSX (buscar por order_sn ou tracking)
-                if self.dados_xlsx_global:
-                    dados_xlsx_ret, order_sn_xlsx = self._buscar_dados_xlsx(texto)
+                if self.dados_xlsx_global or self.dados_lista_global:
+                    dados_xlsx_ret, chave_dados = self._buscar_dados_xlsx(texto)
                     if dados_xlsx_ret:
+                        origem_dados = dados_xlsx_ret.get('fonte_dados', 'xlsx')
                         dados_nf = {
                             'nf': nf,
                             'serie': '',
@@ -1348,9 +2744,63 @@ class ProcessadorEtiquetasShopee:
                             'produtos': dados_xlsx_ret['produtos'],
                             'total_itens': dados_xlsx_ret['total_itens'],
                             'total_qtd': dados_xlsx_ret['total_qtd'],
-                            'fonte_dados': 'xlsx',
+                            'fonte_dados': origem_dados,
                         }
-                        print(f"    Pag {num_pag}: Retirada usando dados XLSX (order_sn={order_sn_xlsx})")
+                        print(f"    Pag {num_pag}: Retirada usando dados {origem_dados} ({chave_dados})")
+
+                # FALLBACK: lista de separacao sequencial no mesmo PDF.
+                if not dados_nf.get('produtos') and idx_seq_rotulo < len(lista_seq):
+                    dados_seq = lista_seq[idx_seq_rotulo]
+                    if dados_seq and dados_seq.get('produtos'):
+                        dados_nf = {
+                            'nf': nf,
+                            'serie': '',
+                            'data_emissao': '',
+                            'chave': self._extrair_chave_nfe(texto),
+                            'cnpj_emitente': '',
+                            'nome_emitente': '',
+                            'produtos': dados_seq.get('produtos', []),
+                            'total_itens': dados_seq.get('total_itens', 0),
+                            'total_qtd': dados_seq.get('total_qtd', 0),
+                            'fonte_dados': 'lista_separacao_seq',
+                        }
+                        print(f"    Pag {num_pag}: Retirada usando lista de separacao sequencial")
+
+                # FALLBACK: texto nativo do rodape antigo (quando disponivel).
+                if not dados_nf.get('produtos'):
+                    dados_txt = self._extrair_dados_rodape_por_texto(texto)
+                    if dados_txt:
+                        dados_nf = {
+                            'nf': nf,
+                            'serie': '',
+                            'data_emissao': '',
+                            'chave': self._extrair_chave_nfe(texto),
+                            'cnpj_emitente': '',
+                            'nome_emitente': '',
+                            'produtos': dados_txt.get('produtos', []),
+                            'total_itens': dados_txt.get('total_itens', 0),
+                            'total_qtd': dados_txt.get('total_qtd', 0),
+                            'fonte_dados': dados_txt.get('fonte_dados', 'texto_rodape'),
+                        }
+                        print(f"    Pag {num_pag}: Retirada usando fallback de texto do rodape")
+
+                # FALLBACK final: OCR no proprio rodape da etiqueta quando nao ha XLSX/XML.
+                if not dados_nf.get('produtos'):
+                    dados_ocr = self._extrair_dados_rodape_por_ocr(pagina, clip)
+                    if dados_ocr:
+                        dados_nf = {
+                            'nf': nf,
+                            'serie': '',
+                            'data_emissao': '',
+                            'chave': self._extrair_chave_nfe(texto),
+                            'cnpj_emitente': '',
+                            'nome_emitente': '',
+                            'produtos': dados_ocr.get('produtos', []),
+                            'total_itens': dados_ocr.get('total_itens', 0),
+                            'total_qtd': dados_ocr.get('total_qtd', 0),
+                            'fonte_dados': dados_ocr.get('fonte_dados', 'ocr_rodape'),
+                        }
+                        print(f"    Pag {num_pag}: Retirada usando fallback OCR do rodape")
 
                 sku = ''
                 num_produtos = 1
@@ -1362,12 +2812,11 @@ class ProcessadorEtiquetasShopee:
                 # Extrair nome da loja do REMETENTE
                 if not cnpj:
                     nome_loja = self._extrair_nome_loja_remetente(texto)
+                    if not nome_loja:
+                        # Fallback para PDF baixado por loja no UpSeller.
+                        nome_loja = self._inferir_loja_por_nome_arquivo(caminho_pdf)
                     if nome_loja:
-                        cnpj_sintetico = f"LOJA_{re.sub(r'[^A-Za-z0-9]', '_', nome_loja)}"
-                        cnpj = cnpj_sintetico
-                        if cnpj not in self.cnpj_loja:
-                            self.cnpj_loja[cnpj] = nome_loja
-                            self.cnpj_nome[cnpj] = nome_loja
+                        cnpj = self._registrar_loja_sintetica(nome_loja, prefixo='LOJA')
 
                 etiquetas.append({
                     'nf': nf,
@@ -1379,7 +2828,9 @@ class ProcessadorEtiquetasShopee:
                     'caminho_pdf': caminho_pdf,
                     'dados_xml': dados_nf,
                     'tipo_especial': 'retirada',
+                    'render_imagem_meta': render_imagem_meta,
                 })
+                idx_seq_rotulo += 1
 
             elif tipo == 'cpf':
                 # Extrair order_sn do texto
@@ -1823,7 +3274,7 @@ class ProcessadorEtiquetasShopee:
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (larg - self.MARGEM_DIREITA - 15, alt - self.MARGEM_INFERIOR - 8),
+                (larg - self.MARGEM_DIREITA - 15, alt - self.MARGEM_INFERIOR - 14),
                 f"p.{idx + 1}",
                 fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
             )
@@ -2219,7 +3670,7 @@ class ProcessadorEtiquetasShopee:
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
-                (larg - margem_dir - 15, alt - margem_inf - 8),
+                (larg - margem_dir - 15, alt - margem_inf - 14),
                 f"p.{idx + 1}",
                 fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
             )
@@ -2236,9 +3687,73 @@ class ProcessadorEtiquetasShopee:
     # ----------------------------------------------------------------
     # GERACAO DO RESUMO XLSX
     # ----------------------------------------------------------------
-    def gerar_resumo_xlsx(self, etiquetas, caminho_saida, nome_loja):
-        """Gera resumo XLSX com quantidade vendida por SKU + Variacao."""
-        # Contar quantidade por (SKU, Variacao)
+    def gerar_resumo_xlsx(self, etiquetas, caminho_saida, nome_loja, sku_somente=False):
+        """Gera resumo XLSX.
+
+        - Padrao: SKU + Variacao + Quantidade (comportamento legado)
+        - sku_somente=True: SKU + Quantidade (fluxo novo da automacao UpSeller)
+        """
+        # Estilos compartilhados
+        header_font = Font(bold=True, size=11)
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = f"Resumo {len(etiquetas)} xmls "
+
+        def _salvar_planilha_e_preview():
+            wb.save(caminho_saida)
+            try:
+                wb.close()
+            except Exception:
+                pass
+            try:
+                caminho_img = os.path.splitext(caminho_saida)[0] + '.jpeg'
+                self.gerar_imagem_resumo_xlsx(caminho_saida, caminho_img)
+            except Exception:
+                pass
+
+        if sku_somente:
+            sku_qtd = defaultdict(int)
+            for etq in etiquetas:
+                dados = etq.get('dados_xml', {})
+                for prod in dados.get('produtos', []):
+                    codigo = (prod.get('codigo', '') or '').strip() or 'SEM_SKU'
+                    qtd = int(float(prod.get('qtd', '1')))
+                    sku_qtd[codigo] += qtd
+
+            ws['A1'] = 'Cod. SKU'
+            ws['B1'] = 'Soma Quant.'
+            for cell in [ws['A1'], ws['B1']]:
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.border = border
+                cell.alignment = Alignment(horizontal='left')
+
+            row = 2
+            for sku in sorted(sku_qtd.keys()):
+                ws.cell(row=row, column=1, value=sku).border = border
+                ws.cell(row=row, column=2, value=sku_qtd[sku]).border = border
+                row += 1
+
+            ws.cell(row=row, column=1, value='TOTAL').font = Font(bold=True)
+            ws.cell(row=row, column=1).border = border
+            ws.cell(row=row, column=2, value=sum(sku_qtd.values())).font = Font(bold=True)
+            ws.cell(row=row, column=2).border = border
+
+            ws.column_dimensions['A'].width = 28
+            ws.column_dimensions['B'].width = 15
+
+            _salvar_planilha_e_preview()
+            return len(sku_qtd), sum(sku_qtd.values())
+
+        # Contar quantidade por (SKU, Variacao) - modo legado
         sku_var_qtd = defaultdict(int)
         for etq in etiquetas:
             dados = etq.get('dados_xml', {})
@@ -2250,22 +3765,6 @@ class ProcessadorEtiquetasShopee:
                     chave = (codigo, variacao)
                     sku_var_qtd[chave] += qtd
 
-        # Criar workbook
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = f"Resumo {len(etiquetas)} xmls "
-
-        # Estilos
-        header_font = Font(bold=True, size=11)
-        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-        border = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin')
-        )
-
-        # Cabecalho
         ws['A1'] = 'Cod. SKU'
         ws['B1'] = 'Variacao'
         ws['C1'] = 'Soma Quant.'
@@ -2275,7 +3774,6 @@ class ProcessadorEtiquetasShopee:
             cell.border = border
             cell.alignment = Alignment(horizontal='left')
 
-        # Dados ordenados por SKU > Cor > Numero
         def _sort_var(var):
             partes = re.split(r'[,/]', var or '', maxsplit=1)
             cor = partes[0].strip() if partes else ''
@@ -2291,20 +3789,202 @@ class ProcessadorEtiquetasShopee:
             ws.cell(row=row, column=3, value=sku_var_qtd[(sku, var)]).border = border
             row += 1
 
-        # Total
         ws.cell(row=row, column=1, value='TOTAL').font = Font(bold=True)
         ws.cell(row=row, column=1).border = border
         ws.cell(row=row, column=2, value='').border = border
         ws.cell(row=row, column=3, value=sum(sku_var_qtd.values())).font = Font(bold=True)
         ws.cell(row=row, column=3).border = border
 
-        # Ajustar largura das colunas
         ws.column_dimensions['A'].width = 25
         ws.column_dimensions['B'].width = 40
         ws.column_dimensions['C'].width = 15
 
-        wb.save(caminho_saida)
+        _salvar_planilha_e_preview()
         return len(sku_var_qtd), sum(sku_var_qtd.values())
+
+    def gerar_imagem_resumo_xlsx(
+        self,
+        caminho_xlsx,
+        caminho_imagem=None,
+        max_linhas=2000,
+        max_pedidos_por_pagina=100
+    ):
+        """Gera preview em imagem (JPEG) do resumo XLSX.
+
+        - Divide automaticamente em paginas quando excede 100 pedidos/linhas.
+        - Mantem compatibilidade salvando a 1a pagina no caminho base informado.
+
+        Retorna caminho da primeira imagem ou string vazia se falhar.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except Exception:
+            return ''
+
+        if not caminho_xlsx or not os.path.exists(caminho_xlsx):
+            return ''
+
+        if not caminho_imagem:
+            caminho_imagem = os.path.splitext(caminho_xlsx)[0] + '.jpeg'
+
+        try:
+            wb = openpyxl.load_workbook(caminho_xlsx, data_only=True, read_only=True)
+            ws = wb[wb.sheetnames[0]]
+        except Exception:
+            return ''
+
+        rows = []
+        try:
+            for row in ws.iter_rows(values_only=True):
+                vals = [re.sub(r'\s+', ' ', str(v or '')).strip() for v in row]
+                if any(vals):
+                    rows.append(vals)
+        finally:
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+        if not rows:
+            return ''
+
+        ncols = max(len(r) for r in rows)
+        for r in rows:
+            if len(r) < ncols:
+                r.extend([''] * (ncols - len(r)))
+
+        # Limite de seguranca contra planilhas gigantes.
+        if len(rows) > max_linhas:
+            rows = rows[:max_linhas]
+
+        header = rows[0]
+        corpo = rows[1:]
+        total_row = None
+        if corpo and str(corpo[-1][0] or '').strip().upper() == 'TOTAL':
+            total_row = corpo.pop()
+
+        # Sempre pelo menos 1 pagina com cabecalho.
+        if max_pedidos_por_pagina <= 0:
+            max_pedidos_por_pagina = 100
+        if not corpo:
+            chunks = [[]]
+        else:
+            chunks = [
+                corpo[i:i + max_pedidos_por_pagina]
+                for i in range(0, len(corpo), max_pedidos_por_pagina)
+            ]
+
+        try:
+            font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 15)
+            font_bold = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 15)
+        except Exception:
+            font = ImageFont.load_default()
+            font_bold = font
+
+        # Larguras fixadas por amostra global para manter colunas consistentes entre paginas.
+        rows_medida = [header] + corpo
+        if total_row:
+            rows_medida.append(total_row)
+
+        char_caps = [0] * ncols
+        for r in rows_medida:
+            for i, v in enumerate(r):
+                char_caps[i] = max(char_caps[i], min(len(v), 60))
+
+        col_widths = []
+        for i, c in enumerate(char_caps):
+            base = 70 if i == 0 else 90
+            px = max(base, min(560, c * 7 + 20))
+            col_widths.append(px)
+
+        row_h = 28
+        margin = 2
+        img_w = sum(col_widths) + margin * 2 + 1
+
+        cor_borda = (120, 120, 120)
+        cor_header = (217, 225, 242)
+        cor_total = (226, 239, 218)
+        cor_texto = (20, 20, 20)
+
+        def _render_pagina(rows_pagina, caminho_destino):
+            img_h = len(rows_pagina) * row_h + margin * 2 + 1
+            img = Image.new('RGB', (img_w, img_h), 'white')
+            draw = ImageDraw.Draw(img)
+
+            y = margin
+            for ridx, r in enumerate(rows_pagina):
+                x = margin
+                is_header = ridx == 0
+                is_total = (str(r[0] or '').strip().upper() == 'TOTAL')
+                fill = cor_header if is_header else (cor_total if is_total else (255, 255, 255))
+                use_font = font_bold if (is_header or is_total) else font
+
+                for cidx, text in enumerate(r):
+                    w = col_widths[cidx]
+                    draw.rectangle([(x, y), (x + w, y + row_h)], fill=fill, outline=cor_borda, width=1)
+
+                    txt = str(text or '')
+                    max_chars = max(1, int((w - 10) / 7))
+                    if len(txt) > max_chars:
+                        txt = txt[:max_chars - 2] + '..'
+
+                    tx = x + 4
+                    # Alinha quantidade a direita na ultima coluna.
+                    if cidx == ncols - 1:
+                        try:
+                            tw = draw.textlength(txt, font=use_font)
+                        except Exception:
+                            tw = len(txt) * 7
+                        tx = x + w - int(tw) - 6
+                    ty = y + 6
+                    draw.text((tx, ty), txt, fill=cor_texto, font=use_font)
+                    x += w
+
+                y += row_h
+
+            img.save(caminho_destino, format='JPEG', quality=92, optimize=True)
+
+        try:
+            os.makedirs(os.path.dirname(caminho_imagem), exist_ok=True)
+        except Exception:
+            pass
+
+        base, ext = os.path.splitext(caminho_imagem)
+        ext = ext or '.jpeg'
+
+        # Limpa paginas antigas para evitar confusao quando reduzir quantidade.
+        for antigo in glob.glob(f"{base}_p*{ext}"):
+            try:
+                os.remove(antigo)
+            except Exception:
+                pass
+
+        total_paginas = len(chunks)
+        primeira_imagem = ''
+        for idx, chunk in enumerate(chunks, start=1):
+            linhas = [header] + chunk
+            if idx == total_paginas and total_row:
+                linhas.append(total_row)
+
+            if idx == 1:
+                destino = caminho_imagem
+                primeira_imagem = destino
+            else:
+                destino = f"{base}_p{idx:02d}{ext}"
+
+            _render_pagina(linhas, destino)
+
+        # Alias opcional da primeira pagina quando ha multipaginas.
+        if total_paginas > 1:
+            try:
+                alias_p1 = f"{base}_p01{ext}"
+                if os.path.abspath(alias_p1) != os.path.abspath(caminho_imagem):
+                    with open(caminho_imagem, 'rb') as rf, open(alias_p1, 'wb') as wf:
+                        wf.write(rf.read())
+            except Exception:
+                pass
+
+        return primeira_imagem or caminho_imagem
 
     def gerar_resumo_xlsx_shein(self, etiquetas_shein, caminho_saida, nome_loja='Shein'):
         """Gera resumo XLSX de etiquetas Shein com Modelo, Cor, Tamanho, Quantidade."""

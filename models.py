@@ -6,6 +6,7 @@ Inclui: Users, Sessions, Payments, WhatsAppContacts, Schedules, UpSellerConfig, 
 
 import os
 import uuid
+import json
 from datetime import datetime
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
@@ -37,6 +38,24 @@ PLANOS = {
 }
 
 
+def _json_list(value):
+    """Converte valor JSON/lista para lista segura de strings."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()]
+    txt = str(value).strip()
+    if not txt:
+        return []
+    try:
+        data = json.loads(txt)
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
 class User(db.Model):
     __tablename__ = 'users'
 
@@ -66,6 +85,14 @@ class User(db.Model):
 
     # Google OAuth
     google_id = db.Column(db.String(255), nullable=True, unique=True)
+    auto_send_whatsapp = db.Column(db.Boolean, default=False)
+    email_remetente = db.Column(db.String(200), default='')
+    nome_remetente = db.Column(db.String(200), default='')
+    smtp_host = db.Column(db.String(200), default='')
+    smtp_port = db.Column(db.Integer, default=587)
+    smtp_user = db.Column(db.String(200), default='')
+    smtp_pass_enc = db.Column(db.Text, default='')
+    smtp_from = db.Column(db.String(200), default='')
 
     payments = db.relationship('Payment', backref='user', lazy=True)
     sessions = db.relationship('Session', backref='user', lazy=True)
@@ -181,6 +208,14 @@ class User(db.Model):
             "cupom_indicacao": self.cupom_indicacao or '',
             "meses_gratis": self.meses_gratis or 0,
             "plano_expira": self.plano_expira.strftime("%d/%m/%Y") if self.plano_expira else '',
+            "auto_send_whatsapp": bool(self.auto_send_whatsapp),
+            "email_remetente": (self.email_remetente or '').strip(),
+            "nome_remetente": (self.nome_remetente or '').strip(),
+            "smtp_host": (self.smtp_host or '').strip(),
+            "smtp_port": int(self.smtp_port or 587),
+            "smtp_user": (self.smtp_user or '').strip(),
+            "smtp_from": (self.smtp_from or '').strip(),
+            "smtp_configurado": bool((self.smtp_host or '').strip() and (self.smtp_user or '').strip() and (self.smtp_pass_enc or '').strip()),
         }
 
 
@@ -222,6 +257,8 @@ class WhatsAppContact(db.Model):
     loja_nome = db.Column(db.String(200), nullable=False)    # Nome legivel da loja
     telefone = db.Column(db.String(20), nullable=False)      # 5511999999999
     nome_contato = db.Column(db.String(200), default='')     # Nome do destinatario
+    lojas_json = db.Column(db.Text, default='[]')            # Lista de lojas alvo (nomes)
+    grupos_json = db.Column(db.Text, default='[]')           # Lista de grupos alvo (nomes)
     ativo = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -234,6 +271,8 @@ class WhatsAppContact(db.Model):
             "loja_nome": self.loja_nome,
             "telefone": self.telefone,
             "nome_contato": self.nome_contato,
+            "lojas": _json_list(self.lojas_json),
+            "grupos": _json_list(self.grupos_json),
             "ativo": self.ativo,
             "created_at": self.created_at.strftime("%d/%m/%Y %H:%M") if self.created_at else '',
         }
@@ -255,6 +294,8 @@ class Schedule(db.Model):
     baixar_upseller = db.Column(db.Boolean, default=True)
     processar_etiquetas = db.Column(db.Boolean, default=True)
     enviar_whatsapp = db.Column(db.Boolean, default=True)
+    lojas_json = db.Column(db.Text, default='[]')            # Lojas alvo do agendamento
+    grupos_json = db.Column(db.Text, default='[]')           # Grupos alvo do agendamento
 
     # Controle interno
     job_id = db.Column(db.String(100), nullable=True)         # ID do APScheduler
@@ -274,6 +315,8 @@ class Schedule(db.Model):
             "baixar_upseller": self.baixar_upseller,
             "processar_etiquetas": self.processar_etiquetas,
             "enviar_whatsapp": self.enviar_whatsapp,
+            "lojas": _json_list(self.lojas_json),
+            "grupos": _json_list(self.grupos_json),
             "job_id": self.job_id or '',
             "ultima_execucao": self.ultima_execucao.strftime("%d/%m/%Y %H:%M") if self.ultima_execucao else '',
             "ultimo_status": self.ultimo_status or '',
@@ -355,4 +398,227 @@ class ExecutionLog(db.Model):
             "whatsapp_enviados": self.whatsapp_enviados,
             "whatsapp_erros": self.whatsapp_erros,
             "duracao_s": (self.fim - self.inicio).total_seconds() if self.fim and self.inicio else 0,
+        }
+
+
+class Loja(db.Model):
+    """Loja persistente — sobrevive reload/restart. Atualizada a cada sync."""
+    __tablename__ = 'lojas'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    nome = db.Column(db.String(200), nullable=False)
+    marketplace = db.Column(db.String(50), default='Shopee')
+    pedidos_pendentes = db.Column(db.Integer, default=0)
+    notas_pendentes = db.Column(db.Integer, default=0)       # "Para Emitir"
+    etiquetas_pendentes = db.Column(db.Integer, default=0)   # "Para Imprimir"
+    ultima_atualizacao = db.Column(db.DateTime, default=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+
+    __table_args__ = (db.UniqueConstraint('user_id', 'nome', name='uq_loja_user_nome'),)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "marketplace": self.marketplace,
+            "pedidos": self.pedidos_pendentes,
+            "notas_pendentes": self.notas_pendentes or 0,
+            "etiquetas_pendentes": self.etiquetas_pendentes or 0,
+            "ultima_atualizacao": self.ultima_atualizacao.strftime("%d/%m/%Y %H:%M") if self.ultima_atualizacao else "",
+            "ativo": self.ativo,
+        }
+
+
+class EmailContact(db.Model):
+    """Contato de email para envio de etiquetas por loja."""
+    __tablename__ = 'email_contacts'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    email = db.Column(db.String(200), nullable=False)
+    loja_cnpj = db.Column(db.String(20), default='')
+    nome_contato = db.Column(db.String(200), default='')
+    lojas_json = db.Column(db.Text, default='[]')            # Lista de lojas alvo (nomes)
+    grupos_json = db.Column(db.Text, default='[]')           # Lista de grupos alvo (nomes)
+    ativo = db.Column(db.Boolean, default=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "email": self.email,
+            "loja_cnpj": self.loja_cnpj,
+            "nome_contato": self.nome_contato,
+            "lojas": _json_list(self.lojas_json),
+            "grupos": _json_list(self.grupos_json),
+            "ativo": self.ativo,
+        }
+
+
+class WhatsAppQueueItem(db.Model):
+    """Fila persistente de envios WhatsApp com retry/backoff."""
+    __tablename__ = 'whatsapp_queue'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    batch_id = db.Column(db.String(40), nullable=False, index=True)
+    origem = db.Column(db.String(20), default='manual')  # manual | auto | agendado
+
+    loja_nome = db.Column(db.String(200), default='')
+    telefone = db.Column(db.String(20), nullable=False)
+    pdf_path = db.Column(db.String(1000), nullable=False)
+    caption = db.Column(db.Text, default='')
+
+    status = db.Column(db.String(20), default='pending', index=True)
+    tentativas = db.Column(db.Integer, default=0)
+    max_tentativas = db.Column(db.Integer, default=5)
+    next_attempt_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    last_error = db.Column(db.Text, default='')
+    message_id = db.Column(db.String(200), default='')
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    sent_at = db.Column(db.DateTime, nullable=True)
+
+    user = db.relationship('User', backref=db.backref('whatsapp_queue', lazy=True))
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "batch_id": self.batch_id,
+            "origem": self.origem,
+            "loja_nome": self.loja_nome,
+            "telefone": self.telefone,
+            "pdf_path": self.pdf_path,
+            "status": self.status,
+            "tentativas": self.tentativas,
+            "max_tentativas": self.max_tentativas,
+            "next_attempt_at": self.next_attempt_at.strftime("%d/%m/%Y %H:%M:%S") if self.next_attempt_at else "",
+            "last_error": self.last_error or "",
+            "message_id": self.message_id or "",
+            "created_at": self.created_at.strftime("%d/%m/%Y %H:%M:%S") if self.created_at else "",
+            "sent_at": self.sent_at.strftime("%d/%m/%Y %H:%M:%S") if self.sent_at else "",
+        }
+
+
+class MarketplaceApiConfig(db.Model):
+    """Configuracao de API direta por marketplace (inicio: Shopee)."""
+    __tablename__ = 'marketplace_api_config'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    marketplace = db.Column(db.String(40), default='shopee', nullable=False)
+    loja_nome = db.Column(db.String(200), default='')
+    api_base_url = db.Column(db.String(300), default='https://openplatform.sandbox.test-stable.shopee.sg')
+
+    partner_id = db.Column(db.String(80), default='')
+    partner_key_enc = db.Column(db.Text, default='')
+    shop_id = db.Column(db.String(80), default='')
+    access_token_enc = db.Column(db.Text, default='')
+    refresh_token_enc = db.Column(db.Text, default='')
+    token_expires_at = db.Column(db.DateTime, nullable=True)
+
+    status_conexao = db.Column(db.String(20), default='nao_configurado')  # ok | erro | nao_configurado
+    ultima_sincronizacao = db.Column(db.DateTime, nullable=True)
+    ativo = db.Column(db.Boolean, default=False)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'marketplace', name='uq_marketplace_cfg_user_marketplace'),
+    )
+
+    def set_partner_key(self, value: str):
+        txt = str(value or '').strip()
+        self.partner_key_enc = encrypt_value(txt) if txt else ''
+
+    def get_partner_key(self) -> str:
+        txt = str(self.partner_key_enc or '').strip()
+        if not txt:
+            return ''
+        try:
+            return decrypt_value(txt)
+        except Exception:
+            return ''
+
+    def set_access_token(self, value: str):
+        txt = str(value or '').strip()
+        self.access_token_enc = encrypt_value(txt) if txt else ''
+
+    def get_access_token(self) -> str:
+        txt = str(self.access_token_enc or '').strip()
+        if not txt:
+            return ''
+        try:
+            return decrypt_value(txt)
+        except Exception:
+            return ''
+
+    def set_refresh_token(self, value: str):
+        txt = str(value or '').strip()
+        self.refresh_token_enc = encrypt_value(txt) if txt else ''
+
+    def get_refresh_token(self) -> str:
+        txt = str(self.refresh_token_enc or '').strip()
+        if not txt:
+            return ''
+        try:
+            return decrypt_value(txt)
+        except Exception:
+            return ''
+
+    def configurado(self) -> bool:
+        return bool(
+            (self.partner_id or '').strip() and
+            (self.get_partner_key() or '').strip() and
+            (self.shop_id or '').strip() and
+            (self.get_access_token() or '').strip()
+        )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "marketplace": self.marketplace,
+            "loja_nome": (self.loja_nome or '').strip(),
+            "api_base_url": (self.api_base_url or '').strip() or 'https://openplatform.sandbox.test-stable.shopee.sg',
+            "partner_id": (self.partner_id or '').strip(),
+            "shop_id": (self.shop_id or '').strip(),
+            "status_conexao": (self.status_conexao or 'nao_configurado'),
+            "ultima_sincronizacao": self.ultima_sincronizacao.strftime("%d/%m/%Y %H:%M") if self.ultima_sincronizacao else "",
+            "ativo": bool(self.ativo),
+            "configurado": bool(self.configurado()),
+            "token_expires_at": self.token_expires_at.strftime("%d/%m/%Y %H:%M:%S") if self.token_expires_at else "",
+            "has_partner_key": bool((self.partner_key_enc or '').strip()),
+            "has_access_token": bool((self.access_token_enc or '').strip()),
+            "has_refresh_token": bool((self.refresh_token_enc or '').strip()),
+        }
+
+
+class MarketplaceLoja(db.Model):
+    """Snapshot de lojas por API direta (separado do snapshot do UpSeller)."""
+    __tablename__ = 'marketplace_lojas'
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
+    marketplace = db.Column(db.String(40), default='Shopee', nullable=False)
+    nome = db.Column(db.String(200), nullable=False)
+    pedidos_pendentes = db.Column(db.Integer, default=0)
+    notas_pendentes = db.Column(db.Integer, default=0)
+    etiquetas_pendentes = db.Column(db.Integer, default=0)
+    ultima_atualizacao = db.Column(db.DateTime, default=datetime.utcnow)
+    ativo = db.Column(db.Boolean, default=True)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'marketplace', 'nome', name='uq_marketplace_loja_user_marketplace_nome'),
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "marketplace": self.marketplace,
+            "pedidos": int(self.pedidos_pendentes or 0),
+            "notas_pendentes": int(self.notas_pendentes or 0),
+            "etiquetas_pendentes": int(self.etiquetas_pendentes or 0),
+            "ultima_atualizacao": self.ultima_atualizacao.strftime("%d/%m/%Y %H:%M") if self.ultima_atualizacao else "",
+            "ativo": bool(self.ativo),
         }
