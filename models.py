@@ -520,6 +520,11 @@ class MarketplaceApiConfig(db.Model):
     ultima_sincronizacao = db.Column(db.DateTime, nullable=True)
     ativo = db.Column(db.Boolean, default=False)
 
+    # OAuth pendente: timestamp de quando login-url foi chamado.
+    # Usado pelo callback para identificar o usuario quando o sandbox
+    # nao retorna o state param. Funciona cross-worker (persiste no DB).
+    oauth_pending_at = db.Column(db.DateTime, nullable=True)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

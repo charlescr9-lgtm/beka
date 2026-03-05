@@ -192,45 +192,52 @@ def _parse_shopee_oauth_state(state: str, max_age_sec: int = 1800):
     return uid, ""
 
 
-# Cache de OAuth pendente: quando geramos a login-url, guardamos user_id + timestamp
-# E TAMBEM as credenciais (partner_id, partner_key, base_url) ja decriptadas.
-# Isso permite que o callback faca o token exchange IMEDIATAMENTE sem query DB/Fernet.
-# O code sandbox da Shopee expira em ~30s — cada ms conta.
-_pending_shopee_oauth = {}  # {user_id: {ts, partner_id, partner_key, base_url}}
+# OAuth pendente: persiste no DB (marketplace_api_config.oauth_pending_at).
+# Funciona cross-worker no Railway (multiplos processos Gunicorn).
 _PENDING_OAUTH_MAX_AGE = 1800  # 30 minutos
 
 
-def _register_pending_oauth(user_id: int, partner_id: str = "", partner_key: str = "", base_url: str = ""):
-    """Registra que user_id iniciou OAuth, com credenciais pre-carregadas."""
-    _pending_shopee_oauth[int(user_id)] = {
-        "ts": int(time.time()),
-        "partner_id": str(partner_id or "").strip(),
-        "partner_key": str(partner_key or "").strip(),
-        "base_url": str(base_url or "").strip(),
-    }
+def _register_pending_oauth(user_id: int, **_kwargs):
+    """Marca no DB que user_id iniciou OAuth (seta oauth_pending_at = agora)."""
+    try:
+        cfg = MarketplaceApiConfig.query.filter_by(
+            user_id=int(user_id), marketplace="shopee"
+        ).first()
+        if cfg:
+            cfg.oauth_pending_at = datetime.utcnow()
+            db.session.commit()
+    except Exception as e:
+        print(f"[OAUTH] _register_pending_oauth FALHOU: {e}", flush=True, file=sys.stderr)
 
 
-def _find_pending_oauth_user():
-    """Encontra user_id com OAuth pendente mais recente (fallback).
-    Retorna (user_id, info_dict) ou (None, {})."""
-    now = int(time.time())
-    best_uid, best_ts, best_info = None, 0, {}
-    expired = []
-    for uid, info in _pending_shopee_oauth.items():
-        ts = info.get("ts", 0)
-        if now - ts > _PENDING_OAUTH_MAX_AGE:
-            expired.append(uid)
-            continue
-        if ts > best_ts:
-            best_uid, best_ts, best_info = uid, ts, info
-    for uid in expired:
-        _pending_shopee_oauth.pop(uid, None)
-    return best_uid, best_info
+def _find_pending_oauth_cfg():
+    """Encontra o MarketplaceApiConfig com OAuth pendente mais recente.
+    Retorna o objeto cfg direto (ja com partner_key_enc no modelo).
+    Funciona cross-worker porque le do DB."""
+    try:
+        cutoff = datetime.utcnow() - timedelta(seconds=_PENDING_OAUTH_MAX_AGE)
+        cfg = MarketplaceApiConfig.query.filter(
+            MarketplaceApiConfig.marketplace == "shopee",
+            MarketplaceApiConfig.oauth_pending_at.isnot(None),
+            MarketplaceApiConfig.oauth_pending_at > cutoff,
+        ).order_by(MarketplaceApiConfig.oauth_pending_at.desc()).first()
+        return cfg
+    except Exception as e:
+        print(f"[OAUTH] _find_pending_oauth_cfg FALHOU: {e}", flush=True, file=sys.stderr)
+        return None
 
 
 def _consume_pending_oauth(user_id: int):
-    """Remove OAuth pendente apos uso."""
-    _pending_shopee_oauth.pop(int(user_id), None)
+    """Limpa oauth_pending_at apos uso."""
+    try:
+        cfg = MarketplaceApiConfig.query.filter_by(
+            user_id=int(user_id), marketplace="shopee"
+        ).first()
+        if cfg and cfg.oauth_pending_at:
+            cfg.oauth_pending_at = None
+            db.session.commit()
+    except Exception:
+        pass
 
 
 # Inicializar extensoes
@@ -324,6 +331,13 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN lojas_json TEXT DEFAULT '[]'"))
             if 'grupos_json' not in cols:
                 conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN grupos_json TEXT DEFAULT '[]'"))
+
+    # Migrar marketplace_api_config — adicionar oauth_pending_at
+    if 'marketplace_api_config' in inspector.get_table_names():
+        cols_mkt = [c['name'] for c in inspector.get_columns('marketplace_api_config')]
+        with db.engine.begin() as conn:
+            if 'oauth_pending_at' not in cols_mkt:
+                conn.execute(sqlalchemy.text("ALTER TABLE marketplace_api_config ADD COLUMN oauth_pending_at DATETIME"))
 
 # Criar tabelas
 with app.app_context():
@@ -984,16 +998,18 @@ def adicionar_log(estado, msg, tipo="info"):
 @app.route('/version')
 def version():
     """Retorna versão do código em execução."""
+    _DEPLOY_ID = "2026-03-05-v3-db-pending"
     version_info = {
-        'version': '2026-02-17-12:15',
-        'build': 'avisos-visíveis-web-ui',
+        'version': _DEPLOY_ID,
+        'build': 'shopee-oauth-db-pending',
+        'deploy_id': _DEPLOY_ID,
         'features': [
-            'Avisos aparecem na interface web',
-            'Etiquetas de RETIRADA separadas em PDF próprio',
-            'Avisos de etiquetas sem XML',
-            'Declaração de conteúdo desabilitada',
-            'PyMuPDF 1.24.14 fixado'
-        ]
+            'OAuth pending via DB (cross-worker)',
+            'Callback timing logs (ms)',
+            'Gunicorn --workers 1',
+            'Etiquetas + Retirada + PyMuPDF 1.24.14',
+        ],
+        'startup_time': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
     }
     # Tentar ler arquivo VERSION se existir
     try:
@@ -4692,10 +4708,9 @@ def api_marketplace_shopee_login_url():
             "erro": diag.get("erro") or "Falha de assinatura na Shopee API.",
         }), 400
 
-    # Registrar OAuth pendente COM credenciais pre-carregadas.
-    # Isso permite que o callback faca o exchange sem query DB/Fernet.
+    # Registrar OAuth pendente no DB (funciona cross-worker no Railway).
     auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
-    _register_pending_oauth(user_id, partner_id=partner_id, partner_key=partner_key, base_url=auth_base)
+    _register_pending_oauth(user_id)
     auth_url = (
         f"{auth_base}{path}"
         f"?partner_id={quote_plus(partner_id)}"
@@ -4718,9 +4733,11 @@ def api_marketplace_shopee_login_url():
 def api_marketplace_shopee_callback():
     """
     Endpoint de callback OAuth Shopee.
-    OTIMIZADO: faz o token exchange ANTES de qualquer query DB,
-    usando credenciais pre-carregadas no cache de OAuth pendente.
-    O code sandbox da Shopee expira em ~30s.
+    Fluxo otimizado para evitar code expirado (~30s sandbox):
+    1. Identifica usuario (state ou DB pending)
+    2. Carrega cfg do DB (1 query, funciona cross-worker)
+    3. Decrypt partner_key + POST token/get IMEDIATAMENTE
+    4. Salva tokens no DB
     """
     t_start = time.time()
     code = str(request.args.get("code", "") or "").strip()
@@ -4731,46 +4748,32 @@ def api_marketplace_shopee_callback():
     if not code:
         return redirect('/?shopee_login=erro&msg=' + quote_plus("Shopee callback sem code."))
 
-    # --- FASE 1: Identificar usuario e obter credenciais do cache (sem DB) ---
+    # --- FASE 1: Identificar usuario + carregar cfg do DB ---
+    cfg = None
     user_id = None
-    cached_creds = {}
 
     # Tentar state assinado primeiro
     user_id, err_state = _parse_shopee_oauth_state(state)
-
-    # Fallback: cache de OAuth pendente (sandbox pode nao retornar state)
-    if not user_id:
-        fallback_uid, fallback_info = _find_pending_oauth_user()
-        if fallback_uid:
-            user_id = fallback_uid
-            cached_creds = fallback_info
-            print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms fallback user_id={user_id}", flush=True, file=sys.stderr)
-        else:
-            return redirect('/?shopee_login=erro&msg=' + quote_plus(f"State invalido: {err_state}"))
-    else:
-        # State valido — buscar credenciais no cache pelo user_id
-        info = _pending_shopee_oauth.get(int(user_id), {})
-        if info:
-            cached_creds = info
-
-    # --- FASE 2: Exchange code IMEDIATAMENTE (usando cache se disponivel) ---
-    partner_id = cached_creds.get("partner_id", "")
-    partner_key = cached_creds.get("partner_key", "")
-    base_url = cached_creds.get("base_url", "")
-
-    # Se cache nao tem credenciais, carregar do DB (fallback)
-    if not partner_id or not partner_key:
-        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms SEM CACHE, carregando do DB...", flush=True, file=sys.stderr)
+    if user_id:
         cfg = _get_or_create_marketplace_api_config(int(user_id), "shopee")
-        partner_id = str(cfg.partner_id or "").strip()
-        partner_key = str(cfg.get_partner_key() or "").strip()
-        base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip()
-        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms DB carregado pid={partner_id}", flush=True, file=sys.stderr)
-    else:
-        cfg = None  # sera carregado depois para salvar tokens
-        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms CACHE OK pid={partner_id}", flush=True, file=sys.stderr)
+        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms state OK user_id={user_id}", flush=True, file=sys.stderr)
 
-    # EXCHANGE IMEDIATO — cada ms conta, code expira em ~30s
+    # Fallback: buscar no DB quem tem oauth_pending_at recente (cross-worker safe)
+    if not cfg:
+        cfg = _find_pending_oauth_cfg()
+        if cfg:
+            user_id = cfg.user_id
+            print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms DB pending user_id={user_id}", flush=True, file=sys.stderr)
+        else:
+            print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms NENHUM usuario encontrado!", flush=True, file=sys.stderr)
+            return redirect('/?shopee_login=erro&msg=' + quote_plus(f"State invalido: {err_state}"))
+
+    # --- FASE 2: Decrypt + Exchange IMEDIATO ---
+    partner_id = str(cfg.partner_id or "").strip()
+    partner_key = str(cfg.get_partner_key() or "").strip()
+    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip()
+    print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms creds OK pid={partner_id} key={'SET' if partner_key else 'VAZIO'}", flush=True, file=sys.stderr)
+
     troca = _shopee_exchange_code_for_tokens_fast(
         partner_id=partner_id,
         partner_key=partner_key,
@@ -4779,15 +4782,13 @@ def api_marketplace_shopee_callback():
         shop_id=shop_id,
     )
     t_exchange = time.time()
-    print(f"[CALLBACK] t={int((t_exchange-t_start)*1000)}ms exchange ok={troca.get('ok')}", flush=True, file=sys.stderr)
+    print(f"[CALLBACK] t={int((t_exchange-t_start)*1000)}ms exchange ok={troca.get('ok')} erro={troca.get('erro','')[:60]}", flush=True, file=sys.stderr)
 
-    # --- FASE 3: Salvar resultado no DB (depois do exchange) ---
-    if cfg is None:
-        cfg = _get_or_create_marketplace_api_config(int(user_id), "shopee")
-
+    # --- FASE 3: Salvar resultado no DB ---
     if not troca.get("ok"):
         try:
             cfg.status_conexao = "erro"
+            cfg.oauth_pending_at = None
             db.session.commit()
         except Exception:
             pass
@@ -4803,7 +4804,9 @@ def api_marketplace_shopee_callback():
         cfg.token_expires_at = datetime.utcnow() + timedelta(seconds=expire_in)
     cfg.status_conexao = "ok"
     cfg.ativo = bool(cfg.configurado())
-    _consume_pending_oauth(user_id)
+    cfg.oauth_pending_at = None  # Limpar flag de pending
+    t_save = time.time()
+    print(f"[CALLBACK] t={int((t_save-t_start)*1000)}ms tokens salvos, status=ok", flush=True, file=sys.stderr)
 
     # Tenta preencher nome da loja automaticamente (nao critico).
     try:
@@ -4817,6 +4820,8 @@ def api_marketplace_shopee_callback():
         pass
 
     db.session.commit()
+    t_end = time.time()
+    print(f"[CALLBACK] t={int((t_end-t_start)*1000)}ms COMPLETO - redirect /?shopee_login=ok", flush=True, file=sys.stderr)
     return redirect('/?shopee_login=ok')
 
 
