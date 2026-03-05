@@ -192,31 +192,40 @@ def _parse_shopee_oauth_state(state: str, max_age_sec: int = 1800):
     return uid, ""
 
 
-# Cache de OAuth pendente: quando geramos a login-url, guardamos user_id + timestamp.
-# Usado como fallback quando o sandbox da Shopee nao retorna o state no callback.
-_pending_shopee_oauth = {}  # {user_id: timestamp}
+# Cache de OAuth pendente: quando geramos a login-url, guardamos user_id + timestamp
+# E TAMBEM as credenciais (partner_id, partner_key, base_url) ja decriptadas.
+# Isso permite que o callback faca o token exchange IMEDIATAMENTE sem query DB/Fernet.
+# O code sandbox da Shopee expira em ~30s — cada ms conta.
+_pending_shopee_oauth = {}  # {user_id: {ts, partner_id, partner_key, base_url}}
 _PENDING_OAUTH_MAX_AGE = 1800  # 30 minutos
 
 
-def _register_pending_oauth(user_id: int):
-    """Registra que user_id iniciou OAuth (para fallback sem state)."""
-    _pending_shopee_oauth[int(user_id)] = int(time.time())
+def _register_pending_oauth(user_id: int, partner_id: str = "", partner_key: str = "", base_url: str = ""):
+    """Registra que user_id iniciou OAuth, com credenciais pre-carregadas."""
+    _pending_shopee_oauth[int(user_id)] = {
+        "ts": int(time.time()),
+        "partner_id": str(partner_id or "").strip(),
+        "partner_key": str(partner_key or "").strip(),
+        "base_url": str(base_url or "").strip(),
+    }
 
 
-def _find_pending_oauth_user() -> int:
-    """Encontra user_id com OAuth pendente mais recente (fallback)."""
+def _find_pending_oauth_user():
+    """Encontra user_id com OAuth pendente mais recente (fallback).
+    Retorna (user_id, info_dict) ou (None, {})."""
     now = int(time.time())
-    best_uid, best_ts = None, 0
+    best_uid, best_ts, best_info = None, 0, {}
     expired = []
-    for uid, ts in _pending_shopee_oauth.items():
+    for uid, info in _pending_shopee_oauth.items():
+        ts = info.get("ts", 0)
         if now - ts > _PENDING_OAUTH_MAX_AGE:
             expired.append(uid)
             continue
         if ts > best_ts:
-            best_uid, best_ts = uid, ts
+            best_uid, best_ts, best_info = uid, ts, info
     for uid in expired:
         _pending_shopee_oauth.pop(uid, None)
-    return best_uid
+    return best_uid, best_info
 
 
 def _consume_pending_oauth(user_id: int):
@@ -4492,15 +4501,20 @@ def api_marketplace_shopee_debug_sign():
     })
 
 
-def _shopee_exchange_code_for_tokens(cfg: MarketplaceApiConfig, code: str, shop_id: str):
+def _shopee_exchange_code_for_tokens_fast(
+    partner_id: str, partner_key: str, base_url: str,
+    code: str, shop_id: str,
+):
     """
     Troca authorization code por access/refresh token na Shopee Open API.
+    Versao otimizada: recebe credenciais ja prontas (sem DB/Fernet no caminho critico).
+    O code da Shopee sandbox expira em ~30s, entao esta funcao deve ser chamada
+    o mais rapido possivel apos receber o callback.
     """
-    partner_id = str(cfg.partner_id or "").strip()
-    partner_key = str(cfg.get_partner_key() or "").strip()
+    t0 = time.time()
     code_txt = str(code or "").strip()
     shop_txt = str(shop_id or "").strip()
-    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    base_url = (base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
 
     if not partner_id:
         return {"ok": False, "erro": "Partner ID nao configurado."}
@@ -4534,29 +4548,30 @@ def _shopee_exchange_code_for_tokens(cfg: MarketplaceApiConfig, code: str, shop_
     }
 
     url = f"{base_url}{path}"
-    app.logger.info(f"[Shopee token/get] POST {url} partner_id={pid_int} shop_id={sid_int} code={code_txt[:8]}... ts={ts}")
+    t_pre = time.time()
+    print(f"[Shopee token/get] POST {url} pid={pid_int} sid={sid_int} code={code_txt[:12]}... ts={ts} prep={int((t_pre-t0)*1000)}ms", flush=True, file=sys.stderr)
     try:
-        resp = requests.post(url, params=params, json=body, timeout=40)
+        resp = requests.post(url, params=params, json=body, timeout=30)
     except Exception as e:
-        app.logger.error(f"[Shopee token/get] Falha de rede: {e}")
+        t_err = time.time()
+        print(f"[Shopee token/get] REDE FALHOU em {int((t_err-t0)*1000)}ms: {e}", flush=True, file=sys.stderr)
         return {"ok": False, "erro": f"Falha de rede na troca de token: {e}"}
 
+    t_resp = time.time()
     try:
         data = resp.json()
     except Exception:
         data = {"error": f"http_{resp.status_code}", "message": (resp.text or "")[:400]}
 
-    app.logger.info(f"[Shopee token/get] Status={resp.status_code} error={data.get('error','')} message={data.get('message','')}")
+    print(f"[Shopee token/get] Status={resp.status_code} error={data.get('error','')} msg={data.get('message','')[:80]} total={int((t_resp-t0)*1000)}ms", flush=True, file=sys.stderr)
 
     if resp.status_code >= 400:
         msg = (data or {}).get("message") or (data or {}).get("error") or f"http_{resp.status_code}"
-        app.logger.error(f"[Shopee token/get] HTTP {resp.status_code}: {msg}")
         return {"ok": False, "erro": f"Falha Shopee token/get: {msg}", "data": data}
 
     err = str((data or {}).get("error") or "").strip()
     if err:
         msg = (data or {}).get("message") or err
-        app.logger.error(f"[Shopee token/get] API error: {err} - {msg}")
         return {"ok": False, "erro": f"Erro Shopee token/get: {msg}", "data": data}
 
     payload = (data or {}).get("response") or {}
@@ -4677,10 +4692,10 @@ def api_marketplace_shopee_login_url():
             "erro": diag.get("erro") or "Falha de assinatura na Shopee API.",
         }), 400
 
-    # Registrar OAuth pendente (fallback caso sandbox nao retorne state)
-    _register_pending_oauth(user_id)
-
+    # Registrar OAuth pendente COM credenciais pre-carregadas.
+    # Isso permite que o callback faca o exchange sem query DB/Fernet.
     auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    _register_pending_oauth(user_id, partner_id=partner_id, partner_key=partner_key, base_url=auth_base)
     auth_url = (
         f"{auth_base}{path}"
         f"?partner_id={quote_plus(partner_id)}"
@@ -4703,30 +4718,73 @@ def api_marketplace_shopee_login_url():
 def api_marketplace_shopee_callback():
     """
     Endpoint de callback OAuth Shopee.
-    Troca code por token e salva shop_id/tokens no usuario dono do state.
+    OTIMIZADO: faz o token exchange ANTES de qualquer query DB,
+    usando credenciais pre-carregadas no cache de OAuth pendente.
+    O code sandbox da Shopee expira em ~30s.
     """
-    import sys
-    print(f"[CALLBACK] method={request.method} args={dict(request.args)} url={request.url} remote={request.remote_addr} host={request.host}", flush=True, file=sys.stderr)
+    t_start = time.time()
     code = str(request.args.get("code", "") or "").strip()
     shop_id = str(request.args.get("shop_id", "") or "").strip()
     state = str(request.args.get("state", "") or "").strip()
-    print(f"[CALLBACK] code={code[:16] if code else 'VAZIO'} shop_id={shop_id or 'VAZIO'} state={'SET('+state[:20]+')' if state else 'VAZIO'}", flush=True, file=sys.stderr)
+    print(f"[CALLBACK] t=0ms code={code[:16] if code else 'VAZIO'} shop_id={shop_id or 'VAZIO'} state={'SET' if state else 'VAZIO'}", flush=True, file=sys.stderr)
+
     if not code:
         return redirect('/?shopee_login=erro&msg=' + quote_plus("Shopee callback sem code."))
 
+    # --- FASE 1: Identificar usuario e obter credenciais do cache (sem DB) ---
+    user_id = None
+    cached_creds = {}
+
+    # Tentar state assinado primeiro
     user_id, err_state = _parse_shopee_oauth_state(state)
+
+    # Fallback: cache de OAuth pendente (sandbox pode nao retornar state)
     if not user_id:
-        # Fallback: sandbox da Shopee pode nao retornar o state.
-        # Usar cache de OAuth pendente para identificar o usuario.
-        fallback_uid = _find_pending_oauth_user()
+        fallback_uid, fallback_info = _find_pending_oauth_user()
         if fallback_uid:
             user_id = fallback_uid
-            app.logger.info(f"Shopee callback: state ausente, usando fallback user_id={user_id}")
+            cached_creds = fallback_info
+            print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms fallback user_id={user_id}", flush=True, file=sys.stderr)
         else:
             return redirect('/?shopee_login=erro&msg=' + quote_plus(f"State invalido: {err_state}"))
+    else:
+        # State valido — buscar credenciais no cache pelo user_id
+        info = _pending_shopee_oauth.get(int(user_id), {})
+        if info:
+            cached_creds = info
 
-    cfg = _get_or_create_marketplace_api_config(int(user_id), "shopee")
-    troca = _shopee_exchange_code_for_tokens(cfg, code=code, shop_id=shop_id)
+    # --- FASE 2: Exchange code IMEDIATAMENTE (usando cache se disponivel) ---
+    partner_id = cached_creds.get("partner_id", "")
+    partner_key = cached_creds.get("partner_key", "")
+    base_url = cached_creds.get("base_url", "")
+
+    # Se cache nao tem credenciais, carregar do DB (fallback)
+    if not partner_id or not partner_key:
+        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms SEM CACHE, carregando do DB...", flush=True, file=sys.stderr)
+        cfg = _get_or_create_marketplace_api_config(int(user_id), "shopee")
+        partner_id = str(cfg.partner_id or "").strip()
+        partner_key = str(cfg.get_partner_key() or "").strip()
+        base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip()
+        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms DB carregado pid={partner_id}", flush=True, file=sys.stderr)
+    else:
+        cfg = None  # sera carregado depois para salvar tokens
+        print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms CACHE OK pid={partner_id}", flush=True, file=sys.stderr)
+
+    # EXCHANGE IMEDIATO — cada ms conta, code expira em ~30s
+    troca = _shopee_exchange_code_for_tokens_fast(
+        partner_id=partner_id,
+        partner_key=partner_key,
+        base_url=base_url,
+        code=code,
+        shop_id=shop_id,
+    )
+    t_exchange = time.time()
+    print(f"[CALLBACK] t={int((t_exchange-t_start)*1000)}ms exchange ok={troca.get('ok')}", flush=True, file=sys.stderr)
+
+    # --- FASE 3: Salvar resultado no DB (depois do exchange) ---
+    if cfg is None:
+        cfg = _get_or_create_marketplace_api_config(int(user_id), "shopee")
+
     if not troca.get("ok"):
         try:
             cfg.status_conexao = "erro"
@@ -4747,7 +4805,7 @@ def api_marketplace_shopee_callback():
     cfg.ativo = bool(cfg.configurado())
     _consume_pending_oauth(user_id)
 
-    # Tenta preencher nome da loja automaticamente.
+    # Tenta preencher nome da loja automaticamente (nao critico).
     try:
         cli = _ShopeeOpenApiClient(cfg)
         info = cli.get_shop_info()
