@@ -4545,10 +4545,15 @@ def _processar_fila_whatsapp_once() -> int:
     wa = WhatsAppService()
     for item in itens:
         try:
-            item.status = "sending"
-            item.tentativas = (item.tentativas or 0) + 1
-            item.updated_at = _agora_utc()
+            # Re-verificar status atomicamente (protecao contra duplo worker)
+            fresh = WhatsAppQueueItem.query.get(item.id)
+            if not fresh or fresh.status not in ("pending", "retry"):
+                continue  # Ja foi processado por outro worker
+            fresh.status = "sending"
+            fresh.tentativas = (fresh.tentativas or 0) + 1
+            fresh.updated_at = _agora_utc()
             db.session.commit()
+            item = fresh  # usar referencia atualizada
 
             if not os.path.exists(item.pdf_path or ""):
                 raise FileNotFoundError(f"Arquivo nao encontrado: {item.pdf_path}")
@@ -9366,7 +9371,7 @@ if __name__ == '__main__':
             import urllib.request
             for i in range(30):
                 try:
-                    urllib.request.urlopen(f'http://localhost:{port}/login', timeout=1)
+                    urllib.request.urlopen(f'http://localhost:{port}/', timeout=1)
                     break
                 except Exception:
                     time.sleep(0.5)
