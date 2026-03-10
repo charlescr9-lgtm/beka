@@ -119,6 +119,33 @@ class WhatsAppService:
 
         return f"{numero}@s.whatsapp.net"
 
+    def _resolver_jid(self, telefone: str) -> str:
+        """
+        Resolve o JID real do numero usando o endpoint /check do Baileys.
+        O WhatsApp pode registrar numeros BR sem o 9o digito no JID.
+        Retorna o JID correto ou fallback para formato padrao.
+        """
+        numero = "".join(c for c in telefone if c.isdigit())
+        if len(numero) == 11:
+            numero = "55" + numero
+        elif len(numero) == 10:
+            numero = "55" + numero
+
+        try:
+            resp = requests.get(
+                f"{self.api_url}/api/sessions/{self.session_name}/contacts/{numero}/check",
+                timeout=10
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("exists") and data.get("jid"):
+                    logger.info(f"[WhatsApp] JID resolvido: {numero} -> {data['jid']}")
+                    return data["jid"]
+        except Exception as e:
+            logger.warning(f"[WhatsApp] Falha ao resolver JID para {numero}: {e}")
+
+        return f"{numero}@s.whatsapp.net"
+
     def enviar_mensagem(self, telefone: str, texto: str) -> dict:
         """
         Envia mensagem de texto simples.
@@ -131,7 +158,7 @@ class WhatsAppService:
             {"success": True, "messageId": "..."} ou {"success": False, "error": "..."}
         """
         try:
-            jid = self._formatar_telefone(telefone)
+            jid = self._resolver_jid(telefone)
             resp = requests.post(
                 f"{self.api_url}/api/sessions/{self.session_name}/messages/send",
                 json={
@@ -173,7 +200,7 @@ class WhatsAppService:
             return {"success": False, "error": f"Arquivo nao encontrado: {file_path}"}
 
         try:
-            jid = self._formatar_telefone(telefone)
+            jid = self._resolver_jid(telefone)
             filename = os.path.basename(file_path)
             mime, _ = mimetypes.guess_type(filename)
             mime = mime or "application/octet-stream"
@@ -207,6 +234,44 @@ class WhatsAppService:
 
         except Exception as e:
             logger.error(f"[WhatsApp] Erro ao enviar arquivo para {telefone}: {e}")
+            return {"success": False, "error": str(e)}
+
+    def enviar_imagem(self, telefone: str, image_path: str, caption: str = "") -> dict:
+        """
+        Envia imagem via WhatsApp (aparece como foto, nao como documento).
+        """
+        if not os.path.exists(image_path):
+            return {"success": False, "error": f"Arquivo nao encontrado: {image_path}"}
+
+        try:
+            jid = self._resolver_jid(telefone)
+
+            with open(image_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode()
+
+            resp = requests.post(
+                f"{self.api_url}/api/sessions/{self.session_name}/messages/send",
+                json={
+                    "jid": jid,
+                    "type": "image",
+                    "message": {
+                        "image": img_b64,
+                        "caption": caption or "",
+                    },
+                },
+                timeout=60
+            )
+
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                logger.info(f"[WhatsApp] Imagem enviada para {telefone}: {os.path.basename(image_path)}")
+                return {"success": True, "messageId": data.get("messageId", data.get("key", {}).get("id", ""))}
+
+            logger.warning(f"[WhatsApp] Falha ao enviar imagem para {telefone}: HTTP {resp.status_code}")
+            return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text}"}
+
+        except Exception as e:
+            logger.error(f"[WhatsApp] Erro ao enviar imagem para {telefone}: {e}")
             return {"success": False, "error": str(e)}
 
     def enviar_lote(

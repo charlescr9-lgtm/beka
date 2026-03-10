@@ -169,7 +169,7 @@ class ProcessadorEtiquetasShopee:
     # RECORTE DAS ETIQUETAS DO PDF DA SHOPEE
     # ----------------------------------------------------------------
     def _eh_pdf_shein(self, caminho_pdf):
-        """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE).
+        """Detecta se um PDF e do tipo Shein (paginas alternadas: etiqueta + DANFE ou Declaracao).
         Retorna True se o PDF tem estrutura Shein.
         """
         try:
@@ -179,15 +179,21 @@ class ProcessadorEtiquetasShopee:
                 doc.close()
                 return False
 
-            # Verificar primeiras 2 paginas: par=etiqueta Shein, impar=DANFE
+            # Verificar primeiras 2 paginas: pag0=etiqueta Shein, pag1=DANFE ou Declaracao
             texto_p0 = doc[0].get_text()
             texto_p1 = doc[1].get_text()
             doc.close()
 
             p0_shein = self._eh_etiqueta_shein(texto_p0)
             p1_danfe = 'DANFE' in texto_p1.upper() and 'CHAVE' in texto_p1.upper()
+            # Detectar Declaracao de Conteudo (formato alternativo Shein)
+            texto_p1_upper = texto_p1.upper()
+            p1_declaracao = (
+                ('DECLARAÇÃO DE CONTEÚDO' in texto_p1 or 'DECLARACAO DE CONTEUDO' in texto_p1_upper)
+                and ('IDENTIFICAÇÃO DOS BENS' in texto_p1 or 'IDENTIFICACAO DOS BENS' in texto_p1_upper)
+            )
 
-            return p0_shein and p1_danfe
+            return p0_shein and (p1_danfe or p1_declaracao)
         except Exception:
             return False
 
@@ -706,22 +712,69 @@ class ProcessadorEtiquetasShopee:
         return nome or 'Loja_Desconhecida'
 
     def remover_duplicatas(self, etiquetas):
-        """Remove etiquetas com NF duplicada.
+        """Remove etiquetas duplicadas usando multiplas chaves de identificacao.
+
+        Prioridade de deduplicacao:
+        1. tracking (BR...) - unico por pedido, funciona cross-loja
+        2. order_sn (numero do pedido Shopee) - unico por pedido
+        3. chave NFe (43 digitos) - unica por nota fiscal
+        4. NF (numero da nota fiscal) - fallback (NFs sinteticas nao deduplicam)
+
         Retorna (etiquetas_unicas, lista_de_duplicadas_removidas).
         """
-        vistos = set()
+        vistos_tracking = set()
+        vistos_order_sn = set()
+        vistos_chave = set()
+        vistos_nf = set()
         unicas = []
         duplicadas = []
+
         for etq in etiquetas:
-            nf = etq.get('nf', '')
-            if not nf:
-                unicas.append(etq)
-                continue
-            if nf in vistos:
+            tracking = str(etq.get('tracking', '') or '').strip()
+            order_sn = str(etq.get('order_sn', '') or '').strip()
+            chave_nfe = str((etq.get('dados_xml') or {}).get('chave', '') or '').strip()
+            nf = str(etq.get('nf', '') or '').strip()
+
+            is_dup = False
+
+            # 1. Dedup por tracking (mais confiavel, cross-loja)
+            if tracking and len(tracking) >= 12:
+                if tracking in vistos_tracking:
+                    is_dup = True
+                else:
+                    vistos_tracking.add(tracking)
+
+            # 2. Dedup por order_sn
+            if not is_dup and order_sn and len(order_sn) >= 10:
+                if order_sn in vistos_order_sn:
+                    is_dup = True
+                else:
+                    vistos_order_sn.add(order_sn)
+
+            # 3. Dedup por chave NFe
+            if not is_dup and chave_nfe and len(chave_nfe) >= 40:
+                if chave_nfe in vistos_chave:
+                    is_dup = True
+                else:
+                    vistos_chave.add(chave_nfe)
+
+            # 4. Dedup por NF (exceto sinteticas SEM_NF_)
+            if not is_dup and nf and not nf.startswith('SEM_NF_'):
+                if nf in vistos_nf:
+                    is_dup = True
+                else:
+                    vistos_nf.add(nf)
+
+            if is_dup:
                 duplicadas.append(etq)
             else:
-                vistos.add(nf)
                 unicas.append(etq)
+
+        if duplicadas:
+            print(f"  [Dedup] {len(duplicadas)} duplicata(s) removida(s) "
+                  f"(tracking={len(vistos_tracking)}, order_sn={len(vistos_order_sn)}, "
+                  f"chave={len(vistos_chave)}, nf={len(vistos_nf)})")
+
         return unicas, duplicadas
 
     def _contar_etiquetas_regiao(self, pagina, clip):
@@ -876,6 +929,206 @@ class ProcessadorEtiquetasShopee:
                     produtos[0]['qtd'] = qtd_total
         
         return produtos
+
+    def _detectar_area_tabela_declaracao(self, pag):
+        """Encontra o retangulo da tabela 'IDENTIFICACAO DOS BENS' na pagina de declaracao.
+        Retorna fitz.Rect cobrindo desde o cabecalho da tabela ate a linha Total.
+        """
+        try:
+            pag_rect = pag.rect
+            # Buscar "IDENTIFICAÇÃO DOS BENS" ou variantes
+            rects_id = pag.search_for("IDENTIFICAÇÃO DOS BENS")
+            if not rects_id:
+                rects_id = pag.search_for("IDENTIFICACAO DOS BENS")
+            if not rects_id:
+                # Fallback: buscar cabecalho "SKU"
+                rects_id = pag.search_for("SKU")
+
+            # Buscar "Total" (ultima ocorrencia na pagina)
+            rects_total = pag.search_for("Total")
+
+            if not rects_id:
+                # Nao encontrou cabecalho — retornar terco inferior da pagina como fallback
+                return fitz.Rect(
+                    pag_rect.x0 + 5, pag_rect.height * 0.28,
+                    pag_rect.x1 - 5, pag_rect.height * 0.52
+                )
+
+            y_topo = rects_id[0].y0 - 3  # Pequena margem acima
+
+            if rects_total:
+                # Usar ultimo "Total" encontrado (pode haver varios)
+                y_base = rects_total[-1].y1 + 4  # Margem abaixo
+            else:
+                # Fallback: pegar area abaixo do cabecalho
+                y_base = min(y_topo + 120, pag_rect.height - 20)
+
+            return fitz.Rect(
+                pag_rect.x0 + 5,   # margem esquerda
+                y_topo,
+                pag_rect.x1 - 5,   # margem direita
+                y_base
+            )
+        except Exception as e:
+            print(f"  Aviso: falha ao detectar area tabela declaracao: {e}")
+            # Fallback seguro
+            pag_rect = pag.rect
+            return fitz.Rect(
+                pag_rect.x0 + 5, pag_rect.height * 0.28,
+                pag_rect.x1 - 5, pag_rect.height * 0.52
+            )
+
+    def _parse_declaracao_conteudo(self, texto):
+        """Extrai dados basicos da Declaracao de Conteudo Shein.
+        Retorna dict compativel com dados_danfe para sorting.
+        Nota: esses dados sao para ordenacao, nao para display (display usa imagem recortada).
+
+        Formato do texto extraido pelo PyMuPDF (campos em linhas separadas):
+          IDENTIFICAÇÃO DOS BENS
+          Nº
+          SKU
+          DESCRIÇÃO
+          VARIAÇÃO
+          QTD
+          1                    <- item number
+          Rakka-Pink-          <- SKU (pode ser multi-linha)
+          BR35/36
+          -                    <- descricao
+          Pink-                <- variacao (pode ser multi-linha)
+          BR35/36
+          1                    <- quantidade
+          10-03-2026           <- data
+          Total
+          1                    <- total
+        """
+        resultado = {
+            'tracking': '',
+            'nf': '',
+            'chave': '',
+            'cnpj_emitente': '',
+            'nome_emitente': '',
+            'produtos_shein': [],
+            'total_itens': 0,
+            'total_qtd': 0,
+        }
+
+        # Extrair tracking do "Codigo de Rastreamento: GC..."
+        m_track = re.search(r'Rastreamento[:\s]*([A-Z0-9]{10,})', texto, re.IGNORECASE)
+        if m_track:
+            resultado['tracking'] = m_track.group(1).strip()
+
+        # Extrair CNPJ do remetente (se disponivel)
+        m_cnpj = re.search(r'CPF/CNPJ[:\s]*(\d[\d./-]+)', texto)
+        if m_cnpj:
+            cnpj_raw = re.sub(r'[.\-/]', '', m_cnpj.group(1))
+            if len(cnpj_raw) >= 11:
+                resultado['cnpj_emitente'] = cnpj_raw
+
+        # Extrair nome remetente
+        m_nome = re.search(r'NOME[:\s]*([^\n]+)', texto)
+        if m_nome:
+            resultado['nome_emitente'] = m_nome.group(1).strip()
+
+        # Extrair produtos da tabela IDENTIFICACAO DOS BENS
+        # O PyMuPDF extrai cada celula da tabela em uma linha separada.
+        # Cabecalhos: Nº, SKU, DESCRIÇÃO, VARIAÇÃO, QTD (cada em sua linha)
+        # Dados: linhas de valores intercalados (numero, SKU multi-linha, desc, var multi-linha, qtd)
+        linhas = texto.split('\n')
+
+        # 1. Encontrar "QTD" (fim dos cabecalhos) e "Total" (fim dos dados)
+        idx_qtd_header = -1
+        idx_total = -1
+        for i, linha in enumerate(linhas):
+            ls = linha.strip().upper()
+            if ls == 'QTD':
+                idx_qtd_header = i
+            if linha.strip() == 'Total' or linha.strip() == 'total':
+                idx_total = i
+
+        if idx_qtd_header < 0:
+            # Fallback: tentar encontrar "SKU" como marcador
+            for i, linha in enumerate(linhas):
+                if linha.strip().upper() == 'SKU':
+                    # Pular mais 3 linhas (DESCRIÇÃO, VARIAÇÃO, QTD)
+                    idx_qtd_header = i + 3
+                    break
+
+        if idx_qtd_header < 0 or idx_total < 0:
+            return resultado
+
+        # 2. Extrair total_qtd da linha apos "Total"
+        if idx_total + 1 < len(linhas):
+            try:
+                resultado['total_qtd'] = int(linhas[idx_total + 1].strip())
+            except (ValueError, IndexError):
+                pass
+
+        # 3. Extrair linhas de dados entre cabecalhos e Total
+        data_lines = [l.strip() for l in linhas[idx_qtd_header + 1:idx_total] if l.strip()]
+
+        # 4. Parsear items: a estrutura e sequencial por colunas
+        #    Para cada item: N (1 linha), SKU (1+ linhas), DESC (1 linha, tipicamente "-"),
+        #    VARIACAO (1+ linhas), QTD (1 linha)
+        #    Seguido opcionalmente por data (dd-mm-yyyy)
+        produtos = []
+        i = 0
+        while i < len(data_lines):
+            # Pular linhas de data (dd-mm-yyyy)
+            if re.match(r'^\d{2}-\d{2}-\d{4}$', data_lines[i]):
+                i += 1
+                continue
+
+            # Item number: linha contendo apenas um numero pequeno (1-99)
+            if re.match(r'^\d{1,2}$', data_lines[i]):
+                item_num = data_lines[i]
+                i += 1
+
+                # Coletar SKU (linhas ate encontrar "-" sozinho ou proximo item number)
+                sku_parts = []
+                while i < len(data_lines):
+                    if data_lines[i] == '-':
+                        i += 1  # pular a descricao "-"
+                        break
+                    if re.match(r'^\d{1,2}$', data_lines[i]) and not sku_parts:
+                        break  # proximo item sem descricao
+                    sku_parts.append(data_lines[i])
+                    i += 1
+
+                # Coletar VARIACAO (linhas ate encontrar QTD = numero sozinho 1-4 digitos)
+                var_parts = []
+                qtd = '1'
+                while i < len(data_lines):
+                    # Se e uma data, parar
+                    if re.match(r'^\d{2}-\d{2}-\d{4}$', data_lines[i]):
+                        break
+                    # Se e um numero sozinho de 1-4 digitos (QTD)
+                    if re.match(r'^\d{1,4}$', data_lines[i]):
+                        qtd = data_lines[i]
+                        i += 1
+                        break
+                    var_parts.append(data_lines[i])
+                    i += 1
+
+                sku = ' '.join(sku_parts) if sku_parts else ''
+                variacao = ' '.join(var_parts) if var_parts else ''
+                # atributos = SKU completo para sorting (compativel com _parsear_atributos_shein)
+                atrib = sku if not variacao else f"{sku}/{variacao}"
+
+                produtos.append({
+                    'codigo_item': sku,
+                    'descricao': '',
+                    'atributos': atrib,
+                    'qtd': qtd,
+                })
+            else:
+                i += 1  # linha nao reconhecida, pular
+
+        resultado['produtos_shein'] = produtos
+        resultado['total_itens'] = len(produtos)
+        if not resultado['total_qtd']:
+            resultado['total_qtd'] = sum(int(p.get('qtd', 1)) for p in produtos)
+
+        return resultado
 
     def _detectar_tipo_etiqueta(self, texto, nf_encontrada=None):
         """Detecta o tipo de etiqueta pelo conteudo do texto.
@@ -1322,24 +1575,13 @@ class ProcessadorEtiquetasShopee:
             escala = area_util_larg / quad_larg
             alt_etiqueta = quad_alt * escala
 
-            # Calcular espaco necessario para tabela de produtos
+            # Verificar se tem dados de produto (para contagem).
             num_prods = len(dados.get('produtos', []))
-            tem_chave = bool(dados.get('chave'))
             tem_dados_produto = num_prods > 0
-            if tem_dados_produto:
-                # Espaco necessario: barcode(37 se tem chave) + cabecalho(~36) + linhas(line_h cada) + margem(15)
-                # line_h deve corresponder ao usado em _desenhar_secao_produtos: fs_qtd + 2
-                fs_base_prev = max(7, int(round(self.fonte_produto * 1.30)))
-                fs_dest = max(10, int(round(fs_base_prev * 1.35)))
-                fs_qtd = max(18, int(round(fs_dest * 1.55)))
-                line_h = fs_qtd + 2
-                espaco_barcode = 37 if tem_chave else 0
-                espaco_cabecalho = line_h * 2 + 4  # duas linhas de cabecalho + separadores
-                espaco_tabela = espaco_barcode + espaco_cabecalho + (min(num_prods, 10) * line_h) + 15
-                # Limitar altura da etiqueta para garantir espaco
-                alt_max = self.ALTURA_PT - self.MARGEM_TOPO - self.MARGEM_INFERIOR - espaco_tabela
-                if alt_etiqueta > alt_max:
-                    alt_etiqueta = max(alt_max, self.ALTURA_PT * 0.35)  # minimo 35% da pagina
+
+            # Manter rodape original do UpSeller: nao encolher a etiqueta,
+            # nao mascarar o rodape e nao redesenhar tabela de produtos.
+            # A ordenacao por SKU e >1 itens pro final ja foi feita em _ordenar_etiquetas().
 
             dest_rect = fitz.Rect(
                 self.MARGEM_ESQUERDA,
@@ -1366,53 +1608,7 @@ class ProcessadorEtiquetasShopee:
                 nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
 
             if tem_dados_produto:
-                # Remove o rodape original (SKU/Total Items/Deadline) antes do novo layout.
-                faixa_mascara = self._mascarar_rodape_original(nova_pag, dest_rect)
-                y_inicio_default = self.MARGEM_TOPO + alt_etiqueta + 2
-                if faixa_mascara is not None:
-                    # Alinha o novo rodape na mesma faixa do texto antigo (junto ao codigo de barras).
-                    y_alinhado = float(faixa_mascara.y0) + 4.0
-                    y_inicio = min(y_inicio_default, y_alinhado)
-                else:
-                    y_inicio = y_inicio_default
-                prox_prod = self._desenhar_secao_produtos(nova_pag, dados, y_inicio)
                 com_xml += 1
-
-                # Gerar paginas de continuacao se sobraram produtos
-                cont_num = 1
-                while prox_prod < num_prods:
-                    pag_cont = doc_saida.new_page(
-                        width=self.LARGURA_PT,
-                        height=self.ALTURA_PT
-                    )
-                    # Cabecalho da continuacao
-                    try:
-                        pag_cont.insert_text(
-                            (self.MARGEM_ESQUERDA + 2, self.MARGEM_TOPO + 12),
-                            f"CONTINUACAO - NF: {nf}",
-                            fontsize=8, fontname="hebo", color=(0, 0, 0)
-                        )
-                    except (AttributeError, RuntimeError):
-                        pass  # Bug PyMuPDF - skipar cabeçalho se der erro
-                    pag_cont.draw_line(
-                        (self.MARGEM_ESQUERDA, self.MARGEM_TOPO + 16),
-                        (self.LARGURA_PT - self.MARGEM_DIREITA, self.MARGEM_TOPO + 16),
-                        color=(0, 0, 0), width=0.5
-                    )
-                    # Desenhar produtos restantes
-                    prox_prod = self._desenhar_secao_produtos(
-                        pag_cont, dados, self.MARGEM_TOPO + 20, prod_inicio=prox_prod
-                    )
-                    # Numero de ordem na continuacao
-                    try:
-                        pag_cont.insert_text(
-                            (self.MARGEM_ESQUERDA + 2, self.ALTURA_PT - self.MARGEM_INFERIOR - 8),
-                            f"p.{numero_ordem} (cont.{cont_num})",
-                            fontsize=9, fontname="hebo", color=(0.4, 0.4, 0.4)
-                        )
-                    except (AttributeError, RuntimeError):
-                        pass  # Bug PyMuPDF - skipar numero se der erro
-                    cont_num += 1
             else:
                 sem_xml += 1
 
@@ -2815,6 +3011,12 @@ class ProcessadorEtiquetasShopee:
                         if m:
                             nf = m.group(1)
 
+                # Classificar tipo real da etiqueta pelo conteudo
+                # (mesmo criterio usado no path com recorte de 4-quadrantes).
+                # Etiquetas com DANFE SIMPLIFICADO + NF real sao 'cnpj' (regular)
+                # e devem ir para gerar_pdf_loja (com ordenacao e mascara de rodape).
+                tipo_classificado = self._detectar_tipo_etiqueta(texto, nf_encontrada=nf)
+
                 if nf is None:
                     pdf_id = os.path.splitext(os.path.basename(caminho_pdf))[0].replace(' ', '_')
                     nf = f"SEM_NF_ret_{pdf_id}_p{num_pag}"
@@ -2912,6 +3114,25 @@ class ProcessadorEtiquetasShopee:
                     if nome_loja:
                         cnpj = self._registrar_loja_sintetica(nome_loja, prefixo='LOJA')
 
+                # tipo_especial baseado no conteudo real:
+                # - 'cnpj' → None (regular) → gerar_pdf_loja (com ordenacao + mascara rodape)
+                # - 'retirada' → 'retirada' → gerar_pdf_cpf
+                # - 'cpf' → 'cpf' → gerar_pdf_cpf
+                tipo_especial_real = tipo_classificado if tipo_classificado != 'cnpj' else None
+
+                # Extrair tracking (BR...) e order_sn para deduplicacao cross-loja
+                _tracking = ''
+                _order_sn = ''
+                try:
+                    _m_track = re.search(r'(BR[0-9A-Z]{10,20}BR|BR[0-9A-Z]{10,20})', texto)
+                    if _m_track:
+                        _tracking = _m_track.group(1)
+                    _m_order = re.search(r'\b(\d{6}[A-Z0-9]{6,12})\b', texto.upper())
+                    if _m_order:
+                        _order_sn = _m_order.group(1)
+                except Exception:
+                    pass
+
                 etiquetas.append({
                     'nf': nf,
                     'sku': sku,
@@ -2921,8 +3142,10 @@ class ProcessadorEtiquetasShopee:
                     'pagina_idx': num_pag,
                     'caminho_pdf': caminho_pdf,
                     'dados_xml': dados_nf,
-                    'tipo_especial': 'retirada',
+                    'tipo_especial': tipo_especial_real,
                     'render_imagem_meta': render_imagem_meta,
+                    'tracking': _tracking,
+                    'order_sn': _order_sn,
                 })
                 idx_seq_rotulo += 1
 
@@ -2978,6 +3201,15 @@ class ProcessadorEtiquetasShopee:
                     'total_qtd': dados_pedido.get('total_qtd', 0),
                 }
 
+                # Extrair tracking para deduplicacao cross-loja
+                _cpf_tracking = ''
+                try:
+                    _m_cpf_track = re.search(r'(BR[0-9A-Z]{10,20}BR|BR[0-9A-Z]{10,20})', texto)
+                    if _m_cpf_track:
+                        _cpf_tracking = _m_cpf_track.group(1)
+                except Exception:
+                    pass
+
                 etiquetas.append({
                     'nf': order_sn or f'CPF_pag{num_pag}',
                     'sku': sku,
@@ -2988,6 +3220,8 @@ class ProcessadorEtiquetasShopee:
                     'caminho_pdf': caminho_pdf,
                     'dados_xml': dados_ficticio,
                     'tipo_especial': 'cpf',
+                    'tracking': _cpf_tracking,
+                    'order_sn': order_sn or '',
                 })
 
         doc.close()
@@ -3318,20 +3552,23 @@ class ProcessadorEtiquetasShopee:
         )
 
     def gerar_pdf_cpf(self, etiquetas_cpf, caminho_saida):
-        """Gera PDF para etiquetas CPF no formato 150x225mm.
+        """Gera PDF para etiquetas CPF/Retirada no formato 150x225mm.
         Renderiza a etiqueta original + tabela de produtos com Variation Name.
         """
         larg = self.LARGURA_PT       # 150mm
         alt = self.ALTURA_CPF_PT     # 225mm
         area_util_larg = larg - self.MARGEM_ESQUERDA - self.MARGEM_DIREITA
 
+        # Ordenar etiquetas (mesma logica de gerar_pdf_loja)
+        etiquetas_ord, _, _ = self._ordenar_etiquetas(etiquetas_cpf)
+
         # Abrir PDFs de origem
-        pdfs_usados = set(e['caminho_pdf'] for e in etiquetas_cpf)
+        pdfs_usados = set(e['caminho_pdf'] for e in etiquetas_ord)
         docs_abertos = {p: fitz.open(p) for p in pdfs_usados}
 
         doc_saida = fitz.open()
 
-        for idx, etq in enumerate(etiquetas_cpf):
+        for idx, etq in enumerate(etiquetas_ord):
             clip = etq['clip']
             pag_idx = etq['pagina_idx']
             dados = etq.get('dados_xml', {})
@@ -3416,27 +3653,35 @@ class ProcessadorEtiquetasShopee:
         m_secao = re.search(r'ITEM\s+CONTE.*?QUANT\.\s*\n(.*)', texto, re.DOTALL)
         if m_secao:
             secao = m_secao.group(1).strip()
-            # Linhas quebradas pelo PDF - juntar tudo
             linhas = [l.strip() for l in secao.split('\n') if l.strip()]
 
-            # Estrutura: item_code, descricao (varias linhas), atributos (varias linhas), qtd (ultimo numero)
-            # O item_code comeca com I ou l seguido de alfanumerico
-            # A qtd e o ultimo numero isolado
-            # Os atributos conteem / e nomes de cores/tamanhos
+            # Dividir linhas em blocos por item code (I + alfanumerico, ex: I38cnk94dfzb)
+            blocos = []
+            bloco_atual = []
+            for l in linhas:
+                if re.match(r'^[Il][A-Za-z0-9]{6,}$', l) and bloco_atual:
+                    blocos.append(bloco_atual)
+                    bloco_atual = [l]
+                else:
+                    bloco_atual.append(l)
+            if bloco_atual:
+                blocos.append(bloco_atual)
 
-            if linhas:
-                item_code = linhas[0]
+            for bloco in blocos:
+                if not bloco:
+                    continue
+                item_code = bloco[0]
                 # Quantidade e a ultima linha que e so um numero
                 qtd_str = '1'
-                idx_qtd = len(linhas)
-                for j in range(len(linhas) - 1, 0, -1):
-                    if re.match(r'^\d+$', linhas[j]):
-                        qtd_str = linhas[j]
+                idx_qtd = len(bloco)
+                for j in range(len(bloco) - 1, 0, -1):
+                    if re.match(r'^\d+$', bloco[j]):
+                        qtd_str = bloco[j]
                         idx_qtd = j
                         break
 
-                # Juntar linhas entre item_code e qtd (sem quebras de linha)
-                meio = ''.join(linhas[1:idx_qtd])
+                # Juntar linhas entre item_code e qtd
+                meio = ''.join(bloco[1:idx_qtd])
 
                 # Separar descricao de atributos
                 # Atributos comecam onde aparece algo com / (tipo Rakka/Roxo...)
@@ -3509,7 +3754,7 @@ class ProcessadorEtiquetasShopee:
 
     def processar_shein(self, pasta_entrada, pdfs_extras=None):
         """Processa etiquetas Shein de 'shein crua.pdf', 'shein.pdf' ou PDFs auto-detectados.
-        O PDF tem paginas alternadas: par=etiqueta Shein, impar=DANFE.
+        O PDF tem paginas alternadas: etiqueta + DANFE ou etiqueta + Declaracao de Conteudo.
         pdfs_extras: lista de caminhos de PDFs Shein auto-detectados.
         Retorna lista de dicts com dados pareados.
         """
@@ -3528,59 +3773,141 @@ class ProcessadorEtiquetasShopee:
 
         print(f"\n  Processando etiquetas SHEIN ({len(caminhos_shein)} PDF(s))...")
         etiquetas = []
+        n_danfe = 0
+        n_declaracao = 0
+        n_skip = 0
 
         for caminho in caminhos_shein:
             print(f"    Shein: {os.path.basename(caminho)}")
             doc = fitz.open(caminho)
             n_pags = len(doc)
 
-            # Processar em pares: pag_par (etiqueta) + pag_impar (DANFE)
+            # Processar em pares: pag_par (etiqueta) + pag_impar (DANFE ou Declaracao)
             for i in range(0, n_pags - 1, 2):
                 pag_etiqueta = doc[i]
-                pag_danfe = doc[i + 1]
+                pag_par = doc[i + 1]
+                texto_par = pag_par.get_text()
+                texto_par_upper = texto_par.upper()
 
-                texto_danfe = pag_danfe.get_text()
+                # Determinar tipo do par
+                eh_danfe = 'DANFE' in texto_par_upper and 'CHAVE' in texto_par_upper
+                eh_declaracao = (
+                    ('DECLARAÇÃO DE CONTEÚDO' in texto_par or 'DECLARACAO DE CONTEUDO' in texto_par_upper)
+                    and ('IDENTIFICAÇÃO DOS BENS' in texto_par or 'IDENTIFICACAO DOS BENS' in texto_par_upper)
+                )
 
-                # Verificar se realmente e DANFE
-                if 'DANFE' not in texto_danfe and 'CHAVE' not in texto_danfe.upper():
-                    print(f"      Par {i}/{i+1}: pagina {i+1} nao parece ser DANFE, pulando")
-                    continue
+                if eh_danfe:
+                    # --- Pipeline DANFE existente (inalterado) ---
+                    dados_danfe = self._parse_shein_danfe(texto_par)
+                    nf = dados_danfe.get('nf', '')
+                    cnpj = dados_danfe.get('cnpj_emitente', '')
 
-                dados_danfe = self._parse_shein_danfe(texto_danfe)
-                nf = dados_danfe.get('nf', '')
-                cnpj = dados_danfe.get('cnpj_emitente', '')
+                    if not nf:
+                        print(f"      Par {i}/{i+1}: NF nao encontrada no DANFE, pulando")
+                        n_skip += 1
+                        continue
 
-                if not nf:
-                    print(f"      Par {i}/{i+1}: NF nao encontrada no DANFE, pulando")
-                    continue
+                    # Buscar dados completos do XML se disponivel
+                    dados_xml = self.dados_xml.get(nf, {})
+                    if dados_xml:
+                        cnpj = dados_xml.get('cnpj_emitente', cnpj)
 
-                # Buscar dados completos do XML se disponivel
-                dados_xml = self.dados_xml.get(nf, {})
-                if dados_xml:
-                    cnpj = dados_xml.get('cnpj_emitente', cnpj)
+                    etiquetas.append({
+                        'nf': nf,
+                        'cnpj': cnpj,
+                        'pag_etiqueta_idx': i,
+                        'pag_danfe_idx': i + 1,
+                        'caminho_pdf': caminho,
+                        'clip_etiqueta': pag_etiqueta.rect,
+                        'clip_danfe': pag_par.rect,
+                        'dados_danfe': dados_danfe,
+                        'dados_xml': dados_xml,
+                        'tipo_especial': 'shein',
+                        'tipo_par': 'danfe',
+                    })
+                    n_danfe += 1
 
-                etiquetas.append({
-                    'nf': nf,
-                    'cnpj': cnpj,
-                    'pag_etiqueta_idx': i,
-                    'pag_danfe_idx': i + 1,
-                    'caminho_pdf': caminho,
-                    'clip_etiqueta': pag_etiqueta.rect,
-                    'clip_danfe': pag_danfe.rect,
-                    'dados_danfe': dados_danfe,
-                    'dados_xml': dados_xml,
-                    'tipo_especial': 'shein',
-                })
+                elif eh_declaracao:
+                    # --- Pipeline Declaracao de Conteudo (novo) ---
+                    dados_decl = self._parse_declaracao_conteudo(texto_par)
+                    tracking = dados_decl.get('tracking', '')
+                    cnpj = dados_decl.get('cnpj_emitente', '')
+
+                    # Detectar area da tabela "IDENTIFICACAO DOS BENS" para recorte
+                    clip_tabela = self._detectar_area_tabela_declaracao(pag_par)
+
+                    # Usar tracking como identificador (declaracoes nao tem NF)
+                    nf_id = tracking if tracking else f'DECL_{i}_{os.path.basename(caminho)}'
+
+                    etiquetas.append({
+                        'nf': nf_id,
+                        'cnpj': cnpj,
+                        'pag_etiqueta_idx': i,
+                        'pag_danfe_idx': i + 1,
+                        'caminho_pdf': caminho,
+                        'clip_etiqueta': pag_etiqueta.rect,
+                        'clip_danfe': pag_par.rect,
+                        'clip_tabela_declaracao': clip_tabela,
+                        'dados_danfe': dados_decl,
+                        'dados_xml': {},
+                        'tipo_especial': 'shein',
+                        'tipo_par': 'declaracao',
+                        'tracking': tracking,
+                    })
+                    n_declaracao += 1
+
+                else:
+                    print(f"      Par {i}/{i+1}: pagina {i+1} nao reconhecida (nem DANFE nem Declaracao), pulando")
+                    n_skip += 1
 
             doc.close()
 
-        print(f"    {len(etiquetas)} pares etiqueta+DANFE Shein")
+        total = n_danfe + n_declaracao
+        desc_parts = []
+        if n_danfe:
+            desc_parts.append(f"{n_danfe} DANFE")
+        if n_declaracao:
+            desc_parts.append(f"{n_declaracao} Declaracao")
+        if n_skip:
+            desc_parts.append(f"{n_skip} pulados")
+        print(f"    {total} pares Shein ({', '.join(desc_parts)})")
         return etiquetas
+
+    def _ordenar_etiquetas_shein(self, etiquetas_shein):
+        """Ordena etiquetas Shein: qtd=1 primeiro, qtd>1 ao final.
+        Dentro de cada bloco: Modelo > Cor > Tamanho (numero).
+        Mesma logica de _ordenar_etiquetas mas adaptada para dados_danfe.
+        """
+        def _total_qtd(etq):
+            return etq.get('dados_danfe', {}).get('total_qtd', 1) or 1
+
+        def _chave(etq):
+            prods = etq.get('dados_danfe', {}).get('produtos_shein', [])
+            if prods:
+                atrib = prods[0].get('atributos', '')
+                modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
+            else:
+                modelo, cor, tamanho = '', '', ''
+            m = re.search(r'(\d+)', tamanho)
+            num_val = int(m.group(1)) if m else 99999
+            return (modelo.casefold(), _total_qtd(etq), cor.casefold(), num_val)
+
+        simples = [e for e in etiquetas_shein if _total_qtd(e) <= 1]
+        multiplos = [e for e in etiquetas_shein if _total_qtd(e) > 1]
+        simples.sort(key=_chave)
+        multiplos.sort(key=_chave)
+        return simples + multiplos
 
     def gerar_pdf_shein(self, etiquetas_shein, caminho_saida):
         """Gera PDF final Shein: etiqueta + barcode vertical + tabela de produtos.
+        Suporta dois formatos:
+        - DANFE: barcode lateral + tabela de texto gerada
+        - Declaracao: etiqueta full-width + tabela recortada da declaracao
         Formato: 150x225mm por pagina.
         """
+        # Ordenar: qtd=1 primeiro, por Modelo > Cor > Tamanho
+        etiquetas_shein = self._ordenar_etiquetas_shein(etiquetas_shein)
+
         larg = self.LARGURA_PT       # 150mm = 425.2pt
         alt = self.ALTURA_CPF_PT     # 225mm = 637.8pt
         margem_esq = self.MARGEM_ESQUERDA
@@ -3591,11 +3918,8 @@ class ProcessadorEtiquetasShopee:
         fonte = "helv"
         fonte_bold = "hebo"
 
-        # Largura da faixa lateral do barcode vertical
+        # Largura da faixa lateral do barcode vertical (so para DANFE)
         faixa_lateral = 28
-
-        # Area util para a etiqueta (sem a faixa lateral)
-        area_etiq_larg = larg - margem_esq - margem_dir - faixa_lateral
 
         # Abrir PDF de origem
         pdfs_usados = set(e['caminho_pdf'] for e in etiquetas_shein)
@@ -3610,157 +3934,185 @@ class ProcessadorEtiquetasShopee:
             clip_etiq = etq['clip_etiqueta']
             dados_danfe = etq['dados_danfe']
             dados_xml = etq.get('dados_xml', {})
-
-            chave = dados_xml.get('chave', '') or dados_danfe.get('chave', '')
-            nf = etq['nf']
-            produtos_shein = dados_danfe.get('produtos_shein', [])
-            total_itens = dados_danfe.get('total_itens', len(produtos_shein))
-            total_qtd = dados_danfe.get('total_qtd', 0)
+            tipo_par = etq.get('tipo_par', 'danfe')
 
             nova_pag = doc_saida.new_page(width=larg, height=alt)
-
-            # --- Renderizar etiqueta Shein ---
             etiq_larg = clip_etiq.width
             etiq_alt = clip_etiq.height
-            escala = area_etiq_larg / etiq_larg
-            alt_etiqueta = etiq_alt * escala
 
-            # Limitar altura para deixar espaco para tabela de produtos
-            max_alt_etiq = alt - margem_topo - margem_inf - 60  # espaco para tabela
-            if alt_etiqueta > max_alt_etiq:
-                escala = max_alt_etiq / etiq_alt
-                alt_etiqueta = max_alt_etiq
-                area_etiq_larg_real = etiq_larg * escala
-            else:
-                area_etiq_larg_real = area_etiq_larg
+            if tipo_par == 'declaracao':
+                # ============================================================
+                # DECLARACAO DE CONTEUDO: etiqueta full-width + tabela recortada
+                # ============================================================
+                area_util_larg = larg - margem_esq - margem_dir
 
-            dest_rect = fitz.Rect(
-                margem_esq,
-                margem_topo,
-                margem_esq + area_etiq_larg_real,
-                margem_topo + alt_etiqueta
-            )
-            nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_etiq_idx, clip=clip_etiq)
+                # Detectar espaco necessario para tabela
+                clip_tabela = etq.get('clip_tabela_declaracao')
+                espaco_tabela = 80  # default
+                if clip_tabela:
+                    tab_h = clip_tabela.height
+                    tab_w = clip_tabela.width
+                    escala_tab_prev = area_util_larg / tab_w if tab_w > 0 else 1
+                    espaco_tabela = max(espaco_tabela, tab_h * escala_tab_prev + 8)
 
-            # --- Faixa lateral direita: barcode vertical + texto ---
-            x_lateral = larg - margem_dir - faixa_lateral
-            if chave:
-                # Texto "DANFE Simplificado" rotacionado
-                # Usando insert_text com morph para rotacao
-                nova_pag.insert_text(
-                    (larg - margem_dir - 5, margem_topo + 8),
-                    "DANFE",
-                    fontsize=7, fontname=fonte_bold, color=preto,
-                    rotate=270
+                escala = area_util_larg / etiq_larg
+                alt_etiqueta = etiq_alt * escala
+
+                # Limitar altura para caber tabela abaixo
+                max_alt_etiq = alt - margem_topo - margem_inf - espaco_tabela
+                if alt_etiqueta > max_alt_etiq:
+                    escala = max_alt_etiq / etiq_alt
+                    alt_etiqueta = max_alt_etiq
+                    area_etiq_larg_real = etiq_larg * escala
+                else:
+                    area_etiq_larg_real = area_util_larg
+
+                dest_rect = fitz.Rect(
+                    margem_esq, margem_topo,
+                    margem_esq + area_etiq_larg_real, margem_topo + alt_etiqueta
                 )
-                nova_pag.insert_text(
-                    (larg - margem_dir - 13, margem_topo + 8),
-                    "Simplificado",
-                    fontsize=5, fontname=fonte, color=preto,
-                    rotate=270
-                )
+                nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_etiq_idx, clip=clip_etiq)
 
-                # Chave formatada rotacionada
-                chave_fmt = ' '.join([chave[i:i+4] for i in range(0, len(chave), 4)])
-                nova_pag.insert_text(
-                    (x_lateral + 5, margem_topo + 8),
-                    f"Chave: {chave_fmt}",
-                    fontsize=4, fontname=fonte, color=preto,
-                    rotate=270
-                )
+                # --- Colar tabela "IDENTIFICACAO DOS BENS" recortada ---
+                if clip_tabela:
+                    y_tabela = margem_topo + alt_etiqueta + 3
+                    tab_w = clip_tabela.width
+                    tab_h = clip_tabela.height
+                    escala_tab = area_util_larg / tab_w if tab_w > 0 else 1
+                    tab_h_escalada = tab_h * escala_tab
 
-                # Barcode vertical da chave
-                try:
-                    svg_bytes = self._gerar_barcode_svg(chave)
-                    # Barcode na faixa lateral, vertical
-                    barcode_rect = fitz.Rect(
-                        x_lateral + 8, margem_topo + 10,
-                        x_lateral + faixa_lateral - 2, margem_topo + alt_etiqueta - 10
+                    # Garantir que nao excede a pagina
+                    espaco_disponivel = alt - y_tabela - margem_inf - 14  # 14pt para p.N
+                    if tab_h_escalada > espaco_disponivel:
+                        escala_tab = espaco_disponivel / tab_h if tab_h > 0 else 1
+                        tab_h_escalada = espaco_disponivel
+                        tab_w_escalada = tab_w * escala_tab
+                    else:
+                        tab_w_escalada = area_util_larg
+
+                    dest_tab = fitz.Rect(
+                        margem_esq, y_tabela,
+                        margem_esq + tab_w_escalada, y_tabela + tab_h_escalada
                     )
-                    nova_pag.insert_image(barcode_rect, stream=svg_bytes, rotate=90)
-                except Exception:
-                    pass
+                    # Usar show_pdf_page com clip para copiar a tabela exata
+                    pag_decl_idx = etq['pag_danfe_idx']
+                    nova_pag.show_pdf_page(dest_tab, doc_entrada, pag_decl_idx, clip=clip_tabela)
 
-            # --- Tabela de produtos no rodape ---
-            fs = self.fonte_produto
-            line_h = fs + 2
-            y = margem_topo + alt_etiqueta + 3
-            col_codigo = margem_esq + 2
-            col_prod = margem_esq + 95
-            col_qtd = larg - margem_dir - 25
+            else:
+                # ============================================================
+                # DANFE: pipeline existente (inalterado) — barcode lateral + tabela texto
+                # ============================================================
+                chave = dados_xml.get('chave', '') or dados_danfe.get('chave', '')
+                nf = etq['nf']
+                produtos_shein = dados_danfe.get('produtos_shein', [])
+                total_itens = dados_danfe.get('total_itens', len(produtos_shein))
+                total_qtd = dados_danfe.get('total_qtd', 0)
 
-            # Linha superior
-            nova_pag.draw_line(
-                (margem_esq, y), (larg - margem_dir, y),
-                color=preto, width=0.8
-            )
-            y += line_h
+                area_etiq_larg = larg - margem_esq - margem_dir - faixa_lateral
+                escala = area_etiq_larg / etiq_larg
+                alt_etiqueta = etiq_alt * escala
 
-            # Cabecalho
-            nova_pag.insert_text(
-                (col_codigo, y), "CÓDIGO",
-                fontsize=fs, fontname=fonte_bold, color=preto
-            )
-            header_prod = f"PROD. (NF: {nf} T-ITENS: {total_itens} T-QUANT: {total_qtd})"
-            nova_pag.insert_text(
-                (col_prod, y), header_prod,
-                fontsize=fs, fontname=fonte_bold, color=preto
-            )
-            nova_pag.insert_text(
-                (col_qtd, y), "Q.",
-                fontsize=fs, fontname=fonte_bold, color=preto
-            )
-            y += 2
-            nova_pag.draw_line(
-                (margem_esq, y), (larg - margem_dir, y),
-                color=preto, width=0.5
-            )
-            y_top_tabela = margem_topo + alt_etiqueta + 3
-            y += line_h
+                # Limitar altura para deixar espaco para tabela de produtos
+                max_alt_etiq = alt - margem_topo - margem_inf - 60
+                if alt_etiqueta > max_alt_etiq:
+                    escala = max_alt_etiq / etiq_alt
+                    alt_etiqueta = max_alt_etiq
+                    area_etiq_larg_real = etiq_larg * escala
+                else:
+                    area_etiq_larg_real = area_etiq_larg
 
-            # Linhas de produtos
-            fs_destaque = int(round(fs * 1.5))
-            fs_qtd = int(round(fs_destaque * 1.5))  # quantidade 50% maior
-            for prod in produtos_shein[:5]:
-                atrib = prod.get('atributos', '')
-                modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
-                qtd = str(int(float(prod.get('qtd', '1'))))
-
-                # Coluna 1: Modelo
-                nova_pag.insert_text(
-                    (col_codigo, y), modelo,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                dest_rect = fitz.Rect(
+                    margem_esq, margem_topo,
+                    margem_esq + area_etiq_larg_real, margem_topo + alt_etiqueta
                 )
-                # Coluna 2: Cor, Tamanho
-                cor_tam = f"{cor},{tamanho}" if cor and tamanho else (cor or tamanho or '-')
-                if len(cor_tam) > 30:
-                    cor_tam = cor_tam[:28] + '..'
-                nova_pag.insert_text(
-                    (col_prod, y), cor_tam,
-                    fontsize=fs_destaque, fontname=fonte_bold, color=preto
-                )
-                # Coluna 3: Quantidade
-                nova_pag.insert_text(
-                    (col_qtd, y), qtd,
-                    fontsize=fs_qtd, fontname=fonte_bold, color=preto
+                nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_etiq_idx, clip=clip_etiq)
+
+                # --- Faixa lateral direita: barcode vertical + texto ---
+                x_lateral = larg - margem_dir - faixa_lateral
+                if chave:
+                    nova_pag.insert_text(
+                        (larg - margem_dir - 5, margem_topo + 8),
+                        "DANFE", fontsize=7, fontname=fonte_bold, color=preto, rotate=270
+                    )
+                    nova_pag.insert_text(
+                        (larg - margem_dir - 13, margem_topo + 8),
+                        "Simplificado", fontsize=5, fontname=fonte, color=preto, rotate=270
+                    )
+                    chave_fmt = ' '.join([chave[i:i+4] for i in range(0, len(chave), 4)])
+                    nova_pag.insert_text(
+                        (x_lateral + 5, margem_topo + 8),
+                        f"Chave: {chave_fmt}",
+                        fontsize=4, fontname=fonte, color=preto, rotate=270
+                    )
+                    try:
+                        svg_bytes = self._gerar_barcode_svg(chave)
+                        barcode_rect = fitz.Rect(
+                            x_lateral + 8, margem_topo + 10,
+                            x_lateral + faixa_lateral - 2, margem_topo + alt_etiqueta - 10
+                        )
+                        nova_pag.insert_image(barcode_rect, stream=svg_bytes, rotate=90)
+                    except Exception:
+                        pass
+
+                # --- Tabela de produtos no rodape ---
+                fs = self.fonte_produto
+                line_h = fs + 2
+                y = margem_topo + alt_etiqueta + 3
+                col_codigo = margem_esq + 2
+                col_prod = margem_esq + 95
+                col_qtd = larg - margem_dir - 25
+
+                nova_pag.draw_line(
+                    (margem_esq, y), (larg - margem_dir, y), color=preto, width=0.8
                 )
                 y += line_h
 
-            # Linha inferior
-            nova_pag.draw_line(
-                (margem_esq, y), (larg - margem_dir, y),
-                color=preto, width=0.8
-            )
+                nova_pag.insert_text(
+                    (col_codigo, y), "CÓDIGO", fontsize=fs, fontname=fonte_bold, color=preto
+                )
+                header_prod = f"PROD. (NF: {nf} T-ITENS: {total_itens} T-QUANT: {total_qtd})"
+                nova_pag.insert_text(
+                    (col_prod, y), header_prod, fontsize=fs, fontname=fonte_bold, color=preto
+                )
+                nova_pag.insert_text(
+                    (col_qtd, y), "Q.", fontsize=fs, fontname=fonte_bold, color=preto
+                )
+                y += 2
+                nova_pag.draw_line(
+                    (margem_esq, y), (larg - margem_dir, y), color=preto, width=0.5
+                )
+                y_top_tabela = margem_topo + alt_etiqueta + 3
+                y += line_h
 
-            # Linhas verticais
-            nova_pag.draw_line(
-                (col_prod - 5, y_top_tabela), (col_prod - 5, y),
-                color=preto, width=0.5
-            )
-            nova_pag.draw_line(
-                (col_qtd - 5, y_top_tabela), (col_qtd - 5, y),
-                color=preto, width=0.5
-            )
+                fs_destaque = int(round(fs * 1.5))
+                fs_qtd = int(round(fs_destaque * 1.5))
+                for prod in produtos_shein[:5]:
+                    atrib = prod.get('atributos', '')
+                    modelo, cor, tamanho = self._parsear_atributos_shein(atrib)
+                    qtd = str(int(float(prod.get('qtd', '1'))))
+                    nova_pag.insert_text(
+                        (col_codigo, y), modelo, fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                    )
+                    cor_tam = f"{cor},{tamanho}" if cor and tamanho else (cor or tamanho or '-')
+                    if len(cor_tam) > 30:
+                        cor_tam = cor_tam[:28] + '..'
+                    nova_pag.insert_text(
+                        (col_prod, y), cor_tam, fontsize=fs_destaque, fontname=fonte_bold, color=preto
+                    )
+                    nova_pag.insert_text(
+                        (col_qtd, y), qtd, fontsize=fs_qtd, fontname=fonte_bold, color=preto
+                    )
+                    y += line_h
+
+                nova_pag.draw_line(
+                    (margem_esq, y), (larg - margem_dir, y), color=preto, width=0.8
+                )
+                nova_pag.draw_line(
+                    (col_prod - 5, y_top_tabela), (col_prod - 5, y), color=preto, width=0.5
+                )
+                nova_pag.draw_line(
+                    (col_qtd - 5, y_top_tabela), (col_qtd - 5, y), color=preto, width=0.5
+                )
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(
@@ -4068,15 +4420,8 @@ class ProcessadorEtiquetasShopee:
 
             _render_pagina(linhas, destino)
 
-        # Alias opcional da primeira pagina quando ha multipaginas.
-        if total_paginas > 1:
-            try:
-                alias_p1 = f"{base}_p01{ext}"
-                if os.path.abspath(alias_p1) != os.path.abspath(caminho_imagem):
-                    with open(caminho_imagem, 'rb') as rf, open(alias_p1, 'wb') as wf:
-                        wf.write(rf.read())
-            except Exception:
-                pass
+        # Alias p01 removido — causava envio duplicado via WhatsApp
+        # (listar_arquivos_loja pegava tanto o base quanto o _p01)
 
         return primeira_imagem or caminho_imagem
 

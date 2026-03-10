@@ -7,7 +7,15 @@ Limite de IPs por plano para evitar compartilhamento de senha
 import os
 import re
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# Fuso horario de Brasilia (UTC-3)
+_FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Retorna datetime atual no fuso de Brasilia (UTC-3), sem tzinfo (naive)."""
+    return datetime.now(_FUSO_BRASILIA).replace(tzinfo=None)
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
 from models import db, User, Session, PLANOS
@@ -85,7 +93,7 @@ def register():
     if smtp_configurado():
         codigo = str(random.randint(100000, 999999))
         user.email_code = codigo
-        user.email_code_expires = datetime.utcnow() + timedelta(minutes=10)
+        user.email_code_expires = _agora_brasil() + timedelta(minutes=10)
         user.email_verified = False
     else:
         # Sem SMTP: auto-verificar
@@ -170,6 +178,22 @@ def logout():
     return jsonify({"mensagem": "Logout realizado"})
 
 
+@auth_bp.route('/api/auth/refresh', methods=['POST'])
+@jwt_required()
+def refresh_token():
+    """Renova o token JWT mantendo a mesma sessao."""
+    user_id = get_jwt_identity()
+    claims = get_jwt()
+    token_id = claims.get("sid", "")
+
+    user = User.query.get(int(user_id))
+    if not user or not user.is_active:
+        return jsonify({"erro": "Sessao invalida"}), 401
+
+    new_token = create_access_token(identity=str(user.id), additional_claims={"sid": token_id})
+    return jsonify({"token": new_token, "user": user.to_dict()})
+
+
 @auth_bp.route('/api/auth/me')
 @jwt_required()
 def me():
@@ -223,7 +247,7 @@ def verify_email():
     if user.email_code != codigo:
         return jsonify({"erro": "Codigo incorreto"}), 400
 
-    if user.email_code_expires and datetime.utcnow() > user.email_code_expires:
+    if user.email_code_expires and _agora_brasil() > user.email_code_expires:
         return jsonify({"erro": "Codigo expirado. Solicite um novo."}), 400
 
     user.email_verified = True
@@ -254,7 +278,7 @@ def resend_code():
 
     codigo = str(random.randint(100000, 999999))
     user.email_code = codigo
-    user.email_code_expires = datetime.utcnow() + timedelta(minutes=10)
+    user.email_code_expires = _agora_brasil() + timedelta(minutes=10)
     db.session.commit()
 
     enviado = enviar_codigo_verificacao(user.email, codigo)
@@ -286,7 +310,7 @@ def forgot_password():
 
     codigo = str(random.randint(100000, 999999))
     user.reset_code = codigo
-    user.reset_code_expires = datetime.utcnow() + timedelta(minutes=15)
+    user.reset_code_expires = _agora_brasil() + timedelta(minutes=15)
     db.session.commit()
 
     enviado = enviar_codigo_reset_senha(email, codigo)
@@ -320,7 +344,7 @@ def reset_password():
     if not user.reset_code or user.reset_code != codigo:
         return jsonify({"erro": "Codigo invalido ou expirado"}), 400
 
-    if user.reset_code_expires and datetime.utcnow() > user.reset_code_expires:
+    if user.reset_code_expires and _agora_brasil() > user.reset_code_expires:
         return jsonify({"erro": "Codigo expirado. Solicite um novo."}), 400
 
     user.set_password(nova_senha)
@@ -411,7 +435,7 @@ def admin_liberar_acesso():
 
     user.plano = plano
     # Calcular expiracao
-    base = user.plano_expira if user.plano_expira and user.plano_expira > datetime.utcnow() else datetime.utcnow()
+    base = user.plano_expira if user.plano_expira and user.plano_expira > _agora_brasil() else _agora_brasil()
     user.plano_expira = base + timedelta(days=meses * 30)
     db.session.commit()
 

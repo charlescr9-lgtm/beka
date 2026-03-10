@@ -6,7 +6,15 @@ Sistema de cupom de indicacao com meses gratis
 
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# Fuso horario de Brasilia (UTC-3)
+_FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Retorna datetime atual no fuso de Brasilia (UTC-3), sem tzinfo (naive)."""
+    return datetime.now(_FUSO_BRASILIA).replace(tzinfo=None)
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from models import db, User, Payment, PLANOS
@@ -189,7 +197,7 @@ def _processar_pagamento(payment_id):
             periodo = PERIODOS.get(periodo_id, PERIODOS["mensal"])
             meses = periodo["meses"]
             # Se ja tem plano ativo, estender; senao, a partir de agora
-            base = user.plano_expira if user.plano_expira and user.plano_expira > datetime.utcnow() else datetime.utcnow()
+            base = user.plano_expira if user.plano_expira and user.plano_expira > _agora_brasil() else _agora_brasil()
             # Adicionar meses gratis acumulados
             meses_bonus = user.meses_gratis or 0
             user.plano_expira = base + timedelta(days=(meses + meses_bonus) * 30)

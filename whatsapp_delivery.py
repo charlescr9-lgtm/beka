@@ -17,8 +17,6 @@ from typing import Dict, List, Tuple, Set
 
 _ALLOWED_FILE_EXTENSIONS = {
     ".pdf",
-    ".xlsx",
-    ".xls",
     ".png",
     ".jpg",
     ".jpeg",
@@ -28,8 +26,6 @@ _ALLOWED_FILE_EXTENSIONS = {
 
 _EXT_ORDER = {
     ".pdf": 0,
-    ".xlsx": 1,
-    ".xls": 1,
     ".png": 2,
     ".jpg": 2,
     ".jpeg": 2,
@@ -218,8 +214,19 @@ def resolver_contatos_loja(
     # Novo modelo: contato com selecao explicita de lojas/grupos.
     for c in (contatos_todos or []):
         lojas_alvo = _contato_lojas_alvo_norm(c, grupos_map or {})
-        if lojas_alvo and nome_key in lojas_alvo:
+        if not lojas_alvo:
+            continue
+        # Match exato
+        if nome_key in lojas_alvo:
             encontrados.append(c)
+            continue
+        # Match por substring: "beka" match com "beka.shoes",
+        # "beka shein" match com "beka_shein_store", etc.
+        if nome_key:
+            for alvo in lojas_alvo:
+                if alvo and (alvo in nome_key or nome_key in alvo):
+                    encontrados.append(c)
+                    break
 
     return _dedupe_contatos(encontrados)
 

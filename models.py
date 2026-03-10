@@ -7,8 +7,16 @@ Inclui: Users, Sessions, Payments, WhatsAppContacts, Schedules, UpSellerConfig, 
 import os
 import uuid
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from flask_sqlalchemy import SQLAlchemy
+
+# Fuso horario de Brasilia (UTC-3)
+_FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Retorna datetime atual no fuso de Brasilia (UTC-3), sem tzinfo (naive)."""
+    return datetime.now(_FUSO_BRASILIA).replace(tzinfo=None)
 from flask_bcrypt import Bcrypt
 from cryptography.fernet import Fernet
 
@@ -35,6 +43,7 @@ PLANOS = {
     "basico":       {"nome": "Basico",       "max_ips": 1, "limite_proc": -1, "valor": 39.90},
     "pro":          {"nome": "Pro",          "max_ips": 2, "limite_proc": -1, "valor": 59.90},
     "empresarial":  {"nome": "Empresarial",  "max_ips": 5, "limite_proc": -1, "valor": 89.90},
+    "unlimited":    {"nome": "Admin",        "max_ips": 99, "limite_proc": -1, "valor": 0},
 }
 
 
@@ -65,7 +74,7 @@ class User(db.Model):
     plano = db.Column(db.String(20), default='free')
     processamentos_mes = db.Column(db.Integer, default=0)
     mes_atual = db.Column(db.String(7), default='')
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
     is_active = db.Column(db.Boolean, default=True)
 
     # Verificacao de email
@@ -111,7 +120,7 @@ class User(db.Model):
         info = self.get_plano_info()
         if info["limite_proc"] == -1:
             return True
-        mes = datetime.utcnow().strftime('%Y-%m')
+        mes = _agora_brasil().strftime('%Y-%m')
         if self.mes_atual != mes:
             self.mes_atual = mes
             self.processamentos_mes = 0
@@ -119,7 +128,7 @@ class User(db.Model):
         return self.processamentos_mes < info["limite_proc"]
 
     def registrar_processamento(self):
-        mes = datetime.utcnow().strftime('%Y-%m')
+        mes = _agora_brasil().strftime('%Y-%m')
         if self.mes_atual != mes:
             self.mes_atual = mes
             self.processamentos_mes = 0
@@ -167,7 +176,7 @@ class User(db.Model):
         sessao_existente = Session.query.filter_by(user_id=self.id, ip=ip).first()
         if sessao_existente:
             sessao_existente.token_id = str(uuid.uuid4())
-            sessao_existente.last_seen = datetime.utcnow()
+            sessao_existente.last_seen = _agora_brasil()
             db.session.commit()
             return sessao_existente.token_id
 
@@ -226,8 +235,8 @@ class Session(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     token_id = db.Column(db.String(64), unique=True, nullable=False)
     ip = db.Column(db.String(45), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    last_seen = db.Column(db.DateTime, default=_agora_brasil)
 
 
 class Payment(db.Model):
@@ -239,8 +248,8 @@ class Payment(db.Model):
     mercadopago_id = db.Column(db.String(100), default='')
     plano_contratado = db.Column(db.String(20), default='')
     valor = db.Column(db.Float, default=0.0)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    updated_at = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
 
 
 # ============================================================
@@ -260,11 +269,20 @@ class WhatsAppContact(db.Model):
     lojas_json = db.Column(db.Text, default='[]')            # Lista de lojas alvo (nomes)
     grupos_json = db.Column(db.Text, default='[]')           # Lista de grupos alvo (nomes)
     ativo = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    horario = db.Column(db.String(5), default='')            # LEGADO - manter para compatibilidade
+    dias_semana = db.Column(db.String(50), default='')       # LEGADO - manter para compatibilidade
+    horarios_json = db.Column(db.Text, default='[]')         # [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
+    resumo_geral = db.Column(db.Boolean, default=False)      # Recebe resumo consolidado de todas as lojas
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
 
     user = db.relationship('User', backref=db.backref('whatsapp_contacts', lazy=True))
 
     def to_dict(self):
+        horarios = []
+        try:
+            horarios = json.loads(self.horarios_json or '[]')
+        except Exception:
+            horarios = []
         return {
             "id": self.id,
             "loja_cnpj": self.loja_cnpj,
@@ -274,6 +292,8 @@ class WhatsAppContact(db.Model):
             "lojas": _json_list(self.lojas_json),
             "grupos": _json_list(self.grupos_json),
             "ativo": self.ativo,
+            "horarios": horarios,
+            "resumo_geral": bool(self.resumo_geral),
             "created_at": self.created_at.strftime("%d/%m/%Y %H:%M") if self.created_at else '',
         }
 
@@ -294,12 +314,14 @@ class Schedule(db.Model):
     baixar_upseller = db.Column(db.Boolean, default=True)
     processar_etiquetas = db.Column(db.Boolean, default=True)
     enviar_whatsapp = db.Column(db.Boolean, default=True)
+    enviar_email = db.Column(db.Boolean, default=False)
     lojas_json = db.Column(db.Text, default='[]')            # Lojas alvo do agendamento
     grupos_json = db.Column(db.Text, default='[]')           # Grupos alvo do agendamento
+    modo_pipeline = db.Column(db.String(20), default='completo')  # 'completo' | 'direto'
 
     # Controle interno
     job_id = db.Column(db.String(100), nullable=True)         # ID do APScheduler
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
     ultima_execucao = db.Column(db.DateTime, nullable=True)
     ultimo_status = db.Column(db.String(20), default='')      # "sucesso" | "erro" | "parcial"
 
@@ -315,6 +337,8 @@ class Schedule(db.Model):
             "baixar_upseller": self.baixar_upseller,
             "processar_etiquetas": self.processar_etiquetas,
             "enviar_whatsapp": self.enviar_whatsapp,
+            "enviar_email": bool(getattr(self, 'enviar_email', False)),
+            "modo_pipeline": getattr(self, 'modo_pipeline', 'completo') or 'completo',
             "lojas": _json_list(self.lojas_json),
             "grupos": _json_list(self.grupos_json),
             "job_id": self.job_id or '',
@@ -336,7 +360,7 @@ class UpSellerConfig(db.Model):
     headless = db.Column(db.Boolean, default=True)
     ultima_sincronizacao = db.Column(db.DateTime, nullable=True)
     status_conexao = db.Column(db.String(20), default='')     # "ok" | "erro" | "nao_testado"
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
 
     user = db.relationship('User', backref=db.backref('upseller_config', uselist=False, lazy=True))
 
@@ -367,7 +391,7 @@ class ExecutionLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     schedule_id = db.Column(db.Integer, db.ForeignKey('schedules.id'), nullable=True)
     tipo = db.Column(db.String(20), nullable=False)           # "manual" | "agendado"
-    inicio = db.Column(db.DateTime, default=datetime.utcnow)
+    inicio = db.Column(db.DateTime, default=_agora_brasil)
     fim = db.Column(db.DateTime, nullable=True)
     status = db.Column(db.String(20), default='executando')   # "sucesso" | "erro" | "parcial" | "executando"
 
@@ -411,7 +435,7 @@ class Loja(db.Model):
     pedidos_pendentes = db.Column(db.Integer, default=0)
     notas_pendentes = db.Column(db.Integer, default=0)       # "Para Emitir"
     etiquetas_pendentes = db.Column(db.Integer, default=0)   # "Para Imprimir"
-    ultima_atualizacao = db.Column(db.DateTime, default=datetime.utcnow)
+    ultima_atualizacao = db.Column(db.DateTime, default=_agora_brasil)
     ativo = db.Column(db.Boolean, default=True)
 
     __table_args__ = (db.UniqueConstraint('user_id', 'nome', name='uq_loja_user_nome'),)
@@ -440,8 +464,16 @@ class EmailContact(db.Model):
     lojas_json = db.Column(db.Text, default='[]')            # Lista de lojas alvo (nomes)
     grupos_json = db.Column(db.Text, default='[]')           # Lista de grupos alvo (nomes)
     ativo = db.Column(db.Boolean, default=True)
+    horario = db.Column(db.String(5), default='')            # LEGADO - manter para compatibilidade
+    dias_semana = db.Column(db.String(50), default='')       # LEGADO - manter para compatibilidade
+    horarios_json = db.Column(db.Text, default='[]')         # [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
 
     def to_dict(self):
+        horarios = []
+        try:
+            horarios = json.loads(self.horarios_json or '[]')
+        except Exception:
+            horarios = []
         return {
             "id": self.id,
             "email": self.email,
@@ -450,6 +482,7 @@ class EmailContact(db.Model):
             "lojas": _json_list(self.lojas_json),
             "grupos": _json_list(self.grupos_json),
             "ativo": self.ativo,
+            "horarios": horarios,
         }
 
 
@@ -470,12 +503,12 @@ class WhatsAppQueueItem(db.Model):
     status = db.Column(db.String(20), default='pending', index=True)
     tentativas = db.Column(db.Integer, default=0)
     max_tentativas = db.Column(db.Integer, default=5)
-    next_attempt_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    next_attempt_at = db.Column(db.DateTime, default=_agora_brasil, index=True)
     last_error = db.Column(db.Text, default='')
     message_id = db.Column(db.String(200), default='')
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    updated_at = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
     sent_at = db.Column(db.DateTime, nullable=True)
 
     user = db.relationship('User', backref=db.backref('whatsapp_queue', lazy=True))
@@ -525,8 +558,8 @@ class MarketplaceApiConfig(db.Model):
     # nao retorna o state param. Funciona cross-worker (persiste no DB).
     oauth_pending_at = db.Column(db.DateTime, nullable=True)
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    updated_at = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
 
     __table_args__ = (
         db.UniqueConstraint('user_id', 'marketplace', name='uq_marketplace_cfg_user_marketplace'),
@@ -609,7 +642,7 @@ class MarketplaceLoja(db.Model):
     pedidos_pendentes = db.Column(db.Integer, default=0)
     notas_pendentes = db.Column(db.Integer, default=0)
     etiquetas_pendentes = db.Column(db.Integer, default=0)
-    ultima_atualizacao = db.Column(db.DateTime, default=datetime.utcnow)
+    ultima_atualizacao = db.Column(db.DateTime, default=_agora_brasil)
     ativo = db.Column(db.Boolean, default=True)
 
     __table_args__ = (

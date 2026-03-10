@@ -9,6 +9,14 @@ import sys
 import json
 import time
 import threading
+
+# Forcar UTF-8 no stdout/stderr do Windows (evita crash 'charmap' em print com acentos)
+if sys.platform == "win32":
+    import io as _io
+    for _stream_name in ("stdout", "stderr"):
+        _stream = getattr(sys, _stream_name, None)
+        if _stream and hasattr(_stream, "buffer"):
+            setattr(sys, _stream_name, _io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace"))
 import subprocess
 import shutil
 import hmac
@@ -19,10 +27,18 @@ import re as _re
 import unicodedata
 from urllib.parse import urlparse, quote_plus, urlencode
 from datetime import datetime, timedelta, timezone
+
+# Fuso horario de Brasilia (UTC-3) - usado em TODOS os timestamps visiveis ao usuario
+_FUSO_BRASILIA = timezone(timedelta(hours=-3))
+
+
+def _agora_brasil():
+    """Retorna datetime atual no fuso de Brasilia (UTC-3), sem tzinfo (naive)."""
+    return datetime.now(_FUSO_BRASILIA).replace(tzinfo=None)
 from collections import defaultdict
-from flask import Flask, request, jsonify, send_from_directory, send_file, redirect
+from flask import Flask, request, jsonify, send_from_directory, send_file, redirect, make_response
 from flask_cors import CORS
-from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, get_jwt
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, get_jwt, create_access_token
 import xmltodict
 import pandas as pd
 import openpyxl
@@ -204,7 +220,7 @@ def _register_pending_oauth(user_id: int, **_kwargs):
             user_id=int(user_id), marketplace="shopee"
         ).first()
         if cfg:
-            cfg.oauth_pending_at = datetime.utcnow()
+            cfg.oauth_pending_at = _agora_brasil()
             db.session.commit()
     except Exception as e:
         print(f"[OAUTH] _register_pending_oauth FALHOU: {e}", flush=True, file=sys.stderr)
@@ -215,7 +231,7 @@ def _find_pending_oauth_cfg():
     Retorna o objeto cfg direto (ja com partner_key_enc no modelo).
     Funciona cross-worker porque le do DB."""
     try:
-        cutoff = datetime.utcnow() - timedelta(seconds=_PENDING_OAUTH_MAX_AGE)
+        cutoff = _agora_brasil() - timedelta(seconds=_PENDING_OAUTH_MAX_AGE)
         cfg = MarketplaceApiConfig.query.filter(
             MarketplaceApiConfig.marketplace == "shopee",
             MarketplaceApiConfig.oauth_pending_at.isnot(None),
@@ -245,9 +261,57 @@ db.init_app(app)
 bcrypt.init_app(app)
 jwt = JWTManager(app)
 
+
+# ----------------------------------------------------------------
+# Permitir JWT via query param para endpoints de download (pywebview compat)
+# ----------------------------------------------------------------
+@app.before_request
+def _jwt_query_param_fallback():
+    """Injeta JWT do query param no header para endpoints de download.
+    pywebview/WebView2 nao suporta blob download via JS, entao usamos
+    window.open(url?jwt=...) que precisa do token no query string."""
+    if '/download' in (request.path or ''):
+        qt = request.args.get('jwt')
+        if qt and 'authorization' not in {k.lower() for k in request.headers.keys()}:
+            request.environ['HTTP_AUTHORIZATION'] = f'Bearer {qt}'
+
+
 # Registrar blueprints
 app.register_blueprint(auth_bp)
 app.register_blueprint(payments_bp)
+
+
+# ----------------------------------------------------------------
+# Auto-login local (desktop) — elimina tela de login
+# ----------------------------------------------------------------
+@app.route('/api/auth/local-token', methods=['POST'])
+def _local_auto_token():
+    """Retorna token JWT para o primeiro usuario local.
+    Usado pelo frontend desktop para pular tela de login."""
+    from flask_jwt_extended import create_access_token
+    user = User.query.first()
+    if not user:
+        # Criar usuario local padrao se nao existir
+        user = User(email='local@beka.app', nome='Beka Local')
+        user.set_password('local')
+        user.is_active = True
+        user.email_verified = True
+        user.plano = 'vitalicio'
+        db.session.add(user)
+        db.session.commit()
+    # Criar/reusar sessao no banco para passar na validacao do blocklist
+    token_id = "local-desktop"
+    sessao = Session.query.filter_by(user_id=user.id, token_id=token_id).first()
+    if not sessao:
+        sessao = Session(user_id=user.id, token_id=token_id, ip="127.0.0.1")
+        db.session.add(sessao)
+        db.session.commit()
+    token = create_access_token(
+        identity=str(user.id),
+        additional_claims={"sid": token_id}
+    )
+    return jsonify({"token": token, "user": user.to_dict()})
+
 
 # Migrar banco existente (adicionar colunas novas em tabelas existentes)
 def _migrate_db():
@@ -313,6 +377,33 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN lojas_json TEXT DEFAULT '[]'"))
             if 'grupos_json' not in cols:
                 conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN grupos_json TEXT DEFAULT '[]'"))
+            if 'horario' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN horario VARCHAR(5) DEFAULT ''"))
+            if 'dias_semana' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN dias_semana TEXT DEFAULT '[]'"))
+            if 'horarios_json' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN horarios_json TEXT DEFAULT '[]'"))
+                # Migrar dados existentes de horario+dias_semana para horarios_json
+                try:
+                    rows = conn.execute(sqlalchemy.text(
+                        "SELECT id, horario, dias_semana FROM whatsapp_contacts WHERE horario IS NOT NULL AND horario != ''"
+                    )).fetchall()
+                    for row in rows:
+                        _id, _hor, _dias = row[0], row[1], row[2]
+                        if _hor and str(_hor).strip():
+                            dias_list = []
+                            try:
+                                dias_list = json.loads(_dias) if _dias else []
+                            except Exception:
+                                dias_list = [d.strip() for d in str(_dias).split(',') if d.strip()] if _dias else []
+                            if not dias_list:
+                                dias_list = ["seg","ter","qua","qui","sex","sab","dom"]
+                            h_json = json.dumps([{"dias": dias_list, "horas": [str(_hor).strip()]}], ensure_ascii=False)
+                            conn.execute(sqlalchemy.text(
+                                "UPDATE whatsapp_contacts SET horarios_json = :hj WHERE id = :id"
+                            ), {"hj": h_json, "id": _id})
+                except Exception as e_mig:
+                    print(f"[Migrate] Aviso ao migrar horarios whatsapp: {e_mig}")
 
     # Migrar contatos de email
     if 'email_contacts' in inspector.get_table_names():
@@ -322,6 +413,33 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN lojas_json TEXT DEFAULT '[]'"))
             if 'grupos_json' not in cols:
                 conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN grupos_json TEXT DEFAULT '[]'"))
+            if 'horario' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN horario VARCHAR(5) DEFAULT ''"))
+            if 'dias_semana' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN dias_semana TEXT DEFAULT '[]'"))
+            if 'horarios_json' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN horarios_json TEXT DEFAULT '[]'"))
+                # Migrar dados existentes de horario+dias_semana para horarios_json
+                try:
+                    rows = conn.execute(sqlalchemy.text(
+                        "SELECT id, horario, dias_semana FROM email_contacts WHERE horario IS NOT NULL AND horario != ''"
+                    )).fetchall()
+                    for row in rows:
+                        _id, _hor, _dias = row[0], row[1], row[2]
+                        if _hor and str(_hor).strip():
+                            dias_list = []
+                            try:
+                                dias_list = json.loads(_dias) if _dias else []
+                            except Exception:
+                                dias_list = [d.strip() for d in str(_dias).split(',') if d.strip()] if _dias else []
+                            if not dias_list:
+                                dias_list = ["seg","ter","qua","qui","sex","sab","dom"]
+                            h_json = json.dumps([{"dias": dias_list, "horas": [str(_hor).strip()]}], ensure_ascii=False)
+                            conn.execute(sqlalchemy.text(
+                                "UPDATE email_contacts SET horarios_json = :hj WHERE id = :id"
+                            ), {"hj": h_json, "id": _id})
+                except Exception as e_mig:
+                    print(f"[Migrate] Aviso ao migrar horarios email: {e_mig}")
 
     # Migrar agendamentos
     if 'schedules' in inspector.get_table_names():
@@ -331,6 +449,10 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN lojas_json TEXT DEFAULT '[]'"))
             if 'grupos_json' not in cols:
                 conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN grupos_json TEXT DEFAULT '[]'"))
+            if 'modo_pipeline' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN modo_pipeline VARCHAR(20) DEFAULT 'completo'"))
+            if 'enviar_email' not in cols:
+                conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN enviar_email BOOLEAN DEFAULT 0"))
 
     # Migrar marketplace_api_config — adicionar oauth_pending_at
     if 'marketplace_api_config' in inspector.get_table_names():
@@ -346,6 +468,20 @@ with app.app_context():
 
 # Inicializar scheduler de automacao
 beka_scheduler.init_app(app)
+
+# Recuperar execucoes que ficaram travadas (servidor morreu no meio)
+with app.app_context():
+    _stuck = ExecutionLog.query.filter_by(status="executando").all()
+    for _ex in _stuck:
+        _ex.status = "erro"
+        _ex.fim = _agora_brasil()
+        _ex.detalhes = json.dumps(
+            {"erro": "Execucao interrompida por reinicio do servidor"},
+            ensure_ascii=False
+        )
+    if _stuck:
+        db.session.commit()
+        print(f"[Startup] {len(_stuck)} execucao(oes) travada(s) marcada(s) como erro")
 
 # Emails com acesso vitalicio (plano empresarial permanente)
 EMAILS_VITALICIO = [
@@ -571,7 +707,10 @@ def _salvar_historico_geradas_raw(user_id, itens):
 
 
 def _parse_iso_dt(value):
-    """Parse ISO date flexivel, com fallback seguro."""
+    """Parse ISO date flexivel.
+    Timestamps com 'Z' ou offset sao convertidos para horario de Brasilia.
+    Timestamps naive sao assumidos como ja estando em Brasilia.
+    """
     if not value:
         return None
     try:
@@ -580,7 +719,8 @@ def _parse_iso_dt(value):
             txt = txt[:-1] + "+00:00"
         dt = datetime.fromisoformat(txt)
         if getattr(dt, "tzinfo", None) is not None:
-            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            # Converter para Brasilia e remover tzinfo
+            dt = dt.astimezone(_FUSO_BRASILIA).replace(tzinfo=None)
         return dt
     except Exception:
         return None
@@ -639,7 +779,7 @@ def _reconstruir_historico_geradas(user_id, horas=24):
         return 0
 
     horas = max(1, int(horas or 24))
-    cutoff = datetime.utcnow() - timedelta(hours=horas)
+    cutoff = _agora_brasil() - timedelta(hours=horas)
     itens = _carregar_historico_geradas_raw(user_id)
     by_arquivo = {}
     for it in itens:
@@ -770,7 +910,7 @@ def _limpar_historico_geradas_expirado(user_id, horas=24):
     if not pasta:
         return []
 
-    cutoff = datetime.utcnow() - timedelta(hours=max(1, int(horas or 24)))
+    cutoff = _agora_brasil() - timedelta(hours=max(1, int(horas or 24)))
     itens = _carregar_historico_geradas_raw(user_id)
     kept = []
 
@@ -813,7 +953,7 @@ def _registrar_historico_gerada(user_id, resultado, pasta_saida, origem="process
 
     _limpar_historico_geradas_expirado(user_id, horas=24)
 
-    stamp = datetime.utcnow()
+    stamp = _agora_brasil()
     stamp_token = stamp.strftime("%Y%m%d_%H%M%S_%f")
     nome_zip = f"geradas_{stamp.strftime('%Y%m%d_%H%M%S')}.zip"
     caminho_zip = os.path.join(pasta_hist, nome_zip)
@@ -847,7 +987,7 @@ def _registrar_historico_gerada(user_id, resultado, pasta_saida, origem="process
     entry_id = f"h{stamp_token}"
     item = {
         "id": entry_id,
-        "created_at": stamp.isoformat() + "Z",
+        "created_at": stamp.isoformat(),
         "arquivo": nome_zip,
         "origem": origem,
         "total_lojas": int((resultado or {}).get("total_lojas", 0) or 0),
@@ -873,7 +1013,7 @@ def _listar_historico_geradas(user_id, horas=24):
     _reconstruir_historico_geradas(user_id, horas=horas)
     _limpar_historico_geradas_expirado(user_id, horas=horas)
     itens = _carregar_historico_geradas_raw(user_id)
-    cutoff = datetime.utcnow() - timedelta(hours=horas)
+    cutoff = _agora_brasil() - timedelta(hours=horas)
 
     out = []
     for it in itens:
@@ -1009,7 +1149,7 @@ def version():
             'Gunicorn --workers 1',
             'Etiquetas + Retirada + PyMuPDF 1.24.14',
         ],
-        'startup_time': datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        'startup_time': _agora_brasil().strftime("%Y-%m-%d %H:%M:%S BRT"),
     }
     # Tentar ler arquivo VERSION se existir
     try:
@@ -1021,7 +1161,7 @@ def version():
 
 @app.route('/')
 def index():
-    """Serve o dashboard (verifica login no frontend)."""
+    """Serve o dashboard com auto-login (sem tela de login)."""
     import sys
     print(f"[ROTA /] method={request.method} args={dict(request.args)} url={request.url} remote={request.remote_addr} host={request.host}", flush=True, file=sys.stderr)
 
@@ -1035,7 +1175,37 @@ def index():
         print(f"[ROTA /] FALLBACK SHOPEE -> redirecionando para /api/marketplace/shopee/callback?{qs}", flush=True, file=sys.stderr)
         return redirect(f"/api/marketplace/shopee/callback?{qs}")
 
-    resp = send_from_directory('static', 'index.html')
+    # Auto-login: gerar token para o primeiro usuario admin
+    auto_token = ""
+    auto_user_json = "{}"
+    try:
+        user = User.query.first()
+        if user:
+            token = create_access_token(identity=str(user.id))
+            auto_token = token
+            auto_user_json = json.dumps(user.to_dict())
+    except Exception as e:
+        print(f"[ROTA /] auto-login erro: {e}", flush=True, file=sys.stderr)
+
+    # Ler index.html e injetar auto-login script antes do </head>
+    import os as _os
+    html_path = _os.path.join(app.static_folder, 'index.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+
+    if auto_token:
+        safe_user_json = auto_user_json.replace("'", "\\'")
+        inject_script = (
+            "<script>\n"
+            "// Auto-login injetado pelo servidor\n"
+            "localStorage.setItem('token', '" + auto_token + "');\n"
+            "localStorage.setItem('user', '" + safe_user_json + "');\n"
+            "</script>"
+        )
+        html = html.replace('</head>', inject_script + '\n</head>')
+
+    resp = make_response(html)
+    resp.content_type = 'text/html; charset=utf-8'
     resp.cache_control.no_store = True
     resp.cache_control.no_cache = True
     resp.cache_control.must_revalidate = True
@@ -1048,15 +1218,28 @@ def index():
 
 @app.route('/login')
 def login_page():
-    resp = send_from_directory('static', 'login.html')
-    resp.cache_control.no_store = True
-    resp.cache_control.no_cache = True
-    resp.cache_control.must_revalidate = True
-    resp.cache_control.max_age = 0
-    resp.headers['Pragma'] = 'no-cache'
-    resp.headers['Expires'] = '0'
-    resp.headers['X-Beka-Ui-Version'] = 'assinante-v2'
-    return resp
+    # Redireciona para o dashboard — login automatico via /api/auth/local-token
+    from flask import redirect
+    return redirect('/')
+
+
+@app.route('/auto-login')
+def auto_login_page():
+    """Auto-login para ambiente de desenvolvimento. Loga como admin@beka.com automaticamente."""
+    DEV_EMAIL = 'admin@beka.com'
+    user = User.query.filter_by(email=DEV_EMAIL).first()
+    if not user:
+        return redirect('/login')
+    token = create_access_token(identity=str(user.id))
+    user_data = user.to_dict() if hasattr(user, 'to_dict') else {"id": user.id, "email": user.email}
+    return f"""<!DOCTYPE html>
+<html><head><title>Auto Login</title></head><body>
+<script>
+localStorage.setItem('token', '{token}');
+localStorage.setItem('user', JSON.stringify({json.dumps(user_data)}));
+window.location.href = '/';
+</script>
+</body></html>"""
 
 
 # ----------------------------------------------------------------
@@ -1337,7 +1520,7 @@ def api_historico_geradas_download(item_id):
         return jsonify({"erro": "Arquivo de historico nao encontrado ou expirado"}), 404
 
     dt = _parse_iso_dt((match or {}).get("created_at"))
-    if dt is None or dt < (datetime.utcnow() - timedelta(hours=24)):
+    if dt is None or dt < (_agora_brasil() - timedelta(hours=24)):
         return jsonify({"erro": "Arquivo expirado (janela maxima: 24h)"}), 410
 
     pasta = _historico_geradas_dir(user_id)
@@ -2378,8 +2561,19 @@ def api_agrupar():
             caminho_cpf = os.path.join(pasta_grupo, f"cpf_{nome_grupo}_{timestamp}.pdf")
             total_pags += proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf)
 
+        # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
         caminho_xlsx = os.path.join(pasta_grupo, f"resumo_{nome_grupo}_{timestamp}.xlsx")
         n_skus, total_qtd = proc.gerar_resumo_xlsx(etiquetas_combinadas, caminho_xlsx, nome_grupo)
+        try:
+            caminho_jpeg = os.path.splitext(caminho_xlsx)[0] + ".jpeg"
+            proc.gerar_imagem_resumo_xlsx(caminho_xlsx, caminho_jpeg, max_pedidos_por_pagina=150)
+        except Exception as e_jpg:
+            print(f"[Agrupamento {nome_grupo}] Aviso: falha ao gerar JPEG resumo: {e_jpg}")
+        try:
+            if os.path.exists(caminho_xlsx):
+                os.remove(caminho_xlsx)
+        except Exception:
+            pass
 
         adicionar_log(estado, f"Agrupamento '{nome_grupo}': {', '.join(nomes_lojas)}", "success")
         adicionar_log(estado, f"  {total_pags} pags, {n_skus} SKUs, {total_qtd} un.", "info")
@@ -2565,6 +2759,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
 
             etiquetas_shein = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein_auto)
             if etiquetas_shein:
+                todas_etiquetas.extend(etiquetas_shein)
                 adicionar_log(estado, f"Shein: {len(etiquetas_shein)} etiquetas", "success")
 
             if not etiquetas_cpf_especial and not etiquetas_shein:
@@ -2671,6 +2866,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                         total_pags += total_retirada
                         adicionar_log(estado, f"  {nome_loja}: {total_retirada} etiquetas RETIRADA (cliente retira na loja - sem endereço)", "warning")
 
+                    # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
                     caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
                     n_skus, total_qtd = proc.gerar_resumo_xlsx(
                         etiquetas_loja,
@@ -2678,6 +2874,17 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                         nome_loja,
                         sku_somente=resumo_sku_somente
                     )
+                    try:
+                        caminho_jpeg = os.path.splitext(caminho_xlsx)[0] + ".jpeg"
+                        proc.gerar_imagem_resumo_xlsx(caminho_xlsx, caminho_jpeg, max_pedidos_por_pagina=150)
+                    except Exception as e_jpg:
+                        print(f"[{nome_loja}] Aviso: falha ao gerar JPEG resumo: {e_jpg}")
+                    # Remover XLSX — so o JPEG importa para envio
+                    try:
+                        if os.path.exists(caminho_xlsx):
+                            os.remove(caminho_xlsx)
+                    except Exception:
+                        pass
 
                     info_loja = {
                         "nome": nome_loja,
@@ -2691,7 +2898,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                         "skus": n_skus,
                         "total_qtd": total_qtd,
                         "pdf": pdf_nome,
-                        "xlsx": os.path.basename(caminho_xlsx),
+                        "xlsx": "",
                     }
                     resultado_lojas.append(info_loja)
 
@@ -2705,13 +2912,9 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     adicionar_log(estado, traceback.format_exc(), "error")
                     continue
 
-            adicionar_log(estado, "Gerando resumo geral...", "info")
-            timestamp_geral = datetime.now().strftime("%Y%m%d_%H%M%S")
-            caminho_resumo_geral = os.path.join(pasta_saida, f"resumo_geral_{timestamp_geral}.xlsx")
-            n_lojas_rg, total_un_rg = proc.gerar_resumo_geral_xlsx(
-                resultado_lojas, dict(lojas), caminho_resumo_geral
-            )
-            adicionar_log(estado, f"Resumo geral: {n_lojas_rg} lojas, {total_un_rg} unidades total", "success")
+            # Acumular resumo diario e gerar JPEG consolidado
+            _acumular_resumo_diario(user_id, resultado_lojas)
+            adicionar_log(estado, f"Processamento concluido: {len(resultado_lojas)} lojas", "success")
 
             # Aviso de etiquetas sem NF/declaracao
             if etiquetas_sem_nf:
@@ -2730,8 +2933,29 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 for etq in etiquetas_shein:
                     shein_por_cnpj[etq.get('cnpj', '')].append(etq)
 
+                # Mapear CNPJs Shein para nomes de loja do DB/UpSeller
+                # proc.get_nome_loja retorna o proprio CNPJ se nao tiver mapeamento
+                _shein_cnpj_nome_map = {}
+                try:
+                    lojas_db_shein = Loja.query.filter(
+                        Loja.user_id == int(user_id),
+                        Loja.nome.ilike('%shein%')
+                    ).all()
+                    if lojas_db_shein:
+                        # Se ha apenas 1 loja Shein no DB e 1 CNPJ, mapeia direto
+                        cnpjs_shein = list(shein_por_cnpj.keys())
+                        if len(lojas_db_shein) == 1 and len(cnpjs_shein) == 1:
+                            _shein_cnpj_nome_map[cnpjs_shein[0]] = lojas_db_shein[0].nome
+                        else:
+                            # Multiplas lojas Shein: tenta associar por ordem
+                            for idx, cnpj_sh in enumerate(sorted(cnpjs_shein)):
+                                if idx < len(lojas_db_shein):
+                                    _shein_cnpj_nome_map[cnpj_sh] = lojas_db_shein[idx].nome
+                except Exception as e_map:
+                    print(f"[Shein] Aviso: falha ao mapear nomes Shein: {e_map}")
+
                 for cnpj_s, etqs_s in shein_por_cnpj.items():
-                    nome_loja_s = proc.get_nome_loja(cnpj_s)
+                    nome_loja_s = _shein_cnpj_nome_map.get(cnpj_s) or proc.get_nome_loja(cnpj_s)
                     pasta_loja_s = os.path.join(pasta_saida, nome_loja_s)
                     if not os.path.exists(pasta_loja_s):
                         os.makedirs(pasta_loja_s)
@@ -2739,9 +2963,37 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     caminho_shein = os.path.join(pasta_loja_s, f"shein_{nome_loja_s}_{timestamp}.pdf")
                     total_shein = proc.gerar_pdf_shein(etqs_s, caminho_shein)
 
-                    # Gerar resumo XLSX Shein
+                    # Gerar XLSX temporario → JPEG do resumo Shein → deletar XLSX
                     caminho_xlsx_shein = os.path.join(pasta_loja_s, f"resumo_shein_{nome_loja_s}_{timestamp}.xlsx")
                     n_skus_s, total_qtd_s = proc.gerar_resumo_xlsx_shein(etqs_s, caminho_xlsx_shein, nome_loja_s)
+                    try:
+                        caminho_jpeg_shein = os.path.splitext(caminho_xlsx_shein)[0] + ".jpeg"
+                        proc.gerar_imagem_resumo_xlsx(caminho_xlsx_shein, caminho_jpeg_shein, max_pedidos_por_pagina=150)
+                    except Exception as e_jpg:
+                        print(f"[Shein] Aviso: falha ao gerar JPEG resumo: {e_jpg}")
+                    # Remover XLSX — so o JPEG importa para envio
+                    try:
+                        if os.path.exists(caminho_xlsx_shein):
+                            os.remove(caminho_xlsx_shein)
+                    except Exception:
+                        pass
+
+                    # Adicionar Shein ao resultado para WhatsApp delivery
+                    info_shein = {
+                        "nome": nome_loja_s,
+                        "cnpj": cnpj_s,
+                        "etiquetas": len(etqs_s),
+                        "paginas": total_shein,
+                        "simples": 0,
+                        "multi_produto": 0,
+                        "com_xml": 0,
+                        "sem_xml": 0,
+                        "skus": n_skus_s,
+                        "total_qtd": total_qtd_s,
+                        "pdf": os.path.basename(caminho_shein),
+                        "xlsx": "",
+                    }
+                    resultado_lojas.append(info_shein)
 
                     adicionar_log(estado, f"  Shein {nome_loja_s}: {total_shein} paginas, {n_skus_s} itens, {total_qtd_s} unidades", "success")
 
@@ -2786,6 +3038,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                             caminho_cpf_g = os.path.join(pasta_grupo, f"cpf_{nome_grupo}_{timestamp_g}.pdf")
                             total_pags_g += proc.gerar_pdf_cpf(etiq_cpf_g, caminho_cpf_g)
 
+                        # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
                         caminho_xlsx_g = os.path.join(pasta_grupo, f"resumo_{nome_grupo}_{timestamp_g}.xlsx")
                         proc.gerar_resumo_xlsx(
                             etiquetas_grupo,
@@ -2793,6 +3046,16 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                             nome_grupo,
                             sku_somente=resumo_sku_somente
                         )
+                        try:
+                            caminho_jpeg_g = os.path.splitext(caminho_xlsx_g)[0] + ".jpeg"
+                            proc.gerar_imagem_resumo_xlsx(caminho_xlsx_g, caminho_jpeg_g, max_pedidos_por_pagina=150)
+                        except Exception as e_jpg_g:
+                            print(f"[Grupo {nome_grupo}] Aviso: falha ao gerar JPEG resumo: {e_jpg_g}")
+                        try:
+                            if os.path.exists(caminho_xlsx_g):
+                                os.remove(caminho_xlsx_g)
+                        except Exception:
+                            pass
 
                         adicionar_log(estado, f"  Grupo '{nome_grupo}': {', '.join(nomes_g)} ({total_pags_g} pags)", "success")
                     except Exception as e_g:
@@ -2816,11 +3079,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 "total_lojas": len(resultado_lojas),
                 "lojas": resultado_lojas,
                 "etiquetas_sem_nf": len(etiquetas_sem_nf) if etiquetas_sem_nf else 0,
-                "resumo_geral": {
-                    "arquivo": os.path.basename(caminho_resumo_geral),
-                    "total_lojas": n_lojas_rg,
-                    "total_unidades": total_un_rg,
-                },
+                "resumo_geral": {},
             }
 
             estado["ultimo_resultado"] = resultado
@@ -2914,7 +3173,7 @@ def _whatsapp_api_base_url() -> str:
 
 
 def _agora_utc() -> datetime:
-    return datetime.utcnow()
+    return _agora_brasil()
 
 
 def _to_bool(value, default=False):
@@ -2988,9 +3247,14 @@ def _garantir_baileys_rodando(motivo: str = "") -> bool:
             elif os.name != "nt":
                 kwargs["start_new_session"] = True
 
+            # Forcar PORT=3005 para o Baileys nao herdar PORT do Flask
+            baileys_env = os.environ.copy()
+            baileys_env["PORT"] = "3005"
+
             _BAILEYS_PROC = subprocess.Popen(
                 [node_bin, "server.js"],
                 cwd=baileys_dir,
+                env=baileys_env,
                 stdout=stdout_f,
                 stderr=stderr_f,
                 stdin=subprocess.DEVNULL,
@@ -3014,6 +3278,992 @@ def _calc_backoff_seconds(tentativas: int) -> int:
     # 8s, 16s, 32s... ate 15 min
     base = 8
     return min(900, base * (2 ** max((tentativas or 1) - 1, 0)))
+
+
+# ================================================================
+# RESUMO GERAL DIARIO: acumula lojas do dia e gera JPEG consolidado
+# ================================================================
+
+def _acumular_resumo_diario(user_id: int, resultado_lojas: list):
+    """Acumula lojas processadas no dia para gerar resumo geral consolidado.
+    Armazena no estado do usuario em resumo_diario[data_hoje]."""
+    estado = _get_estado(user_id)
+    if not estado:
+        return
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    if "resumo_diario" not in estado:
+        estado["resumo_diario"] = {}
+    # Limpar dias antigos (manter so hoje)
+    for k in list(estado["resumo_diario"].keys()):
+        if k != hoje:
+            del estado["resumo_diario"][k]
+    if hoje not in estado["resumo_diario"]:
+        estado["resumo_diario"][hoje] = {}
+    diario = estado["resumo_diario"][hoje]
+    for loja in (resultado_lojas or []):
+        nome = str(loja.get("nome", "") or "").strip()
+        if not nome:
+            continue
+        # Acumula: soma etiquetas/skus/unidades se ja existia
+        if nome in diario:
+            diario[nome]["etiquetas"] += int(loja.get("etiquetas", 0) or 0)
+            diario[nome]["skus"] = max(diario[nome]["skus"], int(loja.get("skus", 0) or 0))
+            diario[nome]["unidades"] += int(loja.get("total_qtd", 0) or 0)
+        else:
+            diario[nome] = {
+                "etiquetas": int(loja.get("etiquetas", 0) or 0),
+                "skus": int(loja.get("skus", 0) or 0),
+                "unidades": int(loja.get("total_qtd", 0) or 0),
+            }
+
+
+def _gerar_jpeg_resumo_geral(user_id: int, pasta_saida: str) -> str:
+    """Gera JPEG com tabela consolidada de todas as lojas do dia.
+    Estilo: header escuro, linhas claras, coluna Loja|Etiquetas|SKUs|Unidades, TOTAL.
+    Retorna caminho do JPEG gerado ou string vazia."""
+    estado = _get_estado(user_id)
+    if not estado:
+        return ""
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    diario = (estado.get("resumo_diario") or {}).get(hoje, {})
+    if not diario:
+        return ""
+
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception:
+        return ""
+
+    # Montar dados da tabela
+    header = ["Loja", "Etiquetas", "SKUs", "Unidades"]
+    rows = []
+    total_etiq = 0
+    total_skus = 0
+    total_un = 0
+    for nome in sorted(diario.keys()):
+        d = diario[nome]
+        etiq = d.get("etiquetas", 0)
+        skus = d.get("skus", 0)
+        un = d.get("unidades", 0)
+        rows.append([nome, str(etiq), str(skus), str(un)])
+        total_etiq += etiq
+        total_skus += skus
+        total_un += un
+    total_row = ["TOTAL", str(total_etiq), str(total_skus), str(total_un)]
+
+    if not rows:
+        return ""
+
+    # Fontes
+    try:
+        font = ImageFont.truetype(r"C:\Windows\Fonts\arial.ttf", 15)
+        font_bold = ImageFont.truetype(r"C:\Windows\Fonts\arialbd.ttf", 15)
+    except Exception:
+        font = ImageFont.load_default()
+        font_bold = font
+
+    # Calcular larguras
+    all_rows = [header] + rows + [total_row]
+    col_widths = [0] * 4
+    for r in all_rows:
+        for i, v in enumerate(r):
+            try:
+                tw = font_bold.getlength(str(v))
+            except Exception:
+                tw = len(str(v)) * 8
+            col_widths[i] = max(col_widths[i], int(tw) + 24)
+    col_widths[0] = max(col_widths[0], 160)  # Loja col min width
+
+    row_h = 28
+    margin = 2
+    img_w = sum(col_widths) + margin * 2 + 1
+    img_h = (len(rows) + 2) * row_h + margin * 2 + 1  # +2 = header + total
+
+    # Cores estilo planilha
+    cor_header_bg = (68, 84, 106)      # Azul escuro
+    cor_header_text = (255, 255, 255)  # Branco
+    cor_total_bg = (226, 239, 218)     # Verde claro
+    cor_borda = (180, 180, 180)
+    cor_texto = (20, 20, 20)
+    cor_alt = (245, 245, 245)          # Linhas alternadas
+
+    img = Image.new('RGB', (img_w, img_h), 'white')
+    draw = ImageDraw.Draw(img)
+
+    y = margin
+    all_render = [header] + rows + [total_row]
+    for ridx, r in enumerate(all_render):
+        x = margin
+        is_header = (ridx == 0)
+        is_total = (ridx == len(all_render) - 1)
+        if is_header:
+            bg = cor_header_bg
+            txt_color = cor_header_text
+            use_font = font_bold
+        elif is_total:
+            bg = cor_total_bg
+            txt_color = cor_texto
+            use_font = font_bold
+        else:
+            bg = cor_alt if (ridx % 2 == 0) else (255, 255, 255)
+            txt_color = cor_texto
+            use_font = font
+
+        for cidx, text in enumerate(r):
+            w = col_widths[cidx]
+            draw.rectangle([(x, y), (x + w, y + row_h)], fill=bg, outline=cor_borda, width=1)
+            txt = str(text or '')
+            tx = x + 6
+            # Alinhar numeros a direita
+            if cidx > 0:
+                try:
+                    tw = draw.textlength(txt, font=use_font)
+                except Exception:
+                    tw = len(txt) * 8
+                tx = x + w - int(tw) - 8
+            ty = y + 6
+            draw.text((tx, ty), txt, fill=txt_color, font=use_font)
+            x += w
+        y += row_h
+
+    # Salvar
+    os.makedirs(pasta_saida, exist_ok=True)
+    caminho = os.path.join(pasta_saida, f"resumo_geral_{hoje}.jpeg")
+    try:
+        img.save(caminho, format='JPEG', quality=92, optimize=True)
+        return caminho
+    except Exception as e:
+        print(f"[ResumoGeral] Erro ao salvar JPEG: {e}")
+        return ""
+
+
+def _enviar_resumo_geral_whatsapp(user_id: int, pasta_saida: str) -> dict:
+    """Gera e enfileira resumo geral diario para contatos com flag resumo_geral=True."""
+    uid = int(user_id)
+    contatos = WhatsAppContact.query.filter_by(user_id=uid, ativo=True, resumo_geral=True).all()
+    if not contatos:
+        return {"ok": False, "motivo": "sem_contatos_resumo"}
+
+    caminho_jpeg = _gerar_jpeg_resumo_geral(uid, pasta_saida)
+    if not caminho_jpeg or not os.path.exists(caminho_jpeg):
+        return {"ok": False, "motivo": "falha_gerar_jpeg"}
+
+    batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    agora = _agora_utc()
+    enfileirados = 0
+    hoje_label = datetime.now().strftime("%d/%m/%Y")
+    for c in contatos:
+        telefone = str(getattr(c, "telefone", "") or "").strip()
+        if not telefone:
+            continue
+        if _ja_na_fila_whatsapp(uid, telefone, caminho_jpeg):
+            continue
+        db.session.add(WhatsAppQueueItem(
+            user_id=uid,
+            batch_id=batch_id,
+            origem="resumo_geral",
+            loja_nome="Resumo Geral",
+            telefone=telefone,
+            pdf_path=caminho_jpeg,
+            caption=f"Resumo Geral - {hoje_label}",
+            status="pending",
+            tentativas=0,
+            max_tentativas=5,
+            next_attempt_at=agora,
+        ))
+        enfileirados += 1
+    if enfileirados:
+        db.session.commit()
+        _garantir_baileys_rodando(motivo="resumo_geral")
+        print(f"[ResumoGeral] Enfileirados {enfileirados} resumo(s) geral(is)")
+    return {"ok": enfileirados > 0, "enfileirados": enfileirados}
+
+
+# ================================================================
+# PIPELINE DIRETO: Imprimir + Processar (para envio automatico)
+# ================================================================
+
+def _gerar_jpeg_de_xlsx(pasta_saida: str) -> int:
+    """
+    Percorre subpastas de pasta_saida, encontra XLSX e gera JPEG do resumo
+    usando o mesmo metodo do ProcessadorEtiquetasShopee (visual padrao).
+    Divide em paginas quando excede 150 linhas para manter legibilidade.
+    Retorna quantidade de JPEGs gerados.
+    """
+    from etiquetas_shopee import ProcessadorEtiquetasShopee
+
+    gerados = 0
+    if not os.path.isdir(pasta_saida):
+        return 0
+
+    proc = ProcessadorEtiquetasShopee()
+    for loja_dir in os.listdir(pasta_saida):
+        loja_path = os.path.join(pasta_saida, loja_dir)
+        if not os.path.isdir(loja_path):
+            continue
+        for arq in os.listdir(loja_path):
+            if not arq.lower().endswith('.xlsx'):
+                continue
+            xlsx_path = os.path.join(loja_path, arq)
+            jpg_name = os.path.splitext(arq)[0] + ".jpeg"
+            jpg_path = os.path.join(loja_path, jpg_name)
+            if os.path.exists(jpg_path):
+                continue
+            try:
+                result = proc.gerar_imagem_resumo_xlsx(
+                    caminho_xlsx=xlsx_path,
+                    caminho_imagem=jpg_path,
+                    max_pedidos_por_pagina=150,
+                )
+                if result:
+                    gerados += 1
+                    print(f"[JPEG] Gerado: {result}")
+            except Exception as e:
+                print(f"[JPEG] Erro ao converter {xlsx_path}: {e}")
+    return gerados
+
+
+def _mesclar_lojas_agrupadas(pasta_saida: str, estado: dict, user_id: int):
+    """
+    Mescla lojas do mesmo grupo em UMA pasta, reprocessando as etiquetas juntas
+    como se fossem uma unica loja (ordenadas por SKU, com rodape correto).
+    Ex: grupo "Leone" = [HEITOR, LEONE] -> pasta "Leone/" com PDF+XLSX gerados do zero.
+    """
+    import shutil
+    from etiquetas_shopee import ProcessadorEtiquetasShopee
+
+    agrupamentos = (estado or {}).get("agrupamentos", []) or []
+    if not agrupamentos:
+        return
+
+    ultimo_resultado = estado.get("ultimo_resultado", {})
+    lojas_resultado = ultimo_resultado.get("lojas", []) if ultimo_resultado else []
+    if not lojas_resultado:
+        return
+
+    etiq_por_cnpj = estado.get("_etiquetas_por_cnpj", {})
+    if not etiq_por_cnpj:
+        print("[Agrupamento] Sem dados de etiquetas em memoria, pulando")
+        return
+
+    # Construir mapa: nome_upseller (lower) -> cnpj_marketplace
+    # Usando _pdf_loja_map + _etiquetas_por_cnpj + _proc_config
+    pdf_loja_map = estado.get("_pdf_loja_map", {})  # {pdf_basename: upseller_name}
+    proc_config = estado.get("_proc_config", {})
+    cnpj_loja = proc_config.get("cnpj_loja", {})
+
+    # Mapear: upseller_lower -> cnpj
+    upseller_to_cnpj = {}
+    for cnpj, etiquetas in etiq_por_cnpj.items():
+        if not etiquetas:
+            continue
+        # Descobrir nome UpSeller para este CNPJ via pdf_loja_map
+        for etq in etiquetas:
+            pdf_path = etq.get("caminho_pdf", "")
+            if not pdf_path:
+                continue
+            pdf_base = os.path.basename(pdf_path)
+            upseller_nome = pdf_loja_map.get(pdf_base)
+            if upseller_nome:
+                upseller_to_cnpj[upseller_nome.strip().lower()] = cnpj
+                break
+
+    if not upseller_to_cnpj:
+        print("[Agrupamento] Sem mapeamento UpSeller->CNPJ, pulando")
+        return
+
+    print(f"[Agrupamento] Mapa UpSeller->CNPJ: {upseller_to_cnpj}")
+
+    # Pastas existentes na saida
+    pastas_existentes = {}
+    for d in os.listdir(pasta_saida):
+        if os.path.isdir(os.path.join(pasta_saida, d)):
+            pastas_existentes[d.strip().lower()] = d
+
+    proc = ProcessadorEtiquetasShopee()
+    mesclou = False
+
+    for grupo in agrupamentos:
+        nome_grupo = (grupo.get("nome") or "").strip()
+        nomes_lojas = grupo.get("nomes_lojas") or []
+        if not nome_grupo or len(nomes_lojas) < 2:
+            continue
+
+        # Coletar etiquetas de todas as lojas do grupo
+        etiquetas_grupo = []
+        pastas_remover = []
+        nomes_encontrados = []
+
+        for nl in nomes_lojas:
+            nl_lower = nl.strip().lower()
+            cnpj = upseller_to_cnpj.get(nl_lower)
+            if cnpj and cnpj in etiq_por_cnpj:
+                etiquetas_grupo.extend(etiq_por_cnpj[cnpj])
+                nomes_encontrados.append(nl.strip())
+            # Coletar pasta para remover
+            if nl_lower in pastas_existentes:
+                nome_real = pastas_existentes[nl_lower]
+                pastas_remover.append((nome_real, os.path.join(pasta_saida, nome_real)))
+
+        if len(nomes_encontrados) < 2 or not etiquetas_grupo:
+            continue
+
+        print(f"[Agrupamento] Grupo '{nome_grupo}': {nomes_encontrados} -> {len(etiquetas_grupo)} etiquetas")
+
+        # Pasta temporaria (evita conflito Windows case-insensitive)
+        pasta_temp = os.path.join(pasta_saida, f"_temp_grupo_{nome_grupo}")
+        if os.path.exists(pasta_temp):
+            shutil.rmtree(pasta_temp, ignore_errors=True)
+        os.makedirs(pasta_temp, exist_ok=True)
+        timestamp_g = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Separar regular vs especial (cpf/retirada)
+        etiq_reg = [e for e in etiquetas_grupo if not e.get('tipo_especial')]
+        etiq_esp = [e for e in etiquetas_grupo if e.get('tipo_especial')]
+
+        total_pags = 0
+        pdf_name = ""
+
+        # Gerar PDF regular (com ordenacao + rodape) usando gerar_pdf_loja
+        if etiq_reg:
+            caminho_pdf = os.path.join(pasta_temp, f"etiquetas_{nome_grupo}_{timestamp_g}.pdf")
+            t, _, _, _, _ = proc.gerar_pdf_loja(etiq_reg, caminho_pdf)
+            total_pags += t
+            pdf_name = os.path.basename(caminho_pdf)
+            print(f"[Agrupamento]   PDF regular: {t} paginas (ordenado por SKU)")
+
+        # Gerar PDF especial (cpf/retirada) se houver
+        if etiq_esp:
+            caminho_cpf = os.path.join(pasta_temp, f"retirada_{nome_grupo}_{timestamp_g}.pdf")
+            t_cpf = proc.gerar_pdf_cpf(etiq_esp, caminho_cpf)
+            total_pags += t_cpf
+            if not pdf_name:
+                pdf_name = os.path.basename(caminho_cpf)
+            print(f"[Agrupamento]   PDF especial: {t_cpf} paginas")
+
+        # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
+        caminho_xlsx = os.path.join(pasta_temp, f"resumo_{nome_grupo}_{timestamp_g}.xlsx")
+        proc.gerar_resumo_xlsx(etiquetas_grupo, caminho_xlsx, nome_grupo)
+        try:
+            caminho_jpeg_g = os.path.splitext(caminho_xlsx)[0] + ".jpeg"
+            proc.gerar_imagem_resumo_xlsx(caminho_xlsx, caminho_jpeg_g, max_pedidos_por_pagina=150)
+        except Exception as e_jpg:
+            print(f"[Agrupamento]   Aviso: falha ao gerar JPEG resumo: {e_jpg}")
+        try:
+            if os.path.exists(caminho_xlsx):
+                os.remove(caminho_xlsx)
+        except Exception:
+            pass
+        print(f"[Agrupamento]   JPEG resumo gerado (XLSX removido)")
+
+        # Remover pastas individuais
+        for nome_real, pasta_path in pastas_remover:
+            shutil.rmtree(pasta_path, ignore_errors=True)
+            print(f"[Agrupamento]   Removida: {nome_real}/")
+
+        # Renomear temp -> nome final
+        pasta_destino = os.path.join(pasta_saida, nome_grupo)
+        if os.path.exists(pasta_destino):
+            shutil.rmtree(pasta_destino, ignore_errors=True)
+        os.rename(pasta_temp, pasta_destino)
+
+        # Atualizar resultado["lojas"]
+        total_etiq = len(etiquetas_grupo)
+        total_qtd = sum(e.get('num_produtos', 1) or 1 for e in etiquetas_grupo)
+        nomes_removidos = set(n.strip().lower() for n in nomes_encontrados)
+
+        novas_lojas = []
+        for lj in lojas_resultado:
+            nome_lj = (lj.get("nome") or "").strip()
+            if nome_lj.lower() not in nomes_removidos:
+                novas_lojas.append(lj)
+
+        novas_lojas.append({
+            "nome": nome_grupo,
+            "cnpj": f"GRUPO_{nome_grupo}",
+            "total_paginas": total_pags,
+            "total_etiquetas": total_etiq,
+            "total_qtd": total_qtd,
+            "pdf": pdf_name,
+            "xlsx": "",
+        })
+        lojas_resultado[:] = novas_lojas
+        mesclou = True
+        print(f"[Agrupamento] Grupo '{nome_grupo}' OK: {total_pags} pags, {total_etiq} etiq, {total_qtd} un")
+
+    # Salvar resultado atualizado
+    if mesclou and ultimo_resultado:
+        resultado_path = os.path.join(pasta_saida, "_ultimo_resultado.json")
+        try:
+            with open(resultado_path, 'w', encoding='utf-8') as f:
+                json.dump(ultimo_resultado, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+
+def _renomear_pastas_saida_para_upseller(
+    pasta_saida: str, resultado_proc: dict, estado: dict,
+    pdf_loja_map: dict, pasta_lote: str
+):
+    """
+    Renomeia pastas de saida de nomes do marketplace (REMETENTE na etiqueta)
+    para nomes do UpSeller, usando o mapeamento PDF→loja do download por-loja.
+
+    Logica:
+    - Para cada CNPJ no estado["_etiquetas_por_cnpj"], pegar o caminho_pdf da 1a etiqueta
+    - Mapear o basename do PDF para o nome UpSeller via pdf_loja_map
+    - Se o nome atual da pasta != nome UpSeller, renomear pasta e atualizar resultado
+    """
+    import shutil
+
+    etiq_por_cnpj = estado.get("_etiquetas_por_cnpj", {})
+    if not etiq_por_cnpj:
+        return
+
+    ultimo_resultado = estado.get("ultimo_resultado", {})
+    lojas_resultado = ultimo_resultado.get("lojas", []) if ultimo_resultado else []
+
+    # Mapear PDF (que pode estar no lote) → nome UpSeller
+    # O mover_para_pasta_entrada copia/move PDFs para pasta_lote, mantendo basename
+    lote_pdf_map = {}
+    for pdf_base, upseller_nome in pdf_loja_map.items():
+        lote_pdf_map[pdf_base.lower()] = upseller_nome
+        # Tambem verificar se o PDF foi renomeado no lote
+        lote_file = os.path.join(pasta_lote, pdf_base) if pasta_lote else ""
+        if lote_file and os.path.exists(lote_file):
+            lote_pdf_map[os.path.basename(lote_file).lower()] = upseller_nome
+
+    # Mapear: nome_marketplace_atual → nome_upseller
+    renomear = {}  # {nome_marketplace: nome_upseller}
+
+    for cnpj, etiquetas in etiq_por_cnpj.items():
+        if not etiquetas:
+            continue
+        # Pegar o caminho_pdf da primeira etiqueta deste CNPJ
+        pdf_path = ""
+        for etq in etiquetas:
+            pdf_path = etq.get("caminho_pdf", "")
+            if pdf_path:
+                break
+        if not pdf_path:
+            continue
+
+        pdf_base = os.path.basename(pdf_path).lower()
+        upseller_nome = lote_pdf_map.get(pdf_base)
+        if not upseller_nome:
+            continue
+
+        # Nome atual da pasta (marketplace) — vem de get_nome_loja(cnpj)
+        proc_config = estado.get("_proc_config", {})
+        cnpj_loja = proc_config.get("cnpj_loja", {})
+        cnpj_nome = proc_config.get("cnpj_nome", {})
+        nome_marketplace = cnpj_loja.get(cnpj) or cnpj_nome.get(cnpj, "")
+        if not nome_marketplace:
+            continue
+
+        # Se os nomes ja sao iguais (case-insensitive), pular
+        if nome_marketplace.strip().lower() == upseller_nome.strip().lower():
+            continue
+
+        renomear[nome_marketplace] = upseller_nome
+
+    if not renomear:
+        print("[ImprDireto] Renomear pastas: nenhuma pasta precisa ser renomeada")
+        return
+
+    print(f"[ImprDireto] Renomeando {len(renomear)} pasta(s): {renomear}")
+
+    for nome_antigo, nome_novo in renomear.items():
+        pasta_antiga = os.path.join(pasta_saida, nome_antigo)
+        pasta_nova = os.path.join(pasta_saida, nome_novo)
+
+        if not os.path.isdir(pasta_antiga):
+            print(f"[ImprDireto]   Pasta '{nome_antigo}' nao encontrada, pulando")
+            continue
+        if os.path.exists(pasta_nova) and pasta_antiga != pasta_nova:
+            # Se ja existe pasta com o nome UpSeller, mesclar
+            for arq in os.listdir(pasta_antiga):
+                src = os.path.join(pasta_antiga, arq)
+                dst = os.path.join(pasta_nova, arq)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    shutil.move(src, dst)
+            shutil.rmtree(pasta_antiga, ignore_errors=True)
+        else:
+            try:
+                os.rename(pasta_antiga, pasta_nova)
+            except Exception:
+                shutil.move(pasta_antiga, pasta_nova)
+
+        print(f"[ImprDireto]   Renomeado: '{nome_antigo}' -> '{nome_novo}'")
+
+        # Renomear arquivos dentro da pasta para usar o nome UpSeller
+        if os.path.isdir(pasta_nova):
+            for arq in os.listdir(pasta_nova):
+                if nome_antigo in arq:
+                    novo_arq = arq.replace(nome_antigo, nome_novo)
+                    try:
+                        os.rename(
+                            os.path.join(pasta_nova, arq),
+                            os.path.join(pasta_nova, novo_arq)
+                        )
+                    except Exception:
+                        pass
+
+        # Atualizar resultado em memoria
+        for loja_info in lojas_resultado:
+            if loja_info.get("nome") == nome_antigo:
+                loja_info["nome"] = nome_novo
+                loja_info["cnpj"] = f"LOJA_{nome_novo.replace(' ', '_')}"
+                # Atualizar pdf
+                pdf_old = loja_info.get("pdf", "")
+                if pdf_old and nome_antigo in pdf_old:
+                    loja_info["pdf"] = pdf_old.replace(nome_antigo, nome_novo)
+                # Atualizar xlsx
+                xlsx_old = loja_info.get("xlsx", "")
+                if xlsx_old and nome_antigo in xlsx_old:
+                    loja_info["xlsx"] = xlsx_old.replace(nome_antigo, nome_novo)
+
+    # Atualizar ultimo_resultado no estado e salvar em disco
+    if ultimo_resultado:
+        estado["ultimo_resultado"] = ultimo_resultado
+        resultado_path = os.path.join(pasta_saida, "_ultimo_resultado.json")
+        try:
+            with open(resultado_path, 'w', encoding='utf-8') as f:
+                json.dump(ultimo_resultado, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    # Atualizar resumo geral XLSX
+    resumo_geral = ultimo_resultado.get("resumo_geral", {}) if ultimo_resultado else {}
+    resumo_geral_arq = resumo_geral.get("arquivo", "")
+    if resumo_geral_arq:
+        resumo_path = os.path.join(pasta_saida, resumo_geral_arq)
+        if os.path.exists(resumo_path):
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(resumo_path)
+                ws = wb.active
+                for row in ws.iter_rows(min_row=2):
+                    cell_nome = row[0]
+                    if cell_nome.value and str(cell_nome.value) in renomear:
+                        cell_nome.value = renomear[str(cell_nome.value)]
+                wb.save(resumo_path)
+                wb.close()
+            except Exception:
+                pass
+
+
+def _executar_imprimir_direto(user_id: int, lojas_alvo: list = None) -> dict:
+    """
+    Pipeline direto para scheduler/execucao manual:
+    1. Baixa etiquetas do UpSeller (SEM emitir notas, SEM gerar pedidos)
+    2. Baixa XLSX de resumo
+    3. Move para pasta de lote
+    4. Processa com Beka MKT
+    Retorna: {"ok": True/False, "pdfs_movidos": int, "total_etiquetas": int, "total_lojas": int}
+    """
+    import asyncio
+
+    user = User.query.get(user_id)
+    if not user:
+        return {"ok": False, "erro": "Usuario nao encontrado"}
+
+    pasta_entrada = user.get_pasta_entrada()
+    pasta_lote = _criar_pasta_lote_upseller(pasta_entrada, prefixo="envio_auto")
+    # Pasta temp isolada por execucao (uuid) — evita conflito quando 2 contatos rodam proximo
+    import uuid as _uuid
+    download_dir = os.path.join(pasta_entrada, f'_upseller_temp_{_uuid.uuid4().hex[:8]}')
+    os.makedirs(download_dir, exist_ok=True)
+
+    config = _get_or_create_upseller_config(user_id)
+    if not config:
+        return {"ok": False, "erro": "UpSeller nao configurado"}
+
+    # Criar/reutilizar scraper
+    # IMPORTANTE: usar headless=False pois UpSeller bloqueia headless.
+    # Se ja existir um scraper vivo (ex: usuario conectou via UI), reutiliza.
+    print(f"[ImprDireto] Verificando scraper para user {user_id}...")
+    scraper_vivo = _upseller_mgr.is_alive(user_id)
+    print(f"[ImprDireto] scraper_vivo={scraper_vivo}")
+    if not scraper_vivo:
+        try:
+            print(f"[ImprDireto] Criando scraper (headless=False)...")
+            scraper = _upseller_mgr.criar_scraper(
+                user_id, config.session_dir, download_dir, headless=False
+            )
+            print(f"[ImprDireto] Scraper criado, verificando login...")
+            logado = _upseller_mgr._run_async(user_id, scraper._esta_logado())
+            print(f"[ImprDireto] logado={logado}")
+            if not logado:
+                return {"ok": False, "erro": "Sessao UpSeller expirada. Reconecte manualmente."}
+            config.status_conexao = "ok"
+            db.session.commit()
+            # Minimizar janela para nao atrapalhar
+            try:
+                _upseller_mgr._run_async(user_id, scraper._page.evaluate("""
+                    (() => { try { window.resizeTo(1,1); window.moveTo(-2000,-2000); } catch(e){} })()
+                """))
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[ImprDireto] ERRO ao conectar: {e}")
+            import traceback; traceback.print_exc()
+            return {"ok": False, "erro": f"Erro ao conectar UpSeller: {e}"}
+
+    scraper = _upseller_mgr.get_scraper(user_id)
+    if not scraper:
+        return {"ok": False, "erro": "Scraper nao disponivel"}
+    scraper.download_dir = download_dir
+
+    filtro = lojas_alvo if lojas_alvo else None
+
+    # Baixar XLSX de resumo
+    xlsx_paths = []
+    try:
+        print(f"[ImprDireto] Baixando XLSX de resumo (filtro={filtro})...")
+        xlsx_lote = _upseller_mgr._run_async(
+            user_id, scraper.baixar_lista_resumo(filtro_loja=filtro)
+        ) or []
+        if isinstance(xlsx_lote, str):
+            xlsx_lote = [xlsx_lote]
+        for xp in xlsx_lote:
+            if xp and os.path.exists(xp):
+                xlsx_paths.append(xp)
+        print(f"[ImprDireto] {len(xlsx_paths)} XLSX(s) baixado(s)")
+    except Exception as e:
+        print(f"[ImprDireto] Aviso: falha ao baixar XLSX: {e}")
+
+    # Baixar etiquetas — UMA LOJA POR VEZ quando ha multiplas lojas.
+    # O filtro multi-loja do UpSeller pode selecionar lojas erradas;
+    # baixar por-loja e mais confiavel e permite rastrear qual PDF veio de qual loja.
+    pdfs = []
+    _pdf_loja_map = {}  # {pdf_basename -> upseller_name} para renomear depois
+
+    if filtro and len(filtro) > 1:
+        # Multiplas lojas: baixar uma por vez
+        print(f"[ImprDireto] Baixando etiquetas por loja ({len(filtro)} lojas)...")
+        for loja_nome in filtro:
+            try:
+                print(f"[ImprDireto]   Baixando loja '{loja_nome}'...")
+                pdfs_loja = _upseller_mgr._run_async(
+                    user_id, scraper.baixar_etiquetas(filtro_loja=loja_nome)
+                ) or []
+                if isinstance(pdfs_loja, str):
+                    pdfs_loja = [pdfs_loja]
+                for p in pdfs_loja:
+                    if p:
+                        pdfs.append(p)
+                        _pdf_loja_map[os.path.basename(p)] = loja_nome
+                if pdfs_loja:
+                    print(f"[ImprDireto]   '{loja_nome}': {len(pdfs_loja)} PDF(s)")
+                else:
+                    print(f"[ImprDireto]   '{loja_nome}': nenhuma etiqueta pendente")
+            except Exception as e_loja:
+                print(f"[ImprDireto]   ERRO ao baixar '{loja_nome}': {e_loja}")
+        print(f"[ImprDireto] Total: {len(pdfs)} PDF(s) de {len(filtro)} lojas")
+    else:
+        # Loja unica ou sem filtro: baixar normalmente
+        try:
+            print(f"[ImprDireto] Baixando etiquetas (filtro={filtro})...")
+            pdfs_lote = _upseller_mgr._run_async(
+                user_id, scraper.baixar_etiquetas(filtro_loja=filtro)
+            ) or []
+            if isinstance(pdfs_lote, list):
+                pdfs = pdfs_lote
+            elif pdfs_lote:
+                pdfs = [pdfs_lote]
+            # Se foi filtro de 1 loja, mapear
+            if filtro and len(filtro) == 1:
+                for p in pdfs:
+                    _pdf_loja_map[os.path.basename(p)] = filtro[0]
+            print(f"[ImprDireto] {len(pdfs)} PDF(s) baixado(s)")
+        except Exception as e:
+            return {"ok": False, "erro": f"Erro ao baixar etiquetas: {e}"}
+
+    if not pdfs:
+        return {
+            "ok": False,
+            "erro": (
+                "Nenhuma etiqueta baixada. "
+                "Se houver etiquetas pendentes, verifique se as configuracoes de impressao "
+                "estao definidas no UpSeller (Imprimir Etiquetas > Ir para Configurar)."
+            )
+        }
+
+    # Mover para lote isolado
+    xlsx_path = xlsx_paths[0] if xlsx_paths else ""
+    xlsx_extra = xlsx_paths[1:] if len(xlsx_paths) > 1 else []
+    resultado_dl = {"pdfs": pdfs, "xmls": [], "xlsx": xlsx_path, "xlsx_extra": xlsx_extra}
+    resumo = scraper.mover_para_pasta_entrada(resultado_dl, pasta_lote)
+
+    if resumo.get("pdfs_movidos", 0) <= 0:
+        return {"ok": False, "erro": "Nenhum PDF foi movido para o lote"}
+
+    # Processar com Beka MKT
+    proc_result = _executar_processamento(
+        user_id,
+        sem_recorte=True,
+        resumo_sku_somente=False,
+        pasta_entrada_override=pasta_lote,
+    )
+
+    # Aguardar conclusao do processamento (poll a cada 2s, max 10min)
+    estado = _get_estado(user_id)
+    elapsed = 0
+    while estado.get("processando") and elapsed < 600:
+        time.sleep(2)
+        elapsed += 2
+
+    resultado_proc = estado.get("ultimo_resultado", {})
+
+    # Limpar pasta temp
+    try:
+        import shutil
+        shutil.rmtree(download_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    if not proc_result or not proc_result.get("ok"):
+        return {"ok": False, "erro": (proc_result or {}).get("erro", "Erro no processamento")}
+
+    # ---- Renomear pastas de saida: marketplace → UpSeller ----
+    # O processador usa nomes do REMETENTE na etiqueta (marketplace), mas o usuario
+    # conhece suas lojas pelo nome do UpSeller. Quando temos o mapeamento
+    # PDF→loja (download por-loja), podemos renomear.
+    pasta_saida = user.get_pasta_saida()
+
+    # Salvar mapa PDF→UpSeller no estado para uso no agrupamento
+    if _pdf_loja_map:
+        estado["_pdf_loja_map"] = dict(_pdf_loja_map)
+
+    if _pdf_loja_map and resultado_proc:
+        try:
+            _renomear_pastas_saida_para_upseller(
+                pasta_saida, resultado_proc, estado, _pdf_loja_map, pasta_lote
+            )
+        except Exception as e_ren:
+            print(f"[ImprDireto] Aviso: falha ao renomear pastas: {e_ren}")
+            import traceback; traceback.print_exc()
+
+    # ---- Mesclar lojas agrupadas (ex: HEITOR+LEONE → Leone/) ----
+    try:
+        _mesclar_lojas_agrupadas(pasta_saida, estado, user_id)
+    except Exception as e_merge:
+        print(f"[ImprDireto] Aviso: falha ao mesclar agrupamentos: {e_merge}")
+        import traceback; traceback.print_exc()
+
+    # JPEG de resumo desativado — pasta de saida contem apenas PDFs
+
+    return {
+        "ok": True,
+        "pdfs_movidos": resumo.get("pdfs_movidos", 0),
+        "total_etiquetas": resultado_proc.get("total_etiquetas", proc_result.get("total_etiquetas", 0)),
+        "total_lojas": resultado_proc.get("total_lojas", proc_result.get("total_lojas", 0)),
+    }
+
+
+def _enviar_email_resultado_agendado(user_id: int, resultado: dict = None) -> dict:
+    """Envia ultimo resultado via email para contatos configurados (uso do scheduler)."""
+    user = User.query.get(user_id)
+    if not user:
+        return {"ok": False, "erro": "Usuario nao encontrado"}
+
+    estado = _get_estado(user_id)
+    resultado_ref = resultado or (estado.get("ultimo_resultado", {}) if estado else {})
+    if not resultado_ref or not resultado_ref.get("lojas"):
+        return {"ok": False, "erro": "Nenhum resultado para enviar"}
+
+    from_addr = (getattr(user, "email_remetente", "") or "").strip()
+    if not from_addr or "@" not in from_addr:
+        return {"ok": False, "erro": "Email remetente nao configurado"}
+
+    smtp_cfg, _ = _smtp_config_resolver(user)
+    if not smtp_cfg:
+        return {"ok": False, "erro": "SMTP nao configurado"}
+
+    contatos = EmailContact.query.filter_by(user_id=user_id, ativo=True).all()
+    if not contatos:
+        return {"ok": False, "erro": "Nenhum contato email cadastrado"}
+
+    pasta_saida = user.get_pasta_saida()
+    agrupamentos = (estado or {}).get("agrupamentos", []) if estado else []
+    envios, diagnostico = montar_destinos_por_resultado(
+        resultado=resultado_ref,
+        pasta_saida=pasta_saida,
+        contatos=contatos,
+        destino_attr="email",
+        agrupamentos_usuario=agrupamentos,
+    )
+
+    if not envios:
+        return {"ok": False, "erro": "Nenhuma entrega email valida", "diagnostico": diagnostico}
+
+    timestamp = resultado_ref.get("timestamp", "")
+    from_name = (getattr(user, "nome_remetente", "") or "").strip()
+
+    # Agrupar por (destino, loja)
+    envios_agrupados = {}
+    for envio in envios:
+        destino = str(envio.get("destino", "") or "").strip()
+        loja = str(envio.get("loja", "") or "").strip()
+        file_path = str(envio.get("file_path", envio.get("pdf_path", "")) or "").strip()
+        if not destino or not file_path:
+            continue
+        chave = (destino.lower(), loja)
+        if chave not in envios_agrupados:
+            envios_agrupados[chave] = {"destino": destino, "loja": loja, "arquivos": []}
+        if file_path not in envios_agrupados[chave]["arquivos"]:
+            envios_agrupados[chave]["arquivos"].append(file_path)
+
+    total_ok = 0
+    for grupo in envios_agrupados.values():
+        try:
+            res = enviar_email_com_anexos(
+                email_destino=grupo["destino"],
+                assunto=f"Arquivos {grupo['loja']} - {timestamp}",
+                loja_nome=grupo["loja"],
+                timestamp=timestamp,
+                anexos_paths=grupo["arquivos"],
+                from_addr_override=from_addr,
+                from_name_override=from_name,
+                smtp_override=smtp_cfg,
+            )
+            if res.get("success"):
+                total_ok += 1
+        except Exception as e:
+            print(f"[EmailAgendado] Erro ao enviar para {grupo['destino']}: {e}")
+        time.sleep(2)
+
+    return {"ok": True, "total": total_ok, "total_envios": len(envios_agrupados)}
+
+
+def _enviar_email_para_contato(user_id: int, contato_id: int) -> dict:
+    """Envia resultado por email para UM contato especifico."""
+    uid = int(user_id)
+    contato = EmailContact.query.filter_by(id=contato_id, user_id=uid, ativo=True).first()
+    if not contato:
+        return {"ok": False, "erro": "Contato email nao encontrado"}
+
+    estado = _get_estado(uid)
+    resultado_ref = (estado.get("ultimo_resultado", {}) if estado else {})
+    if not resultado_ref:
+        return {"ok": False, "erro": "Nenhum resultado"}
+
+    user = User.query.get(uid)
+    pasta_saida = user.get_pasta_saida()
+    agrupamentos_usuario = (estado or {}).get("agrupamentos", []) if estado else []
+
+    envios, _ = montar_destinos_por_resultado(
+        resultado=resultado_ref,
+        pasta_saida=pasta_saida,
+        contatos=[contato],
+        destino_attr="email",
+        agrupamentos_usuario=agrupamentos_usuario,
+    )
+
+    enviados = 0
+    for envio in envios:
+        email_dest = envio.get("destino", "")
+        file_path = envio.get("file_path", "")
+        if not email_dest or not file_path:
+            continue
+        try:
+            enviar_email_com_anexo(uid, email_dest, f"Etiquetas {envio.get('loja','')}", file_path)
+            enviados += 1
+        except Exception as e:
+            print(f"[EmailIndividual] Erro: {e}")
+
+    return {"ok": enviados > 0, "enviados": enviados}
+
+
+def _enviar_email_para_contato_direto(user_id: int, contato_id: int) -> dict:
+    """
+    Envia TODOS os arquivos do ultimo resultado por email para UM contato,
+    SEM depender de matching de nomes de lojas.
+    Usado na execucao individual.
+    """
+    uid = int(user_id)
+    contato = EmailContact.query.filter_by(id=contato_id, user_id=uid, ativo=True).first()
+    if not contato:
+        return {"ok": False, "erro": "Contato email nao encontrado"}
+
+    email_dest = str(getattr(contato, "email", "") or "").strip()
+    if not email_dest:
+        return {"ok": False, "erro": "Contato sem email"}
+
+    estado = _get_estado(uid)
+    resultado_ref = (estado.get("ultimo_resultado", {}) if estado else {})
+    if not resultado_ref or not resultado_ref.get("lojas"):
+        return {"ok": False, "erro": "Nenhum resultado"}
+
+    user = User.query.get(uid)
+    pasta_saida = user.get_pasta_saida()
+    timestamp = resultado_ref.get("timestamp", "")
+    lojas_resultado = resultado_ref.get("lojas", []) or []
+
+    from_addr = (getattr(user, "email_remetente", "") or "").strip()
+    if not from_addr or "@" not in from_addr:
+        return {"ok": False, "erro": "Email remetente nao configurado"}
+
+    smtp_cfg, _ = _smtp_config_resolver(user)
+    if not smtp_cfg:
+        return {"ok": False, "erro": "SMTP nao configurado"}
+
+    from_name = (getattr(user, "nome_remetente", "") or "").strip()
+    from whatsapp_delivery import _listar_arquivos_loja
+    total_ok = 0
+
+    # Para cada loja no resultado, enviar todos os arquivos
+    for loja_info in lojas_resultado:
+        nome = str((loja_info or {}).get("nome", "") or "")
+        pdf_nome = str((loja_info or {}).get("pdf", "") or "")
+        arquivos = _listar_arquivos_loja(pasta_saida, nome, pdf_hint=pdf_nome)
+        if not arquivos:
+            continue
+        try:
+            res = enviar_email_com_anexos(
+                email_destino=email_dest,
+                assunto=f"Etiquetas {nome} - {timestamp}",
+                loja_nome=nome,
+                timestamp=timestamp,
+                anexos_paths=arquivos,
+                from_addr_override=from_addr,
+                from_name_override=from_name,
+                smtp_override=smtp_cfg,
+            )
+            if res.get("success"):
+                total_ok += 1
+        except Exception as e:
+            print(f"[EmailIndividualDireto] Erro ao enviar para {email_dest}: {e}")
+        time.sleep(2)
+
+    return {"ok": total_ok > 0, "enviados": total_ok}
+
+
+def _ja_na_fila_whatsapp(uid: int, telefone: str, file_path: str) -> bool:
+    """Verifica se um item identico ja esta pendente ou foi enviado recentemente (2h).
+    Evita duplicacao tanto cross-batch (pendentes) quanto re-envio (recentes)."""
+    # 1) Pendente/enviando agora?
+    pendente = WhatsAppQueueItem.query.filter(
+        WhatsAppQueueItem.user_id == uid,
+        WhatsAppQueueItem.telefone == telefone,
+        WhatsAppQueueItem.pdf_path == file_path,
+        WhatsAppQueueItem.status.in_(["pending", "retry", "sending"]),
+    ).first()
+    if pendente:
+        return True
+    # 2) Enviado com sucesso nas ultimas 2h?
+    limite = _agora_utc() - timedelta(hours=2)
+    enviado = WhatsAppQueueItem.query.filter(
+        WhatsAppQueueItem.user_id == uid,
+        WhatsAppQueueItem.telefone == telefone,
+        WhatsAppQueueItem.pdf_path == file_path,
+        WhatsAppQueueItem.status == "sent",
+        WhatsAppQueueItem.sent_at >= limite,
+    ).first()
+    if enviado:
+        return True
+    return False
 
 
 def _enfileirar_envio_whatsapp_resultado(
@@ -3054,16 +4304,22 @@ def _enfileirar_envio_whatsapp_resultado(
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     agora = _agora_utc()
     enfileirados = 0
+    duplicados_cross = 0
     for ent in entregas:
         file_path = ent.get("file_path", ent.get("pdf_path", ""))
         if not file_path:
+            continue
+        telefone_ent = ent.get("telefone", "")
+        # Cross-batch dedup: pular se pendente ou enviado recentemente
+        if _ja_na_fila_whatsapp(uid, telefone_ent, file_path):
+            duplicados_cross += 1
             continue
         db.session.add(WhatsAppQueueItem(
             user_id=uid,
             batch_id=batch_id,
             origem=origem,
             loja_nome=ent.get("loja", ""),
-            telefone=ent.get("telefone", ""),
+            telefone=telefone_ent,
             pdf_path=file_path,
             caption=ent.get("caption", ""),
             status="pending",
@@ -3072,6 +4328,8 @@ def _enfileirar_envio_whatsapp_resultado(
             next_attempt_at=agora,
         ))
         enfileirados += 1
+    if duplicados_cross:
+        print(f"[WhatsApp] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup")
     if enfileirados <= 0:
         db.session.rollback()
         return {"ok": False, "erro": "Nenhum arquivo valido para enfileirar", "diagnostico": diagnostico}
@@ -3084,6 +4342,138 @@ def _enfileirar_envio_whatsapp_resultado(
         "total_entregas": enfileirados,
         "diagnostico": diagnostico,
     }
+
+
+def _enfileirar_envio_whatsapp_para_contato(user_id: int, contato_id: int) -> dict:
+    """Enfileira envios WhatsApp para UM contato especifico."""
+    uid = int(user_id)
+    user = User.query.get(uid)
+    if not user:
+        return {"ok": False, "erro": "Usuario nao encontrado"}
+
+    estado = _get_estado(uid)
+    resultado_ref = (estado.get("ultimo_resultado", {}) if estado else {})
+    if not resultado_ref or not resultado_ref.get("lojas"):
+        return {"ok": False, "erro": "Nenhum resultado para enviar"}
+
+    contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=uid, ativo=True).first()
+    if not contato:
+        return {"ok": False, "erro": "Contato nao encontrado ou inativo"}
+
+    contatos = [contato]
+    pasta_saida = user.get_pasta_saida()
+    agrupamentos_usuario = (estado or {}).get("agrupamentos", []) if estado else []
+    entregas, diagnostico = montar_entregas_por_resultado(
+        resultado=resultado_ref,
+        pasta_saida=pasta_saida,
+        contatos=contatos,
+        agrupamentos_usuario=agrupamentos_usuario,
+    )
+    if not entregas:
+        return {"ok": False, "erro": "Nenhuma entrega valida", "diagnostico": diagnostico}
+
+    batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    agora = _agora_utc()
+    enfileirados = 0
+    duplicados_cross = 0
+    for ent in entregas:
+        file_path = ent.get("file_path", ent.get("pdf_path", ""))
+        if not file_path:
+            continue
+        telefone_ent = ent.get("telefone", "")
+        # Cross-batch dedup: pular se pendente ou enviado recentemente
+        if _ja_na_fila_whatsapp(uid, telefone_ent, file_path):
+            duplicados_cross += 1
+            continue
+        db.session.add(WhatsAppQueueItem(
+            user_id=uid, batch_id=batch_id, origem="individual",
+            loja_nome=ent.get("loja", ""), telefone=telefone_ent,
+            pdf_path=file_path, caption=ent.get("caption", ""),
+            status="pending", tentativas=0, max_tentativas=5,
+            next_attempt_at=agora,
+        ))
+        enfileirados += 1
+    if duplicados_cross:
+        print(f"[WhatsApp] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup (contato)")
+    if enfileirados <= 0:
+        db.session.rollback()
+        return {"ok": False, "erro": "Nenhum arquivo valido para enfileirar"}
+    db.session.commit()
+    _garantir_baileys_rodando(motivo="individual")
+    return {"ok": True, "batch_id": batch_id, "total_entregas": enfileirados, "diagnostico": diagnostico}
+
+
+def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: int) -> dict:
+    """
+    Enfileira TODOS os arquivos do ultimo resultado para UM contato,
+    SEM depender de matching de nomes de lojas.
+    Usado na execucao individual: como ja filtramos no download,
+    todo conteudo pertence a esse contato.
+    """
+    uid = int(user_id)
+    user = User.query.get(uid)
+    if not user:
+        return {"ok": False, "erro": "Usuario nao encontrado"}
+
+    estado = _get_estado(uid)
+    resultado_ref = (estado.get("ultimo_resultado", {}) if estado else {})
+    if not resultado_ref or not resultado_ref.get("lojas"):
+        return {"ok": False, "erro": "Nenhum resultado para enviar"}
+
+    contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=uid, ativo=True).first()
+    if not contato:
+        return {"ok": False, "erro": "Contato nao encontrado ou inativo"}
+
+    telefone = str(getattr(contato, "telefone", "") or "").strip()
+    if not telefone:
+        return {"ok": False, "erro": "Contato sem telefone"}
+
+    pasta_saida = user.get_pasta_saida()
+    timestamp = resultado_ref.get("timestamp", "")
+    lojas_resultado = resultado_ref.get("lojas", []) or []
+
+    # Coletar TODOS os arquivos de TODAS as lojas do resultado
+    from whatsapp_delivery import _listar_arquivos_loja
+    batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    agora = _agora_utc()
+    enfileirados = 0
+    duplicados_cross = 0
+    dedupe = set()
+
+    for loja_info in lojas_resultado:
+        nome = str((loja_info or {}).get("nome", "") or "")
+        pdf_nome = str((loja_info or {}).get("pdf", "") or "")
+        arquivos = _listar_arquivos_loja(pasta_saida, nome, pdf_hint=pdf_nome)
+        caption_base = f"Etiquetas {nome} - {timestamp}"
+
+        for file_path in arquivos:
+            abs_path = os.path.abspath(file_path)
+            if abs_path in dedupe:
+                continue
+            dedupe.add(abs_path)
+            # Cross-batch dedup: pular se pendente ou enviado recentemente
+            if _ja_na_fila_whatsapp(uid, telefone, file_path):
+                duplicados_cross += 1
+                continue
+            db.session.add(WhatsAppQueueItem(
+                user_id=uid, batch_id=batch_id, origem="individual",
+                loja_nome=nome, telefone=telefone,
+                pdf_path=file_path,
+                caption=f"{caption_base} - {os.path.basename(file_path)}",
+                status="pending", tentativas=0, max_tentativas=5,
+                next_attempt_at=agora,
+            ))
+            enfileirados += 1
+
+    if duplicados_cross:
+        print(f"[ExecIndividual] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup")
+    if enfileirados <= 0:
+        db.session.rollback()
+        return {"ok": False, "erro": "Nenhum arquivo encontrado no resultado"}
+    db.session.commit()
+    _garantir_baileys_rodando(motivo="individual_direto")
+    print(f"[ExecIndividual] Enfileirados {enfileirados} arquivo(s) direto para tel={telefone}")
+    return {"ok": True, "batch_id": batch_id, "total_entregas": enfileirados}
 
 
 def _status_batch_fila_whatsapp(user_id: int, batch_id: str) -> dict:
@@ -3163,7 +4553,11 @@ def _processar_fila_whatsapp_once() -> int:
             if not os.path.exists(item.pdf_path or ""):
                 raise FileNotFoundError(f"Arquivo nao encontrado: {item.pdf_path}")
 
-            res = wa.enviar_arquivo(item.telefone, item.pdf_path, item.caption or "")
+            ext = os.path.splitext(item.pdf_path or "")[1].lower()
+            if ext in (".jpg", ".jpeg", ".png", ".webp"):
+                res = wa.enviar_imagem(item.telefone, item.pdf_path, item.caption or "")
+            else:
+                res = wa.enviar_arquivo(item.telefone, item.pdf_path, item.caption or "")
             if res.get("success"):
                 item.status = "sent"
                 item.sent_at = _agora_utc()
@@ -3308,7 +4702,7 @@ def _persistir_lojas_marketplace_api(user_id, lojas):
     Persiste snapshot de lojas da API direta em tabela separada.
     Nao interfere na tabela `lojas` usada pela automacao UpSeller.
     """
-    agora = datetime.utcnow()
+    agora = _agora_brasil()
     lojas = lojas or []
 
     existentes = MarketplaceLoja.query.filter_by(user_id=user_id, ativo=True).all()
@@ -3525,13 +4919,13 @@ def _marketplace_shopee_sync_snapshot(user_id: int):
 
     # Tentativa de refresh preventivo quando token estiver perto do vencimento.
     try:
-        if cfg.token_expires_at and cfg.token_expires_at <= (datetime.utcnow() + timedelta(minutes=10)):
+        if cfg.token_expires_at and cfg.token_expires_at <= (_agora_brasil() + timedelta(minutes=10)):
             ref = cli.refresh_access_token()
             if ref.get("ok"):
                 cfg.set_access_token(ref.get("access_token", ""))
                 if ref.get("refresh_token"):
                     cfg.set_refresh_token(ref.get("refresh_token", ""))
-                cfg.token_expires_at = datetime.utcnow() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
+                cfg.token_expires_at = _agora_brasil() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
                 db.session.commit()
                 cli = _ShopeeOpenApiClient(cfg)
     except Exception:
@@ -3548,7 +4942,7 @@ def _marketplace_shopee_sync_snapshot(user_id: int):
                 cfg.set_access_token(ref.get("access_token", ""))
                 if ref.get("refresh_token"):
                     cfg.set_refresh_token(ref.get("refresh_token", ""))
-                cfg.token_expires_at = datetime.utcnow() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
+                cfg.token_expires_at = _agora_brasil() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
                 db.session.commit()
                 cli = _ShopeeOpenApiClient(cfg)
                 shop = cli.get_shop_info()
@@ -3588,7 +4982,7 @@ def _marketplace_shopee_sync_snapshot(user_id: int):
     _set_marketplace_sidebar_cache(user_id, sidebar)
 
     cfg.status_conexao = "ok"
-    cfg.ultima_sincronizacao = datetime.utcnow()
+    cfg.ultima_sincronizacao = _agora_brasil()
     cfg.ativo = True
     db.session.commit()
 
@@ -3925,7 +5319,7 @@ def _persistir_lojas_upseller(user_id, lojas):
     - atualiza marketplace, pedidos e timestamp
     - lojas nao retornadas no snapshot atual ficam com 0 pedidos
     """
-    agora = datetime.utcnow()
+    agora = _agora_brasil()
     lojas = lojas or []
 
     existentes = Loja.query.filter_by(user_id=user_id).all()
@@ -4070,7 +5464,7 @@ def _set_atualizacao_lojas_em_andamento(user_id, valor: bool):
     ativo = bool(valor)
     app._lojas_atualizando[uid] = ativo
     if ativo:
-        app._lojas_atualizando_ts[uid] = datetime.utcnow()
+        app._lojas_atualizando_ts[uid] = _agora_brasil()
     else:
         app._lojas_atualizando_ts.pop(uid, None)
 
@@ -4088,7 +5482,7 @@ def _esta_atualizando_lojas(user_id) -> bool:
     if hasattr(app, "_lojas_atualizando_ts"):
         ts = app._lojas_atualizando_ts.get(uid)
     if isinstance(ts, datetime):
-        if (datetime.utcnow() - ts).total_seconds() > ttl_segundos:
+        if (_agora_brasil() - ts).total_seconds() > ttl_segundos:
             app._lojas_atualizando[uid] = False
             if hasattr(app, "_lojas_atualizando_ts"):
                 app._lojas_atualizando_ts.pop(uid, None)
@@ -4115,7 +5509,7 @@ def _iniciar_acao_massa(user_id, acao: str):
         return False, atual
     novo = {
         "acao": str(acao or "").strip() or "processo",
-        "inicio": datetime.utcnow().isoformat() + "Z",
+        "inicio": _agora_brasil().isoformat(),
     }
     app._acoes_massa[uid] = novo
     return True, novo
@@ -4237,7 +5631,7 @@ def _atualizar_loja_individual(user_id, nome_loja):
         except Exception:
             pedidos = max(0, int(pedidos_fb or 0))
 
-        agora = datetime.utcnow()
+        agora = _agora_brasil()
         if loja_db:
             loja_db.nome = nome_final
             loja_db.marketplace = marketplace
@@ -4801,7 +6195,7 @@ def api_marketplace_shopee_callback():
         cfg.set_refresh_token(refresh_token)
     expire_in = int(troca.get("expire_in") or 0)
     if expire_in > 0:
-        cfg.token_expires_at = datetime.utcnow() + timedelta(seconds=expire_in)
+        cfg.token_expires_at = _agora_brasil() + timedelta(seconds=expire_in)
     cfg.status_conexao = "ok"
     cfg.ativo = bool(cfg.configurado())
     cfg.oauth_pending_at = None  # Limpar flag de pending
@@ -4865,7 +6259,7 @@ def api_marketplace_config_set():
     if token_expires_in is not None:
         try:
             sec = max(1, int(token_expires_in))
-            cfg.token_expires_at = datetime.utcnow() + timedelta(seconds=sec)
+            cfg.token_expires_at = _agora_brasil() + timedelta(seconds=sec)
         except Exception:
             pass
 
@@ -5301,7 +6695,7 @@ def api_upseller_sincronizar():
                 # NÃO fecha o scraper! Ele continua vivo para próximas operações.
 
                 # Atualizar config
-                config.ultima_sincronizacao = datetime.utcnow()
+                config.ultima_sincronizacao = _agora_brasil()
                 config.status_conexao = "ok"
                 db.session.commit()
 
@@ -5778,7 +7172,7 @@ def api_upseller_gerar():
                     }
                     # Atualizar sync de lojas para refletir estado atual do UpSeller
                     _atualizar_lojas_apos_acao(user_id)
-                    config.ultima_sincronizacao = datetime.utcnow()
+                    config.ultima_sincronizacao = _agora_brasil()
                     config.status_conexao = "ok"
                     db.session.commit()
                     return
@@ -5843,7 +7237,7 @@ def api_upseller_gerar():
                         "processado": False,
                     }
                     _atualizar_lojas_apos_acao(user_id)
-                    config.ultima_sincronizacao = datetime.utcnow()
+                    config.ultima_sincronizacao = _agora_brasil()
                     config.status_conexao = "ok"
                     db.session.commit()
                     return
@@ -5899,6 +7293,11 @@ def api_upseller_gerar():
                             status_final["aviso_whatsapp"] = auto_res.get("erro", "Falha ao enfileirar WhatsApp")
                     except Exception as e_auto:
                         status_final["aviso_whatsapp"] = f"Falha no auto-envio WhatsApp: {e_auto}"
+                    # Resumo geral diario para contatos com flag resumo_geral
+                    try:
+                        _enviar_resumo_geral_whatsapp(user_id, user.get_pasta_saida())
+                    except Exception as e_rg:
+                        print(f"[ResumoGeral] Erro: {e_rg}")
                     app._gerar_status[user_id] = status_final
                 except Exception as e:
                     print(f"[Gerar] Erro processamento: {e}")
@@ -5914,7 +7313,7 @@ def api_upseller_gerar():
                 _disparar_atualizacao_lojas_background(user_id, status_attr="_gerar_status")
 
                 # Atualizar config
-                config.ultima_sincronizacao = datetime.utcnow()
+                config.ultima_sincronizacao = _agora_brasil()
                 config.status_conexao = "ok"
                 db.session.commit()
 
@@ -6794,6 +8193,11 @@ def api_upseller_imprimir():
                             app._imprimir_status[user_id]["aviso_whatsapp"] = auto_res.get("erro", "Falha ao enfileirar WhatsApp")
                     except Exception as e_auto:
                         app._imprimir_status[user_id]["aviso_whatsapp"] = f"Falha no auto-envio WhatsApp: {e_auto}"
+                    # Resumo geral diario para contatos com flag resumo_geral
+                    try:
+                        _enviar_resumo_geral_whatsapp(user_id, user.get_pasta_saida())
+                    except Exception as e_rg:
+                        print(f"[ResumoGeral] Erro: {e_rg}")
 
                     if lojas_falha:
                         app._imprimir_status[user_id]["aviso_falhas"] = (
@@ -6931,8 +8335,18 @@ def api_whatsapp_contatos_salvar():
     data = request.get_json(force=True, silent=True) or {}
 
     telefone = str(data.get("telefone", "") or "").strip()
-    if not telefone:
+
+    # Se tem id, buscar contato existente primeiro (permite atualizar so horarios)
+    contato_id = data.get("id")
+    contato = None
+    if contato_id:
+        contato = WhatsAppContact.query.filter_by(id=int(contato_id), user_id=user_id).first()
+
+    if not telefone and not contato:
         return jsonify({"erro": "Telefone e obrigatorio"}), 400
+
+    if not telefone and contato:
+        telefone = contato.telefone
 
     lojas = data.get("lojas", []) or []
     grupos = data.get("grupos", []) or []
@@ -6948,25 +8362,37 @@ def api_whatsapp_contatos_salvar():
         # Mantem compatibilidade com chave legada e evita campo vazio.
         loja_cnpj = "ALVO_CUSTOM"
 
-    contato_id = data.get("id")
-    contato = None
-    if contato_id:
-        contato = WhatsAppContact.query.filter_by(id=int(contato_id), user_id=user_id).first()
-    if not contato:
+    # Buscar duplicata APENAS quando editando (id fornecido mas nao encontrado).
+    # Quando criando novo contato (sem id), SEMPRE criar — permite mesmo
+    # telefone com lojas/horarios diferentes (ex: Shopee + Shein separados).
+    if not contato and data.get('id'):
         contato = WhatsAppContact.query.filter_by(
             user_id=user_id,
             loja_cnpj=loja_cnpj,
             telefone=telefone
         ).first()
 
+    # Horarios multiplos: [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
+    horarios = data.get("horarios", None)
+
     if contato:
-        # Atualizar existente
-        contato.loja_cnpj = loja_cnpj
-        contato.loja_nome = loja_nome or contato.loja_nome
-        contato.nome_contato = data.get("nome_contato", contato.nome_contato)
-        contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
-        contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
-        contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
+        # Atualizar existente — so atualiza campos que foram explicitamente enviados
+        if loja_cnpj and loja_cnpj != "ALVO_CUSTOM":
+            contato.loja_cnpj = loja_cnpj
+        if loja_nome:
+            contato.loja_nome = loja_nome
+        if "nome_contato" in data:
+            contato.nome_contato = data.get("nome_contato", contato.nome_contato)
+        if "ativo" in data:
+            contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
+        if lojas:
+            contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
+        if grupos:
+            contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
+        if horarios is not None:
+            contato.horarios_json = json.dumps(horarios, ensure_ascii=False)
+        if "resumo_geral" in data:
+            contato.resumo_geral = _to_bool(data.get("resumo_geral"), False)
     else:
         # Criar novo
         contato = WhatsAppContact(
@@ -6977,11 +8403,20 @@ def api_whatsapp_contatos_salvar():
             nome_contato=data.get("nome_contato", ""),
             lojas_json=json.dumps(lojas, ensure_ascii=False),
             grupos_json=json.dumps(grupos, ensure_ascii=False),
+            horarios_json=json.dumps(horarios or [], ensure_ascii=False),
             ativo=_to_bool(data.get("ativo"), True),
+            resumo_geral=_to_bool(data.get("resumo_geral"), False),
         )
         db.session.add(contato)
 
     db.session.commit()
+
+    # Sincronizar job APScheduler do contato
+    try:
+        beka_scheduler.registrar_job_contato(contato, 'whatsapp')
+    except Exception:
+        pass
+
     return jsonify({"mensagem": "Contato salvo", **contato.to_dict()})
 
 
@@ -6993,6 +8428,10 @@ def api_whatsapp_contatos_remover(contato_id):
     contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=user_id).first()
     if not contato:
         return jsonify({"erro": "Contato nao encontrado"}), 404
+    try:
+        beka_scheduler.remover_job_contato(contato_id, 'whatsapp')
+    except Exception:
+        pass
     db.session.delete(contato)
     db.session.commit()
     return jsonify({"mensagem": "Contato removido"})
@@ -7363,7 +8802,16 @@ def api_email_contatos_criar():
     user_id = int(get_jwt_identity())
     data = request.get_json(force=True, silent=True) or {}
     email_addr = data.get("email", "").strip()
-    if not email_addr or "@" not in email_addr:
+
+    # Se tem id, buscar contato existente primeiro (permite atualizar so horarios)
+    contato_id = data.get("id")
+    contato = None
+    if contato_id:
+        contato = EmailContact.query.filter_by(id=int(contato_id), user_id=user_id).first()
+
+    if not email_addr and contato:
+        email_addr = contato.email
+    if (not email_addr or "@" not in email_addr) and not contato:
         return jsonify({"erro": "Email invalido"}), 400
 
     lojas = data.get("lojas", []) or []
@@ -7372,19 +8820,25 @@ def api_email_contatos_criar():
     grupos = [str(x).strip() for x in grupos if str(x).strip()]
 
     loja_cnpj = str(data.get("loja_cnpj", "") or "").strip() or "ALVO_CUSTOM"
-    contato_id = data.get("id")
-    contato = None
-    if contato_id:
-        contato = EmailContact.query.filter_by(id=int(contato_id), user_id=user_id).first()
+    # Horarios multiplos: [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
+    horarios = data.get("horarios", None)
+
     if not contato:
         contato = EmailContact.query.filter_by(user_id=user_id, email=email_addr, loja_cnpj=loja_cnpj).first()
 
     if contato:
-        contato.nome_contato = data.get("nome_contato", contato.nome_contato)
-        contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
-        contato.loja_cnpj = loja_cnpj
-        contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
-        contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
+        if "nome_contato" in data:
+            contato.nome_contato = data.get("nome_contato", contato.nome_contato)
+        if "ativo" in data:
+            contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
+        if loja_cnpj and loja_cnpj != "ALVO_CUSTOM":
+            contato.loja_cnpj = loja_cnpj
+        if lojas:
+            contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
+        if grupos:
+            contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
+        if horarios is not None:
+            contato.horarios_json = json.dumps(horarios, ensure_ascii=False)
     else:
         contato = EmailContact(
             user_id=user_id,
@@ -7393,10 +8847,18 @@ def api_email_contatos_criar():
             nome_contato=data.get("nome_contato", ""),
             lojas_json=json.dumps(lojas, ensure_ascii=False),
             grupos_json=json.dumps(grupos, ensure_ascii=False),
+            horarios_json=json.dumps(horarios or [], ensure_ascii=False),
             ativo=True,
         )
         db.session.add(contato)
     db.session.commit()
+
+    # Sincronizar job APScheduler do contato
+    try:
+        beka_scheduler.registrar_job_contato(contato, 'email')
+    except Exception:
+        pass
+
     return jsonify(contato.to_dict()), 201
 
 
@@ -7408,6 +8870,10 @@ def api_email_contatos_deletar(contato_id):
     contato = EmailContact.query.filter_by(id=contato_id, user_id=user_id).first()
     if not contato:
         return jsonify({"erro": "Contato nao encontrado"}), 404
+    try:
+        beka_scheduler.remover_job_contato(contato_id, 'email')
+    except Exception:
+        pass
     db.session.delete(contato)
     db.session.commit()
     return jsonify({"ok": True})
@@ -7507,8 +8973,8 @@ def api_email_enviar_lote():
             log_exec = ExecutionLog(
                 user_id=user_id,
                 tipo="email",
-                inicio=datetime.utcnow(),
-                fim=datetime.utcnow(),
+                inicio=_agora_brasil(),
+                fim=_agora_brasil(),
                 status="sucesso" if all(r.get("success") for r in resultados) else "parcial",
                 whatsapp_enviados=sum(1 for r in resultados if r.get("success")),
                 whatsapp_erros=sum(1 for r in resultados if not r.get("success")),
@@ -7628,13 +9094,222 @@ def api_agendamentos_historico():
     return jsonify(beka_scheduler.get_historico(user_id, limite))
 
 
+def _extrair_lojas_do_contato(contato, user_id):
+    """Extrai lojas alvo de um contato, expandindo grupos em lojas reais."""
+    lojas = set()
+    try:
+        for loja in json.loads(getattr(contato, 'lojas_json', None) or '[]'):
+            if str(loja).strip():
+                lojas.add(str(loja).strip())
+    except Exception:
+        pass
+    # Expandir grupos em lojas
+    try:
+        grupos_raw = json.loads(getattr(contato, 'grupos_json', None) or '[]')
+        grupos = [str(g).strip().lower() for g in grupos_raw if str(g).strip()]
+        if grupos:
+            estado_tmp = _get_estado(user_id) or {}
+            agrup = estado_tmp.get("agrupamentos", []) or []
+            for g in agrup:
+                nome_g = str((g or {}).get("nome", "") or "").strip().lower()
+                if nome_g and nome_g in grupos:
+                    for ln in (g or {}).get("nomes_lojas", []) or []:
+                        ln = str(ln or "").strip()
+                        if ln:
+                            lojas.add(ln)
+    except Exception:
+        pass
+    return lojas
+
+
 @app.route('/api/agendamentos/executar-agora', methods=['POST'])
 @jwt_required()
 def api_agendamentos_executar_agora():
-    """Executa pipeline completo manualmente (sem agendamento)."""
+    """Executa pipeline manualmente (sem agendamento). Aceita modo_pipeline='direto'."""
     user_id = int(get_jwt_identity())
+    data = request.get_json(force=True, silent=True) or {}
+    modo = data.get("modo_pipeline", "completo")
+
+    if modo == "direto":
+        def _run_direto():
+            with app.app_context():
+                print(f"[ExecDireto] Iniciando pipeline direto para user {user_id}...")
+                log_exec = ExecutionLog(
+                    user_id=user_id, tipo="manual",
+                    inicio=_agora_brasil(), status="executando"
+                )
+                db.session.add(log_exec)
+                db.session.commit()
+                try:
+                    # Extrair lojas dos contatos configurados (WhatsApp + Email), expandindo grupos
+                    lojas_contatos = set()
+                    for c in WhatsAppContact.query.filter_by(user_id=user_id, ativo=True).all():
+                        lojas_contatos.update(_extrair_lojas_do_contato(c, user_id))
+                    for c in EmailContact.query.filter_by(user_id=user_id, ativo=True).all():
+                        lojas_contatos.update(_extrair_lojas_do_contato(c, user_id))
+                    lojas_alvo_list = sorted(lojas_contatos) if lojas_contatos else None
+                    if lojas_alvo_list:
+                        print(f"[ExecDireto] Filtrando por lojas dos contatos: {lojas_alvo_list}")
+                    else:
+                        print(f"[ExecDireto] Nenhum contato com lojas configuradas, baixando todas")
+                    result = _executar_imprimir_direto(user_id, lojas_alvo=lojas_alvo_list)
+                    print(f"[ExecDireto] Resultado: {result}")
+                    if result.get("ok"):
+                        log_exec.etiquetas_processadas = result.get("total_etiquetas", 0)
+                        # Salvar sucesso IMEDIATAMENTE antes do envio
+                        log_exec.status = "sucesso"
+                        log_exec.fim = _agora_brasil()
+                        db.session.commit()
+                        print(f"[ExecDireto] Processamento OK. Enfileirando envios...")
+                        # Enviar WhatsApp
+                        try:
+                            enq = _enfileirar_envio_whatsapp_resultado(
+                                user_id=user_id, origem="manual", respeitar_toggle_auto=False
+                            )
+                            log_exec.whatsapp_enviados = enq.get("total_entregas", 0) if enq.get("ok") else 0
+                            db.session.commit()
+                        except Exception as e_wa:
+                            print(f"[ExecDireto] Erro WhatsApp: {e_wa}")
+                        # Enviar Email
+                        try:
+                            _enviar_email_resultado_agendado(user_id=user_id)
+                        except Exception as e_em:
+                            print(f"[ExecDireto] Erro Email: {e_em}")
+                        # Acumular resumo diario e enviar resumo geral
+                        try:
+                            estado_tmp = _get_estado(user_id)
+                            lojas_res = ((estado_tmp or {}).get("ultimo_resultado") or {}).get("lojas", [])
+                            _acumular_resumo_diario(user_id, lojas_res)
+                            _enviar_resumo_geral_whatsapp(user_id, user.get_pasta_saida())
+                        except Exception as e_rg:
+                            print(f"[ExecDireto] Erro resumo geral: {e_rg}")
+                    else:
+                        log_exec.status = "erro"
+                        log_exec.detalhes = json.dumps({"erro": result.get("erro", "")}, ensure_ascii=False)
+                        log_exec.fim = _agora_brasil()
+                        db.session.commit()
+                except Exception as e:
+                    import traceback
+                    print(f"[ExecDireto] EXCECAO: {e}")
+                    traceback.print_exc()
+                    log_exec.status = "erro"
+                    log_exec.detalhes = json.dumps({"erro": str(e)}, ensure_ascii=False)
+                    log_exec.fim = _agora_brasil()
+                    db.session.commit()
+                print(f"[ExecDireto] Finalizado. Status: {log_exec.status}")
+
+        def _run_direto_com_timeout():
+            worker = threading.Thread(target=_run_direto, daemon=True)
+            worker.start()
+            worker.join(timeout=900)  # 15 min max
+            if worker.is_alive():
+                print(f"[ExecDireto] TIMEOUT: pipeline direto excedeu 15 min")
+                with app.app_context():
+                    stuck = ExecutionLog.query.filter_by(
+                        user_id=user_id, status="executando"
+                    ).order_by(ExecutionLog.id.desc()).first()
+                    if stuck:
+                        stuck.status = "erro"
+                        stuck.fim = _agora_brasil()
+                        stuck.detalhes = json.dumps(
+                            {"erro": "Timeout: execucao excedeu 15 minutos"},
+                            ensure_ascii=False
+                        )
+                        db.session.commit()
+
+        thread = threading.Thread(target=_run_direto_com_timeout, daemon=True)
+        thread.start()
+        return jsonify({"mensagem": "Envio direto iniciado em background"})
+
     beka_scheduler.executar_agora(user_id)
     return jsonify({"mensagem": "Pipeline iniciado em background"})
+
+
+@app.route('/api/contato/<string:tipo>/<int:contato_id>/executar-agora', methods=['POST'])
+@jwt_required()
+def api_contato_executar_agora(tipo, contato_id):
+    """Executa pipeline para um contato individual."""
+    user_id = int(get_jwt_identity())
+    if tipo not in ('whatsapp', 'email'):
+        return jsonify({"erro": "Tipo invalido"}), 400
+    if tipo == 'whatsapp':
+        contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=user_id).first()
+    else:
+        contato = EmailContact.query.filter_by(id=contato_id, user_id=user_id).first()
+    if not contato:
+        return jsonify({"erro": "Contato nao encontrado"}), 404
+
+    def _run_individual():
+        with app.app_context():
+            lojas_alvo = sorted(_extrair_lojas_do_contato(contato, user_id))
+
+            log_exec = ExecutionLog(
+                user_id=user_id, tipo="manual_individual",
+                inicio=_agora_brasil(), status="executando",
+                detalhes=json.dumps({"contato_id": contato_id, "tipo": tipo}, ensure_ascii=False)
+            )
+            db.session.add(log_exec)
+            db.session.commit()
+
+            try:
+                result = _executar_imprimir_direto(user_id, lojas_alvo=lojas_alvo or None)
+                if result.get("ok"):
+                    log_exec.etiquetas_processadas = result.get("total_etiquetas", 0)
+                    # Salvar sucesso IMEDIATAMENTE antes do envio —
+                    # assim se o servidor morrer, sabemos que processou OK
+                    log_exec.status = "sucesso"
+                    log_exec.fim = _agora_brasil()
+                    db.session.commit()
+                    print(f"[ExecIndividual] Processamento OK ({result.get('total_etiquetas',0)} etiq). Enfileirando envio...")
+                    try:
+                        if tipo == 'whatsapp':
+                            enq = _enfileirar_whatsapp_todos_arquivos_para_contato(user_id, contato_id)
+                            if not enq.get("ok"):
+                                print(f"[ExecIndividual] Envio direto falhou ({enq.get('erro')}), tentando matching...")
+                                enq = _enfileirar_envio_whatsapp_para_contato(user_id, contato_id)
+                        else:
+                            _enviar_email_para_contato_direto(user_id, contato_id)
+                            enq = {"ok": True, "total_entregas": 1}
+                        log_exec.whatsapp_enviados = enq.get("total_entregas", 0) if enq.get("ok") else 0
+                        db.session.commit()
+                    except Exception as e_send:
+                        print(f"[ExecIndividual] Erro envio: {e_send}")
+                else:
+                    log_exec.status = "erro"
+                    log_exec.detalhes = json.dumps({"erro": result.get("erro", "")}, ensure_ascii=False)
+                    log_exec.fim = _agora_brasil()
+                    db.session.commit()
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                log_exec.status = "erro"
+                log_exec.detalhes = json.dumps({"erro": str(e)}, ensure_ascii=False)
+                log_exec.fim = _agora_brasil()
+                db.session.commit()
+
+    def _run_individual_com_timeout():
+        """Wrapper com timeout de 15 minutos para evitar travamento infinito."""
+        worker = threading.Thread(target=_run_individual, daemon=True)
+        worker.start()
+        worker.join(timeout=900)  # 15 minutos max
+        if worker.is_alive():
+            print(f"[ExecIndividual] TIMEOUT: execucao contato #{contato_id} excedeu 15 min")
+            with app.app_context():
+                stuck = ExecutionLog.query.filter_by(
+                    user_id=user_id, status="executando"
+                ).order_by(ExecutionLog.id.desc()).first()
+                if stuck:
+                    stuck.status = "erro"
+                    stuck.fim = _agora_brasil()
+                    stuck.detalhes = json.dumps(
+                        {"erro": "Timeout: execucao excedeu 15 minutos"},
+                        ensure_ascii=False
+                    )
+                    db.session.commit()
+
+    thread = threading.Thread(target=_run_individual_com_timeout, daemon=True)
+    thread.start()
+    return jsonify({"mensagem": f"Execucao iniciada para contato #{contato_id}"})
 
 
 # Inicia workers globais (fila WhatsApp + supervisor Baileys)
@@ -7644,16 +9319,72 @@ _iniciar_background_workers()
 # ----------------------------------------------------------------
 # MAIN
 # ----------------------------------------------------------------
+
+def _iniciar_servidor_background(port):
+    """Inicia o servidor WSGI em thread separada para o pywebview."""
+    try:
+        from waitress import serve
+        print(f"[Waitress] Servidor WSGI iniciando na porta {port}...")
+        serve(app, host='0.0.0.0', port=port, threads=8,
+              channel_timeout=120, recv_bytes=65536)
+    except ImportError:
+        print("[AVISO] waitress nao instalado, usando Flask built-in")
+        app.run(debug=False, port=port, host='0.0.0.0')
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("DASHBOARD - Beka MultiPlace")
     print("=" * 60)
-    print(f"\n  Abra no navegador: http://localhost:5000\n")
-    print("=" * 60)
-
-    if getattr(sys, 'frozen', False):
-        import webbrowser
-        threading.Timer(1.5, lambda: webbrowser.open('http://localhost:5000')).start()
 
     port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, port=port, host='0.0.0.0')
+    mode = os.environ.get('BEKA_MODE', 'desktop')  # 'desktop' ou 'server'
+
+    if mode == 'server':
+        # Modo servidor puro (para Railway, VPS, ou acesso via navegador)
+        print(f"\n  Modo SERVIDOR: http://localhost:{port}\n")
+        print("=" * 60)
+        _iniciar_servidor_background(port)
+    else:
+        # Modo desktop: abre janela nativa com pywebview
+        print(f"\n  Modo DESKTOP: abrindo janela nativa...\n")
+        print("=" * 60)
+
+        try:
+            import webview
+
+            # Iniciar servidor em thread background
+            server_thread = threading.Thread(
+                target=_iniciar_servidor_background,
+                args=(port,),
+                daemon=True
+            )
+            server_thread.start()
+
+            # Aguardar servidor ficar pronto
+            import time
+            import urllib.request
+            for i in range(30):
+                try:
+                    urllib.request.urlopen(f'http://localhost:{port}/login', timeout=1)
+                    break
+                except Exception:
+                    time.sleep(0.5)
+
+            # Abrir janela nativa
+            window = webview.create_window(
+                'Beka MultiPlace',
+                f'http://localhost:{port}',
+                width=1280,
+                height=820,
+                min_size=(900, 600),
+                resizable=True,
+                text_select=True,
+            )
+            webview.start(debug=False)
+
+        except ImportError:
+            print("[AVISO] pywebview nao instalado, abrindo no navegador...")
+            import webbrowser
+            threading.Timer(1.5, lambda: webbrowser.open(f'http://localhost:{port}')).start()
+            _iniciar_servidor_background(port)

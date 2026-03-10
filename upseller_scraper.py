@@ -605,16 +605,104 @@ class UpSellerScraper:
             except Exception:
                 pass
 
+            # ---- Estrategia 3e: Popups de Avisos/Anuncios do UpSeller ----
+            # Modal de "Avisos" com anuncios de webinars, novidades etc.
+            # Tem botao "Proximo" para paginar mas nenhum "Ignorar"/"Pular".
+            # Solucao: fechar via X, botao do footer, ou esconder via JS.
+            try:
+                fechou_avisos = await self._page.evaluate("""
+                    (() => {
+                        const modals = document.querySelectorAll('.ant-modal-wrap:not([style*="display: none"])');
+                        for (const wrap of modals) {
+                            const modal = wrap.querySelector('.ant-modal');
+                            if (!modal) continue;
+                            const title = (modal.querySelector('.ant-modal-title, .ant-modal-header') || {}).textContent || '';
+                            const body = (modal.querySelector('.ant-modal-body') || {}).textContent || '';
+                            const combined = (title + ' ' + body).toLowerCase()
+                                .normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+                            // Detectar popups de avisos/anuncios/novidades/webinar
+                            const isAviso = combined.includes('aviso') ||
+                                            combined.includes('anuncio') ||
+                                            combined.includes('novidade') ||
+                                            combined.includes('webinar') ||
+                                            combined.includes('atualizac') ||
+                                            combined.includes('comunicado') ||
+                                            combined.includes('noticia') ||
+                                            combined.includes('newsletter');
+                            if (!isAviso) continue;
+
+                            // Tentar fechar via X
+                            const closeBtn = modal.querySelector('.ant-modal-close, button[aria-label="Close"], button[aria-label="Fechar"]');
+                            if (closeBtn) {
+                                closeBtn.click();
+                                return 'close_x';
+                            }
+                            // Tentar fechar via botao no footer
+                            const allBtns = modal.querySelectorAll('button, a.ant-btn');
+                            for (const btn of allBtns) {
+                                const t = (btn.textContent || '').trim().toLowerCase();
+                                if (t === 'fechar' || t === 'ok' || t === 'cancelar' || t === 'entendi' || t === 'got it' || t === 'close') {
+                                    btn.click();
+                                    return 'close_btn_' + t;
+                                }
+                            }
+                            // Fallback: esconder o modal e a mask via JS
+                            wrap.style.display = 'none';
+                            const masks = document.querySelectorAll('.ant-modal-mask');
+                            masks.forEach(m => m.style.display = 'none');
+                            document.body.style.removeProperty('overflow');
+                            document.body.classList.remove('ant-scrolling-effect');
+                            return 'hidden_js';
+                        }
+                        return null;
+                    })()
+                """)
+                if fechou_avisos:
+                    popup_encontrado = True
+                    logger.info(f"[UpSeller] Popup de avisos/anuncios fechado via: {fechou_avisos}")
+                    await self._page.wait_for_timeout(500)
+            except Exception as e:
+                logger.debug(f"[UpSeller] Erro ao fechar popup avisos: {e}")
+
             # ---- Estrategia 4: ant-modal genericos ----
             try:
                 modals = await self._page.query_selector_all('.ant-modal-wrap:not([style*="display: none"])')
                 for modal in modals:
+                    # Pular modals de negocio (confirmar impressao, configurar etc.)
+                    try:
+                        modal_text = await modal.inner_text()
+                        modal_lower = (modal_text or '').lower()
+                        is_business = any(kw in modal_lower for kw in [
+                            'marcar como impresso', 'configurar', 'imprimir etiqueta',
+                            'confirmar', 'selecionar logistica', 'enviar pedido'
+                        ])
+                        if is_business:
+                            continue
+                    except Exception:
+                        pass
                     close_btn = await modal.query_selector('.ant-modal-close')
                     if close_btn:
                         await close_btn.click()
                         popup_encontrado = True
-                        logger.info("[UpSeller] ant-modal fechado")
+                        logger.info("[UpSeller] ant-modal fechado via X")
                         await self._page.wait_for_timeout(500)
+                        continue
+                    # Fallback: esconder modal sem X via JS
+                    try:
+                        await modal.evaluate("""
+                            (wrap) => {
+                                wrap.style.display = 'none';
+                                const masks = document.querySelectorAll('.ant-modal-mask');
+                                masks.forEach(m => m.style.display = 'none');
+                                document.body.style.removeProperty('overflow');
+                                document.body.classList.remove('ant-scrolling-effect');
+                            }
+                        """)
+                        popup_encontrado = True
+                        logger.info("[UpSeller] ant-modal sem X escondido via JS")
+                        await self._page.wait_for_timeout(500)
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -672,49 +760,118 @@ class UpSellerScraper:
 
             await self._page.wait_for_timeout(300)
 
-        # Garantia final: esconder qualquer coisa que possa estar bloqueando
+        # Garantia final: NUCLEAR — remover QUALQUER coisa que bloqueie a pagina
+        # Isso inclui modais, overlays, masks, drawers, notificacoes, tutoriais etc.
+        # So preserva elementos de negocio (confirmar impressao, logistica etc.)
         try:
-            await self._page.evaluate("""
+            resultado_nuclear = await self._page.evaluate("""
                 (() => {
-                    // Remover iframes de YouTube visíveis (tutoriais)
+                    const log = [];
+                    const BUSINESS_KW = [
+                        'marcar como impresso', 'configurar impressao',
+                        'selecionar logistica', 'enviar pedido',
+                        'confirmar envio'
+                    ];
+                    const isBusiness = (text) => {
+                        const t = (text || '').toLowerCase();
+                        return BUSINESS_KW.some(kw => t.includes(kw));
+                    };
+
+                    // 1. Fechar TODOS os ant-modal-wrap visiveis (exceto business)
+                    document.querySelectorAll('.ant-modal-wrap').forEach(wrap => {
+                        if (wrap.style.display === 'none') return;
+                        const text = wrap.textContent || '';
+                        if (isBusiness(text)) return;
+                        wrap.style.display = 'none';
+                        log.push('modal-wrap');
+                    });
+
+                    // 2. Esconder TODAS as masks de modal
+                    document.querySelectorAll('.ant-modal-mask, .ant-image-preview-mask').forEach(m => {
+                        m.style.display = 'none';
+                        log.push('mask');
+                    });
+
+                    // 3. Fechar ant-drawer
+                    document.querySelectorAll('.ant-drawer:not(.ant-drawer-hidden)').forEach(d => {
+                        const text = d.textContent || '';
+                        if (isBusiness(text)) return;
+                        d.style.display = 'none';
+                        log.push('drawer');
+                    });
+
+                    // 4. Remover iframes de YouTube (tutoriais)
                     document.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu.be"]').forEach(iframe => {
                         const container = iframe.closest('div[style], div[class*="modal"], div[class*="popup"], div[class*="tutorial"], div[class*="intro"]');
-                        if (container) container.style.display = 'none';
+                        if (container) { container.style.display = 'none'; log.push('youtube'); }
                     });
-                    // Esconder overlays
-                    const nav = document.getElementById('myNav');
-                    if (nav) nav.style.display = 'none';
 
-                    // Remover overlays do driver.js que bloqueiam clique
-                    const sels = [
-                        'svg.driver-overlay',
-                        '.driver-overlay',
-                        '.driver-popover',
-                        '.driver-stage',
-                        '.driver-highlighted-element',
-                        '.driver-active-element',
-                        '[class*="driver-overlay"]',
-                        '[class*="driver-popover"]'
+                    // 5. Esconder overlay #myNav e driver.js
+                    const nav = document.getElementById('myNav');
+                    if (nav && nav.style.display !== 'none') { nav.style.display = 'none'; log.push('myNav'); }
+                    const driverSels = [
+                        'svg.driver-overlay', '.driver-overlay', '.driver-popover',
+                        '.driver-stage', '.driver-highlighted-element',
+                        '[class*="driver-overlay"]', '[class*="driver-popover"]'
                     ];
-                    for (const sel of sels) {
-                        document.querySelectorAll(sel).forEach((el) => {
-                            try {
-                                el.style.pointerEvents = 'none';
-                                el.style.display = 'none';
-                            } catch (e) {}
-                            try { el.remove(); } catch (e) {}
+                    for (const sel of driverSels) {
+                        document.querySelectorAll(sel).forEach(el => {
+                            try { el.style.pointerEvents = 'none'; el.style.display = 'none'; } catch(e){}
+                            try { el.remove(); } catch(e){}
+                            log.push('driver');
                         });
                     }
+
+                    // 6. Remover classes de bloqueio do body
                     try {
                         document.body.classList.remove(
-                            'driver-active',
-                            'driver-open',
-                            'driver-fix-stacking',
-                            'driver-no-interaction'
+                            'driver-active', 'driver-open',
+                            'driver-fix-stacking', 'driver-no-interaction',
+                            'ant-scrolling-effect'
                         );
-                    } catch (e) {}
+                        document.body.style.removeProperty('overflow');
+                        document.body.style.removeProperty('padding-right');
+                        document.body.style.removeProperty('touch-action');
+                    } catch(e){}
+
+                    // 7. Remover qualquer div flutuante com z-index alto que bloqueie cliques
+                    // (popups customizados do UpSeller que nao sao ant-modal)
+                    document.querySelectorAll('div[style*="z-index"]').forEach(el => {
+                        const st = window.getComputedStyle(el);
+                        const z = parseInt(st.zIndex || '0');
+                        if (z < 1000) return;
+                        const r = el.getBoundingClientRect();
+                        if (r.width < 200 || r.height < 100) return;
+                        // Elemento grande com z-index alto — provavelmente popup/overlay
+                        const text = (el.textContent || '').toLowerCase();
+                        if (isBusiness(text)) return;
+                        // Se cobre mais de 30% da viewport, e um blocker
+                        const vpW = window.innerWidth;
+                        const vpH = window.innerHeight;
+                        if (r.width > vpW * 0.3 && r.height > vpH * 0.3) {
+                            el.style.display = 'none';
+                            log.push('zindex_overlay:' + z);
+                        }
+                    });
+
+                    // 8. Remover ant-notification/ant-message que podem cobrir botoes
+                    document.querySelectorAll('.ant-notification, .ant-message').forEach(n => {
+                        n.style.pointerEvents = 'none';
+                    });
+
+                    return log.length > 0 ? log.join(',') : null;
                 })()
             """)
+            if resultado_nuclear:
+                logger.info(f"[UpSeller] Garantia final removeu: {resultado_nuclear}")
+        except Exception:
+            pass
+
+        # ESC final por seguranca
+        try:
+            await self._page.keyboard.press("Escape")
+            await self._page.wait_for_timeout(200)
+            await self._page.keyboard.press("Escape")
         except Exception:
             pass
         # Alguns layouts deixam o menu de ordenacao ("Order") aberto.
@@ -5758,10 +5915,96 @@ class UpSellerScraper:
         logger.info(f"[UpSeller] Lista(s) de resumo baixada(s): {len(arquivos_baixados)}")
         return arquivos_baixados
 
+    async def _auto_configurar_impressao(self, btn_ir_configurar) -> bool:
+        """
+        Quando o modal 'diferentes logisticas precisa ser configurado' aparece,
+        clica 'Ir para Configurar' e tenta auto-configurar cada logistica
+        selecionando 'Etiqueta de Envio Padrao' ou a primeira opcao disponivel.
+
+        Retorna True se a configuracao foi salva com sucesso.
+        """
+        try:
+            # 1. Clicar "Ir para Configurar"
+            await btn_ir_configurar.click()
+            await self._page.wait_for_timeout(3000)
+            await self.screenshot("auto_config_01_pagina")
+
+            # 2. Verificar se estamos na pagina de configuracao de impressao
+            page_text = await self._page.evaluate("document.body.innerText.substring(0, 500)")
+            logger.info(f"[UpSeller] Pagina de config: {page_text[:200]}")
+
+            # 3. Procurar por selects/dropdowns de formato de etiqueta
+            # No UpSeller, cada logistica tem um select para escolher o formato
+            selects = await self._page.query_selector_all(
+                'select, .ant-select, .ant-select-selector'
+            )
+            logger.info(f"[UpSeller] Encontrados {len(selects)} selects na pagina de config")
+
+            # 4. Para cada select que nao tem valor, selecionar a primeira opcao
+            configurou_algo = False
+            for sel in selects:
+                try:
+                    # Verificar se eh um select de formato de etiqueta
+                    parent_text = await sel.evaluate(
+                        "el => (el.closest('tr, .ant-row, .form-group') || el.parentElement).innerText.substring(0, 100)"
+                    )
+                    if 'etiqueta' in parent_text.lower() or 'formato' in parent_text.lower() or 'envio' in parent_text.lower():
+                        await sel.click()
+                        await self._page.wait_for_timeout(500)
+                        # Selecionar primeira opcao visivel
+                        opcao = self._page.locator('.ant-select-dropdown .ant-select-item').first
+                        if await opcao.is_visible(timeout=2000):
+                            opcao_text = await opcao.text_content()
+                            logger.info(f"[UpSeller] Auto-selecionando formato: '{opcao_text}'")
+                            await opcao.click()
+                            await self._page.wait_for_timeout(500)
+                            configurou_algo = True
+                except Exception as e_sel:
+                    logger.debug(f"[UpSeller] Erro ao configurar select: {e_sel}")
+
+            await self.screenshot("auto_config_02_apos_selects")
+
+            # 5. Clicar botao "Salvar" ou "Confirmar"
+            salvar_btn = None
+            for seletor in [
+                'button:has-text("Salvar")',
+                'button:has-text("Confirmar")',
+                'button:has-text("OK")',
+                'button.ant-btn-primary',
+            ]:
+                try:
+                    btn = self._page.locator(seletor).first
+                    if await btn.is_visible(timeout=1000):
+                        salvar_btn = btn
+                        break
+                except Exception:
+                    continue
+
+            if salvar_btn:
+                btn_text = await salvar_btn.text_content()
+                logger.info(f"[UpSeller] Clicando botao salvar: '{(btn_text or '').strip()}'")
+                await salvar_btn.click()
+                await self._page.wait_for_timeout(2000)
+                await self.screenshot("auto_config_03_salvo")
+                logger.info("[UpSeller] Auto-configuracao de impressao salva!")
+                return True
+            else:
+                logger.warning("[UpSeller] Nao encontrou botao de salvar na pagina de config")
+                await self.screenshot("auto_config_03_sem_salvar")
+                # Mesmo sem clicar salvar, a pagina pode ter salvo automaticamente
+                return configurou_algo
+
+        except Exception as e:
+            logger.error(f"[UpSeller] Erro na auto-configuracao de impressao: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     async def baixar_etiquetas(
         self,
         filtro_loja: Union[str, List[str], None] = None,
         aba_alvo: str = "impressao",
+        _retry_config: bool = False,
     ) -> List[str]:
         """
         Navega para pagina "Etiqueta para Impressao" e baixa PDFs de etiquetas.
@@ -5815,6 +6058,9 @@ class UpSellerScraper:
             print(f"[baixar_etiquetas] goto {UPSELLER_PARA_IMPRIMIR}")
             await self._page.goto(UPSELLER_PARA_IMPRIMIR, wait_until="domcontentloaded", timeout=30000)
             await self._page.wait_for_timeout(3000)
+            await self._fechar_popups()
+            # Segundo check apos delay — popup "Avisos" pode carregar assincronamente
+            await self._page.wait_for_timeout(1500)
             await self._fechar_popups()
 
             # Funcao helper para clicar na aba alvo (impressao/falha)
@@ -5944,6 +6190,7 @@ class UpSellerScraper:
                     if not tem_nao_impressa:
                         return True
 
+                    # Selecionar TODOS os pedidos (incluindo outras paginas)
                     try:
                         select_all = await self._page.wait_for_selector(
                             'thead .ant-checkbox-wrapper, th .ant-checkbox-input, '
@@ -5951,20 +6198,28 @@ class UpSellerScraper:
                             timeout=4000
                         )
                         await select_all.click()
-                        await self._page.wait_for_timeout(700)
-                    except Exception:
-                        pass
+                        await self._page.wait_for_timeout(1500)
+                        logger.info("[UpSeller][mark] Checkbox 'selecionar todos' clicado")
+                    except Exception as e_sel:
+                        logger.warning(f"[UpSeller][mark] Checkbox selecionar todos nao encontrado: {e_sel}")
 
+                    # Clicar "Selecionar todas as paginas" se aparecer
+                    # (Ant Design mostra popup apos clicar select-all em tabela paginada)
                     if (not filtro_lojas) or filtro_multiplo:
                         try:
                             loc_sel_todas = self._page.locator(
-                                '.ant-dropdown-menu-item:has-text("Selecionar todas")'
+                                '.ant-dropdown-menu-item:has-text("Selecionar todas"), '
+                                'a:has-text("Selecionar todas"), '
+                                'span:has-text("Selecionar todas as")'
                             ).first
-                            if await loc_sel_todas.is_visible(timeout=1200):
+                            if await loc_sel_todas.is_visible(timeout=3000):
                                 await loc_sel_todas.click()
-                                await self._page.wait_for_timeout(700)
+                                await self._page.wait_for_timeout(1500)
+                                logger.info("[UpSeller][mark] 'Selecionar todas as paginas' clicado")
+                            else:
+                                logger.info("[UpSeller][mark] Sem popup 'Selecionar todas' (pagina unica ou ja selecionado)")
                         except Exception:
-                            pass
+                            logger.info("[UpSeller][mark] Sem popup de selecao de paginas")
 
                     acao = await self._page.evaluate("""
                         (() => {
@@ -6014,29 +6269,61 @@ class UpSellerScraper:
                         })()
                     """)
 
-                    if isinstance(acao, dict) and acao.get("modo") == "abrir_menu":
-                        item = self._page.locator(
-                            '.ant-dropdown-menu-item:has-text("impressa"), '
-                            '.ant-dropdown-menu-item:has-text("Impresso"), '
-                            '.ant-dropdown-menu-item:has-text("Marcar"), '
-                            '.ant-dropdown-menu-item:has-text("Printed")'
-                        ).first
-                        if await item.count() > 0 and await item.is_visible(timeout=2500):
-                            await item.click()
-                            await self._page.wait_for_timeout(900)
+                    if isinstance(acao, dict) and acao.get("ok"):
+                        modo = acao.get("modo", "")
+                        logger.info(f"[UpSeller][mark] Acao executada: modo={modo}, texto={acao.get('texto','')}")
 
+                        if modo == "abrir_menu":
+                            # "Mais Acoes" foi aberto.  O item "Marcar como Impresso" tem
+                            # um SUBMENU com "Etiqueta" / "Lista de Separacao".
+                            await self._page.wait_for_timeout(600)
+
+                            # 1) Hover no item "Marcar como Impresso" para abrir submenu
+                            sub_parent = self._page.locator(
+                                '.ant-dropdown-menu-submenu-title:has-text("Marcar como Impresso"), '
+                                '.ant-dropdown-menu-submenu-title:has-text("impressa"), '
+                                '.ant-dropdown-menu-item:has-text("Marcar como Impresso")'
+                            ).first
+                            if await sub_parent.count() > 0 and await sub_parent.is_visible(timeout=3000):
+                                await sub_parent.hover()
+                                await self._page.wait_for_timeout(800)
+
+                                # 2) Clicar em "Etiqueta" no submenu
+                                sub_item = self._page.locator(
+                                    '.ant-dropdown-menu-item:has-text("Etiqueta")'
+                                ).first
+                                if await sub_item.count() > 0 and await sub_item.is_visible(timeout=3000):
+                                    await sub_item.click()
+                                    await self._page.wait_for_timeout(1200)
+                                    logger.info("[UpSeller][mark] Clicou 'Marcar como Impresso > Etiqueta'")
+                                else:
+                                    # Fallback: clicar direto no pai (caso nao tenha submenu)
+                                    await sub_parent.click()
+                                    await self._page.wait_for_timeout(1200)
+                                    logger.info("[UpSeller][mark] Clicou 'Marcar como Impresso' (sem submenu)")
+                            else:
+                                logger.warning("[UpSeller][mark] Item 'Marcar como Impresso' nao encontrado no dropdown")
+                        else:
+                            # Modo 'direto' - botao clicado diretamente
+                            await self._page.wait_for_timeout(1200)
+                    else:
+                        logger.warning(f"[UpSeller][mark] Nenhum botao de acao encontrado: {acao}")
+
+                    # Confirmar modal se aparecer
                     try:
                         modal_btn = await self._page.wait_for_selector(
                             '.ant-modal button.ant-btn-primary',
-                            timeout=3500
+                            timeout=5000
                         )
                         if modal_btn:
+                            btn_txt = await modal_btn.evaluate("el => (el.textContent || '').trim()")
                             await modal_btn.click()
-                            await self._page.wait_for_timeout(1300)
+                            await self._page.wait_for_timeout(2000)
+                            logger.info(f"[UpSeller][mark] Modal de confirmacao clicado: '{btn_txt}'")
                     except Exception:
-                        pass
+                        logger.info("[UpSeller][mark] Sem modal de confirmacao pos-acao")
 
-                    logger.info("[UpSeller] Pos-download: tentativa de marcar lote como impresso executada")
+                    logger.info("[UpSeller][mark] Pos-download: marcar como impresso executado")
                     return True
                 except Exception as e_mark:
                     logger.warning(f"[UpSeller] Falha ao marcar como impresso no pos-download: {e_mark}")
@@ -6331,7 +6618,7 @@ class UpSellerScraper:
                 logger.info("[UpSeller] Opcao clicada, aguardando resposta...")
                 await self._page.wait_for_timeout(3000)
 
-                # Se aparece modal de confirmacao, clicar no botao primario
+                # Se aparece modal de confirmacao, clicar no botao adequado
                 try:
                     modal_btn = await self._page.wait_for_selector(
                         '.ant-modal button.ant-btn-primary',
@@ -6339,9 +6626,46 @@ class UpSellerScraper:
                     )
                     if modal_btn:
                         btn_text = await modal_btn.evaluate("el => el.textContent.trim()")
-                        logger.info(f"[UpSeller] Modal encontrado, botao: '{btn_text}'")
-                        await modal_btn.click()
-                        await self._page.wait_for_timeout(3000)
+                        logger.info(f"[UpSeller] Modal encontrado, botao primario: '{btn_text}'")
+
+                        # Se o botao primario eh "Ir para Configurar" (modal multi-logistica),
+                        # clicar para configurar, tentar auto-configurar, e voltar a tentar
+                        if "configurar" in btn_text.lower():
+                            if _retry_config:
+                                # Ja tentou auto-configurar e falhou. Abortar.
+                                logger.error("[UpSeller] Modal multi-logistica persiste apos auto-config!")
+                                print("[baixar_etiquetas] Modal persiste apos auto-config - retornando []")
+                                # Fechar modal
+                                try:
+                                    await self._page.locator('.ant-modal button:not(.ant-btn-primary)').first.click()
+                                except Exception:
+                                    pass
+                                return []
+
+                            logger.warning(
+                                "[UpSeller] Modal 'precisa ser configurado' detectado. "
+                                "Tentando auto-configurar..."
+                            )
+                            print("[baixar_etiquetas] Modal multi-logistica - tentando auto-configurar")
+                            configurou = await self._auto_configurar_impressao(modal_btn)
+                            if not configurou:
+                                print("[baixar_etiquetas] Auto-config falhou - retornando []")
+                                return []
+                            # Auto-config OK: voltar a pagina de etiquetas e re-selecionar
+                            print("[baixar_etiquetas] Auto-config OK! Voltando para re-selecionar...")
+                            await self._page.goto(
+                                "https://app.upseller.com/pt/order/to-ship",
+                                wait_until="domcontentloaded", timeout=30000
+                            )
+                            await self._page.wait_for_timeout(3000)
+                            await self._fechar_popups()
+                            # Re-executar baixar_etiquetas (1 retry)
+                            return await self.baixar_etiquetas(
+                                filtro_loja=filtro_loja, _retry_config=True
+                            )
+                        else:
+                            await modal_btn.click()
+                            await self._page.wait_for_timeout(3000)
                 except Exception:
                     logger.info("[UpSeller] Sem modal de confirmacao")
 
@@ -6374,34 +6698,79 @@ class UpSellerScraper:
                 elif _captured_popups:
                     # === Novo tab aberto (PDF ou preview) ===
                     new_page = _captured_popups[0]
-                    logger.info(f"[UpSeller] Novo tab aberto: {new_page.url}")
+                    popup_url = "(desconhecido)"
+                    try:
+                        popup_url = new_page.url or "(vazio)"
+                    except Exception:
+                        pass
+                    logger.info(f"[UpSeller] Novo tab aberto: {popup_url}")
+
+                    # Aguardar carregamento do popup com tratamento robusto
+                    # (o popup pode fechar sozinho apos disparar download)
+                    popup_vivo = True
                     try:
                         await new_page.wait_for_load_state('networkidle', timeout=60000)
-                    except Exception:
-                        await new_page.wait_for_timeout(5000)
-
-                    page_url = new_page.url
-                    logger.info(f"[UpSeller] URL do novo tab: {page_url}")
+                    except Exception as e_load:
+                        err_str = str(e_load).lower()
+                        if 'closed' in err_str or 'target' in err_str:
+                            logger.warning(f"[UpSeller] Popup fechou durante carregamento: {e_load}")
+                            popup_vivo = False
+                        else:
+                            try:
+                                await new_page.wait_for_timeout(5000)
+                            except Exception:
+                                logger.warning("[UpSeller] Popup morreu no fallback wait_for_timeout")
+                                popup_vivo = False
 
                     salvo_popup = False
 
-                    # Prioridade: salvar PDF ORIGINAL (evita capturar sidebar/miniaturas do preview).
-                    try:
-                        salvo_popup = await self._salvar_pdf_de_popup(new_page, save_path)
-                    except Exception as popup_err:
-                        logger.warning(f"[UpSeller] Falha ao extrair PDF real do popup: {popup_err}")
-
-                    # Fallback final: print da pagina (pode vir com UI do preview).
-                    if not salvo_popup:
+                    if popup_vivo:
                         try:
-                            await new_page.pdf(path=save_path, format='A4', print_background=True)
-                            logger.warning(f"[UpSeller] Fallback page.pdf() usado (preview HTML): {save_path}")
-                            salvo_popup = True
-                        except Exception as pdf_err:
-                            logger.error(f"[UpSeller] Erro ao renderizar PDF do popup: {pdf_err}")
+                            page_url = new_page.url
+                            logger.info(f"[UpSeller] URL do novo tab: {page_url}")
+                        except Exception:
+                            popup_vivo = False
+
+                    if popup_vivo:
+                        # Prioridade: salvar PDF ORIGINAL (evita capturar sidebar/miniaturas do preview).
+                        try:
+                            salvo_popup = await self._salvar_pdf_de_popup(new_page, save_path)
+                        except Exception as popup_err:
+                            logger.warning(f"[UpSeller] Falha ao extrair PDF real do popup: {popup_err}")
+
+                        # Fallback final: print da pagina (pode vir com UI do preview).
+                        if not salvo_popup:
+                            try:
+                                await new_page.pdf(path=save_path, format='A4', print_background=True)
+                                logger.warning(f"[UpSeller] Fallback page.pdf() usado (preview HTML): {save_path}")
+                                salvo_popup = True
+                            except Exception as pdf_err:
+                                logger.error(f"[UpSeller] Erro ao renderizar PDF do popup: {pdf_err}")
 
                     if salvo_popup and os.path.exists(save_path):
                         pdfs_baixados.append(save_path)
+
+                    # Se popup morreu, verificar se um download aconteceu em paralelo
+                    if not salvo_popup:
+                        # Popup pode ter disparado download antes de fechar
+                        await self._page.wait_for_timeout(3000)
+                        if _captured_downloads:
+                            download = _captured_downloads[0]
+                            filename = download.suggested_filename or os.path.basename(save_path)
+                            actual_path = os.path.join(self.download_dir, filename)
+                            try:
+                                await download.save_as(actual_path)
+                                pdfs_baixados.append(actual_path)
+                                logger.info(f"[UpSeller] PDF recuperado de download tardio: {actual_path}")
+                            except Exception as e_dl:
+                                logger.warning(f"[UpSeller] Falha ao salvar download tardio: {e_dl}")
+
+                        # Fallback: verificar filesystem por PDFs novos
+                        if not pdfs_baixados:
+                            downloads_novos = self._verificar_downloads_novos("*.pdf")
+                            if downloads_novos:
+                                pdfs_baixados.extend(downloads_novos)
+                                logger.info(f"[UpSeller] PDFs encontrados no filesystem apos popup morto: {len(downloads_novos)}")
 
                     try:
                         await new_page.close()
@@ -6422,7 +6791,51 @@ class UpSellerScraper:
                         logger.error("[UpSeller] Nenhum PDF obtido por nenhum metodo")
 
                 if pdfs_baixados and not aba_norm.startswith("falha"):
-                    await _marcar_como_impresso_pos_download()
+                    # ---- PRIORIDADE: Usar modal nativo do UpSeller ----
+                    # Apos gerar etiquetas, UpSeller mostra um dialog com
+                    # "Marcar como Impresso" que marca TODOS os pedidos do lote.
+                    # Isso e MUITO mais confiavel que selecionar manualmente.
+                    marcou_via_modal = False
+                    try:
+                        # Aguardar o modal nativo do UpSeller (barra de progresso 100%)
+                        for _attempt in range(10):
+                            modal_marcar = self._page.locator(
+                                '.ant-modal button.ant-btn-primary:has-text("Marcar como Impresso"), '
+                                '.ant-modal button.ant-btn-primary:has-text("Marcar como impresso"), '
+                                '.ant-modal button.ant-btn-primary:has-text("Mark as Printed")'
+                            ).first
+                            if await modal_marcar.count() > 0 and await modal_marcar.is_visible(timeout=1500):
+                                break
+                            await self._page.wait_for_timeout(2000)
+
+                        if await modal_marcar.count() > 0 and await modal_marcar.is_visible(timeout=2000):
+                            logger.info("[UpSeller] Modal nativo 'Marcar como Impresso' encontrado!")
+                            await self.screenshot("etiquetas_modal_marcar_impresso")
+                            await modal_marcar.click()
+                            await self._page.wait_for_timeout(2500)
+                            marcou_via_modal = True
+                            logger.info("[UpSeller] Modal nativo: clicou 'Marcar como Impresso' com sucesso!")
+
+                            # Confirmar modal de confirmacao se aparecer
+                            try:
+                                confirm_btn = await self._page.wait_for_selector(
+                                    '.ant-modal button.ant-btn-primary', timeout=3000
+                                )
+                                if confirm_btn:
+                                    confirm_text = await confirm_btn.evaluate("el => (el.textContent || '').trim()")
+                                    if 'marcar' not in confirm_text.lower():
+                                        await confirm_btn.click()
+                                        await self._page.wait_for_timeout(1500)
+                            except Exception:
+                                pass
+                        else:
+                            logger.info("[UpSeller] Modal nativo nao apareceu, usando fallback manual")
+                    except Exception as e_modal:
+                        logger.warning(f"[UpSeller] Erro ao buscar modal nativo: {e_modal}")
+
+                    # Fallback: se modal nativo nao funcionou, usar metodo manual
+                    if not marcou_via_modal:
+                        await _marcar_como_impresso_pos_download()
 
             except Exception as e:
                 print(f"[baixar_etiquetas] ERRO no processo de impressao: {e}")

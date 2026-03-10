@@ -172,6 +172,10 @@
                     <label>Senha</label>
                     <input type="password" id="login-senha" placeholder="Sua senha">
                 </div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+                    <input type="checkbox" id="login-lembrar" style="accent-color:#ff6b35; width:16px; height:16px; cursor:pointer;">
+                    <label for="login-lembrar" style="font-size:13px; color:#aaa; cursor:pointer; margin:0;">Lembrar-me</label>
+                </div>
                 <button class="btn" onclick="fazerLogin()">
                     <i class="fas fa-sign-in-alt"></i> Entrar
                 </button>
@@ -285,6 +289,17 @@
             window.location.href = '/';
         }
 
+        // Restaurar email salvo (lembrar-me)
+        (function() {
+            const savedEmail = localStorage.getItem('lembrar_email');
+            if (savedEmail) {
+                const el = document.getElementById('login-email');
+                if (el) el.value = savedEmail;
+                const chk = document.getElementById('login-lembrar');
+                if (chk) chk.checked = true;
+            }
+        })();
+
         function trocarTab(tab) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.form-section').forEach(f => f.classList.remove('active'));
@@ -349,6 +364,15 @@
 
                 localStorage.setItem('token', data.token);
                 localStorage.setItem('user', JSON.stringify(data.user));
+
+                // Lembrar-me: salvar ou limpar email
+                const lembrar = document.getElementById('login-lembrar');
+                if (lembrar && lembrar.checked) {
+                    localStorage.setItem('lembrar_email', email);
+                } else {
+                    localStorage.removeItem('lembrar_email');
+                }
+
                 window.location.href = '/';
             } catch (e) {
                 mostrarErro('Erro de conexao');

@@ -197,6 +197,25 @@
             justify-content: space-between;
             margin-bottom: 16px;
         }
+        .card-header[data-collapse-id] {
+            cursor: pointer;
+            user-select: none;
+        }
+        .card-header[data-collapse-id]:hover {
+            opacity: 0.85;
+        }
+        .collapse-chevron {
+            transition: transform 0.3s ease;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: 8px;
+        }
+        .collapse-chevron.collapsed {
+            transform: rotate(-90deg);
+        }
+        .card-header.collapsed-header {
+            margin-bottom: 0;
+        }
 
         .card-title {
             font-size: 13px;
@@ -809,37 +828,39 @@
             <div class="status-dot" id="statusDot"></div>
             <span id="statusText">Pronto</span>
         </div>
-        <span id="planoBadge" style="padding:4px 12px; border-radius:20px; font-size:12px; font-weight:600; background:#2d1b4e; color:#a78bfa; display:none;">Free</span>
-        <button id="btnAssinar" class="btn btn-sm" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9); color:#fff; display:none;" onclick="assinarPremium()">
-            <i class="fas fa-crown"></i> Assinar Premium
+        <button class="btn btn-secondary btn-sm" onclick="window.location.reload()" title="Atualizar pagina" style="padding:4px 10px;">
+            <i class="fas fa-sync-alt"></i> Atualizar
         </button>
-        <button class="btn btn-secondary btn-sm" onclick="sair()" title="Sair">
+        <span id="planoBadge" style="display:none;">Free</span>
+        <button id="btnAssinar" style="display:none;">Assinar</button>
+        <!-- Botao Sair oculto (sem login) -->
+        <button class="btn btn-secondary btn-sm" onclick="sair()" title="Sair" style="display:none;">
             <i class="fas fa-sign-out-alt"></i> Sair
         </button>
     </div>
 </header>
 
-<!-- NAV TABS -->
+<!-- NAV TABS (modo solo: apenas Automacao visivel) -->
 <nav class="nav-tabs">
-    <div class="nav-tab active" data-tab="painel" onclick="trocarTab('painel')">
+    <div class="nav-tab" data-tab="painel" onclick="trocarTab('painel')" style="display:none;">
         <i class="fas fa-tags"></i> Etiquetas
     </div>
-    <div class="nav-tab" data-tab="resultados" onclick="trocarTab('resultados')">
+    <div class="nav-tab" data-tab="resultados" onclick="trocarTab('resultados')" style="display:none;">
         <i class="fas fa-store"></i> Resultados
     </div>
-    <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')">
+    <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')" style="display:none;">
         <i class="fas fa-dollar-sign"></i> Lucro
     </div>
-    <div class="nav-tab" data-tab="automacao" onclick="trocarTab('automacao')">
+    <div class="nav-tab active" data-tab="automacao" onclick="trocarTab('automacao')">
         <i class="fas fa-robot"></i> Automacao
     </div>
-    <div class="nav-tab" data-tab="automacao-api" onclick="trocarTab('automacao-api')">
+    <div class="nav-tab" data-tab="automacao-api" onclick="trocarTab('automacao-api')" style="display:none;">
         <i class="fas fa-plug"></i> Automacao API
     </div>
     <div class="nav-tab" data-tab="admin" onclick="trocarTab('admin')" id="navAdmin" style="display:none;">
         <i class="fas fa-shield-alt"></i> Admin
     </div>
-    <div class="nav-tab" data-tab="shopee-expert" onclick="trocarTab('shopee-expert')" style="margin-left:auto;">
+    <div class="nav-tab" data-tab="shopee-expert" onclick="trocarTab('shopee-expert')" style="display:none;">
         <i class="fas fa-magic"></i> Shopee Expert
     </div>
 </nav>
@@ -851,7 +872,7 @@
 <div class="main-content">
 
     <!-- ==================== PAINEL ==================== -->
-    <div class="tab-content active" id="tab-painel">
+    <div class="tab-content" id="tab-painel">
 
         <!-- Upload + Processar (1 card horizontal) -->
         <div class="card" style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:12px;"
@@ -1144,8 +1165,55 @@
     </div>
 
     <!-- ==================== AUTOMACAO ==================== -->
-    <div class="tab-content" id="tab-automacao">
+    <div class="tab-content active" id="tab-automacao">
         <h3 class="section-title" id="automacaoTitulo"><i class="fas fa-robot"></i> Automacao - UpSeller + WhatsApp</h3>
+
+        <!-- ======= ENVIO AUTOMATICO (DIRETO) ======= -->
+        <div class="card" id="envioAutoCard" style="margin-bottom:20px; border:1px solid rgba(240,93,35,0.4); border-radius:12px;">
+            <div class="card-header" data-collapse-id="envioAuto" onclick="toggleCardCollapse('envioAuto')" style="border-bottom:1px solid var(--border); padding-bottom:12px;">
+                <span class="card-title" style="color:var(--accent);"><i class="fas fa-paper-plane"></i> Envio Automatico <i class="fas fa-chevron-down collapse-chevron"></i></span>
+                <span style="font-size:11px; color:var(--text-secondary);">Gerar Etiquetas &rarr; Processar &rarr; Enviar (direto)</span>
+            </div>
+
+            <div id="collapse-body-envioAuto" style="padding:8px 0;">
+                <p style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
+                    Fluxo direto: baixa etiquetas do UpSeller, processa e envia via WhatsApp/Email.
+                    <strong>Pula</strong> "Emitir Notas" e "Gerar Pedidos".
+                </p>
+
+                <!-- Contatos Unificados -->
+                <div style="margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <h4 style="margin:0; font-size:13px; color:var(--text-primary);"><i class="fas fa-address-book"></i> Contatos</h4>
+                        <div style="display:flex; gap:6px;">
+                            <button class="btn btn-primary" onclick="mostrarFormContato()" style="font-size:10px; padding:3px 8px;">
+                                <i class="fab fa-whatsapp"></i> + WhatsApp
+                            </button>
+                            <button class="btn btn-secondary" onclick="mostrarFormEmail()" style="font-size:10px; padding:3px 8px;">
+                                <i class="fas fa-envelope"></i> + Email
+                            </button>
+                        </div>
+                    </div>
+                    <div id="tabelaContatosUnificados" style="overflow-x:auto;">
+                        <p style="font-size:12px; color:var(--text-secondary);">Carregando contatos...</p>
+                    </div>
+                </div>
+
+                <!-- Botoes de Acao -->
+                <div style="display:flex; gap:8px; flex-wrap:wrap; padding-top:10px; border-top:1px solid var(--border);">
+                    <button class="btn btn-primary" id="btnExecDireto" onclick="executarEnvioAutoDireto()" style="font-size:12px;">
+                        <i class="fas fa-rocket"></i> Executar Todos (Direto)
+                    </button>
+                    <button class="btn btn-secondary" onclick="enviarWhatsAppManual()" style="font-size:12px;">
+                        <i class="fab fa-whatsapp"></i> Reenviar WhatsApp
+                    </button>
+                    <button class="btn btn-secondary" onclick="enviarEmailManual()" style="font-size:12px;">
+                        <i class="fas fa-envelope"></i> Reenviar Email
+                    </button>
+                </div>
+            </div>
+            </div><!-- /collapse-body-envioAuto -->
+        </div>
 
         <!-- MARKETPLACE API (ASSINANTE) -->
         <div class="card" id="marketplaceApiCard" style="margin-bottom:20px; display:none;">
@@ -1315,11 +1383,19 @@
                     </div>
                     <div id="waAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
                 </div>
+                <div style="margin-top:8px; display:flex; align-items:center; gap:6px;">
+                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:11px; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                        <input type="checkbox" id="contatoResumoGeral" style="accent-color:var(--primary);">
+                        <i class="fas fa-table" style="color:var(--primary);"></i>
+                        <span>Resumo Geral Diario</span>
+                        <span style="color:var(--text-secondary); font-size:10px;">(recebe tabela consolidada de todas as lojas)</span>
+                    </label>
+                </div>
                 <div style="display:flex; gap:8px; margin-top:8px;">
                     <button class="btn btn-primary" onclick="salvarContato()" style="font-size:11px;">
                         <i class="fas fa-check"></i> Salvar
                     </button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('formContato').style.display='none'" style="font-size:11px;">
+                    <button class="btn btn-secondary" onclick="_editandoContatoId=null; document.getElementById('contatoTel').disabled=false; document.getElementById('formContato').style.display='none'" style="font-size:11px;">
                         Cancelar
                     </button>
                 </div>
@@ -1385,7 +1461,7 @@
                     <button class="btn btn-primary" onclick="salvarContatoEmail()" style="font-size:11px;">
                         <i class="fas fa-check"></i> Salvar
                     </button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('formEmail').style.display='none'" style="font-size:11px;">
+                    <button class="btn btn-secondary" onclick="_editandoContatoEmailId=null; document.getElementById('emailEndereco').disabled=false; document.getElementById('formEmail').style.display='none'" style="font-size:11px;">
                         Cancelar
                     </button>
                 </div>
@@ -1395,8 +1471,8 @@
             </div>
         </div>
 
-        <!-- AGENDAMENTOS -->
-        <div class="card" style="margin-bottom:20px;">
+        <!-- AGENDAMENTOS (oculto - duplicado pelo Envio Automatico) -->
+        <div class="card" style="display:none; margin-bottom:20px;">
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-clock"></i> Agendamentos</span>
                 <button class="btn btn-primary" onclick="mostrarFormAgendamento()" style="font-size:11px; padding:4px 10px;">
@@ -1457,8 +1533,8 @@
             </div>
         </div>
 
-        <!-- EXECUCAO MANUAL -->
-        <div class="card" style="margin-bottom:20px;">
+        <!-- EXECUCAO MANUAL (oculto - duplicado pelo Envio Automatico) -->
+        <div class="card" style="display:none; margin-bottom:20px;">
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-play-circle"></i> Execucao Manual</span>
             </div>
@@ -1478,17 +1554,12 @@
             </div>
         </div>
 
-        <!-- HISTORICO -->
-        <div class="card">
+        <!-- HISTORICO (oculto) -->
+        <div class="card" style="display:none;">
             <div class="card-header">
                 <span class="card-title"><i class="fas fa-history"></i> Historico de Execucoes</span>
-                <button class="btn btn-secondary" onclick="carregarHistorico()" style="font-size:11px; padding:4px 10px;">
-                    <i class="fas fa-sync-alt"></i>
-                </button>
             </div>
-            <div id="tabelaHistorico" style="overflow-x:auto;">
-                <p style="font-size:12px; color:var(--text-secondary);">Nenhuma execucao registrada.</p>
-            </div>
+            <div id="tabelaHistorico" style="overflow-x:auto;"></div>
         </div>
 
         <!-- HISTORICO DE GERADAS (24h) - Fixo no final -->
@@ -1635,11 +1706,85 @@ let _ultimoResultadoJSON = '';  // Cache para evitar re-render desnecessario
 let _marketplaceApiBaseAtual = 'https://openplatform.sandbox.test-stable.shopee.sg';
 
 // ================================================================
+// COLLAPSE/EXPAND CARDS
+// ================================================================
+function toggleCardCollapse(collapseId) {
+    const header = document.querySelector(`[data-collapse-id="${collapseId}"]`);
+    const body = document.getElementById(`collapse-body-${collapseId}`);
+    const chevron = header?.querySelector('.collapse-chevron');
+    if (!body) return;
+    const isHidden = body.style.display === 'none';
+    body.style.display = isHidden ? '' : 'none';
+    if (isHidden) {
+        header?.classList.remove('collapsed-header');
+        chevron?.classList.remove('collapsed');
+    } else {
+        header?.classList.add('collapsed-header');
+        chevron?.classList.add('collapsed');
+    }
+    try {
+        const states = JSON.parse(localStorage.getItem('beka_card_states') || '{}');
+        states[collapseId] = !isHidden;
+        localStorage.setItem('beka_card_states', JSON.stringify(states));
+    } catch(e) {}
+}
+function _initCollapsibleCards() {
+    const defaults = { envioAuto: false, lojasPanel: true };
+    let states;
+    try { states = JSON.parse(localStorage.getItem('beka_card_states') || '{}'); } catch(e) { states = {}; }
+    document.querySelectorAll('[data-collapse-id]').forEach(header => {
+        const id = header.getAttribute('data-collapse-id');
+        const body = document.getElementById(`collapse-body-${id}`);
+        const chevron = header?.querySelector('.collapse-chevron');
+        if (!body) return;
+        const shouldCollapse = states[id] !== undefined ? states[id] : (defaults[id] || false);
+        if (shouldCollapse) {
+            body.style.display = 'none';
+            header.classList.add('collapsed-header');
+            chevron?.classList.add('collapsed');
+        }
+    });
+}
+
+// ================================================================
 // AUTH
 // ================================================================
 function getToken() {
     return localStorage.getItem('token');
 }
+
+// Auto-refresh do token a cada 24h para manter sessao persistente
+async function _autoRefreshToken() {
+    const token = getToken();
+    if (!token) return;
+    try {
+        const res = await fetch(API + '/api/auth/refresh', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.token) {
+                localStorage.setItem('token', data.token);
+                if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
+                localStorage.setItem('token_refreshed_at', Date.now().toString());
+            }
+        }
+    } catch (e) {
+        console.warn('Auto-refresh token falhou:', e);
+    }
+}
+
+// Refresh ao carregar a pagina se faz mais de 24h desde o ultimo refresh
+(function() {
+    const lastRefresh = parseInt(localStorage.getItem('token_refreshed_at') || '0');
+    const horasSinceRefresh = (Date.now() - lastRefresh) / (1000 * 60 * 60);
+    if (horasSinceRefresh > 24 && getToken()) {
+        _autoRefreshToken();
+    }
+    // Refresh periodico a cada 12h enquanto a pagina estiver aberta
+    setInterval(_autoRefreshToken, 12 * 60 * 60 * 1000);
+})();
 
 async function sair() {
     try {
@@ -1650,7 +1795,9 @@ async function sair() {
     } catch(e) {}
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    window.location.href = '/login';
+    // Re-obter token local automaticamente e recarregar
+    await _autoLoginLocal();
+    window.location.reload();
 }
 
 let _planoSelecionado = '';
@@ -1957,9 +2104,15 @@ async function fetchAPI(url, options = {}) {
 
         const res = await fetch(API + url, options);
 
-        // Se nao autorizado, redireciona pro login
+        // Se nao autorizado, tentar auto-login e repetir UMA vez
         if (res.status === 401 || res.status === 422) {
-            sair();
+            const ok = await _autoLoginLocal();
+            if (ok) {
+                options.headers['Authorization'] = 'Bearer ' + getToken();
+                const retry = await fetch(API + url, options);
+                if (retry.ok) return await retry.json();
+            }
+            console.warn('API retornou', res.status, url);
             return null;
         }
 
@@ -1970,25 +2123,30 @@ async function fetchAPI(url, options = {}) {
     }
 }
 
-async function baixarArquivo(url, nomeArquivo) {
+function baixarArquivo(url, nomeArquivo) {
+    // Download com JWT no query param — compativel com pywebview/WebView2
+    // O backend aceita ?jwt= para endpoints de download via before_request
     try {
         const token = getToken();
-        const res = await fetch(API + url, {
-            headers: { 'Authorization': 'Bearer ' + token }
-        });
-        if (res.status === 401 || res.status === 422) { sair(); return; }
-        if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            alert(err.erro || 'Erro ao baixar arquivo');
-            return;
+        if (!token) { console.warn('Sem token para download'); return; }
+        const sep = url.includes('?') ? '&' : '?';
+        const fullUrl = (API || '') + url + sep + 'jwt=' + encodeURIComponent(token);
+
+        // Tentar multiplas abordagens para compatibilidade com pywebview
+        // 1) window.open — funciona em browser normal
+        // 2) location.href — fallback se window.open for bloqueado
+        // 3) anchor click — ultimo fallback
+        const w = window.open(fullUrl, '_blank');
+        if (!w || w.closed) {
+            // Popup bloqueado — usar link direto
+            const a = document.createElement('a');
+            a.href = fullUrl;
+            a.download = nomeArquivo || 'download';
+            a.target = '_blank';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => a.remove(), 200);
         }
-        const blob = await res.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = nomeArquivo || 'download';
-        document.body.appendChild(a);
-        a.click();
-        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 100);
     } catch (e) {
         console.error('Download error:', e);
         alert('Erro ao baixar arquivo');
@@ -3202,13 +3360,30 @@ function tratarRetornoLoginShopee() {
     }
 }
 
+async function _autoLoginLocal() {
+    // Se nao tem token, busca automaticamente do servidor local
+    if (getToken()) return true;
+    try {
+        const res = await fetch(API + '/api/auth/local-token', { method: 'POST' });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.token) {
+                localStorage.setItem('token', data.token);
+                if (data.user) localStorage.setItem('user', JSON.stringify(data.user));
+                return true;
+            }
+        }
+    } catch (e) { console.warn('Auto-login falhou:', e); }
+    return false;
+}
+
 async function init() {
-    // Verificar se esta logado
-    if (!getToken()) {
-        window.location.href = '/login';
-        return;
-    }
+    // Auto-login desktop: obter token sem tela de login
+    await _autoLoginLocal();
     tratarRetornoLoginShopee();
+
+    // Abrir direto na aba Automacao
+    trocarTab('automacao');
 
     await atualizarStatus();
     await atualizarLogs();
@@ -3337,6 +3512,7 @@ async function adminRevogarAcesso() {
 
 async function carregarDadosAutomacao() {
     _aplicarModoAutomacaoUI();
+    _initCollapsibleCards();
     await _carregarOpcoesAlvoAutomacao(true);
     _aplicarPrefixoPaisWhatsApp();
     if (_isMarketplaceApiMode()) {
@@ -3356,6 +3532,7 @@ async function carregarDadosAutomacao() {
     carregarHistoricoGeradas24h();
     carregarAgendamentos();
     carregarHistorico();
+    carregarContatosUnificados();
 }
 
 let _automacaoAlvosCache = { lojas: [], grupos: [] };
@@ -4957,40 +5134,92 @@ async function enviarTesteWhatsApp() {
 }
 
 // --- CONTATOS ---
+let _editandoContatoId = null; // ID do contato em edicao (null = novo)
+let _contatosCache = []; // Cache dos contatos carregados
+
 function mostrarFormContato() {
+    _editandoContatoId = null;
     document.getElementById('formContato').style.display = 'block';
     document.getElementById('contatoTel').value = _getWhatsAppCountryCode();
+    document.getElementById('contatoTel').disabled = false;
     document.getElementById('contatoNome').value = '';
+    document.getElementById('contatoResumoGeral').checked = false;
+    const btnSalvar = document.querySelector('#formContato .btn-primary');
+    if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-check"></i> Salvar';
     _renderAlvosFormulario('wa', [], []);
+}
+
+function editarContato(id) {
+    const c = _contatosCache.find(x => x.id === id);
+    if (!c) { toast('Contato nao encontrado', 'error'); return; }
+    _editandoContatoId = id;
+    document.getElementById('formContato').style.display = 'block';
+    document.getElementById('contatoTel').value = c.telefone || '';
+    document.getElementById('contatoTel').disabled = true;
+    document.getElementById('contatoNome').value = c.nome_contato || '';
+    const btnSalvar = document.querySelector('#formContato .btn-primary');
+    if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-save"></i> Atualizar';
+    document.getElementById('contatoResumoGeral').checked = !!c.resumo_geral;
+    _renderAlvosFormulario('wa', c.lojas || [], c.grupos || []);
+    document.getElementById('formContato').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function salvarContato() {
     const elTel = document.getElementById('contatoTel');
-    const tel = _normalizeWhatsAppPhone(elTel?.value || '');
-    if (elTel) elTel.value = tel;
+    const tel = _editandoContatoId ? elTel.value : _normalizeWhatsAppPhone(elTel?.value || '');
+    if (elTel && !_editandoContatoId) elTel.value = tel;
     const nome = document.getElementById('contatoNome').value;
     const { lojas, grupos } = _coletarAlvosFormulario('wa');
     if (!tel || tel.length < 12) { toast('Telefone obrigatorio (com DDD)', 'warning'); return; }
+    const resumoGeral = document.getElementById('contatoResumoGeral').checked;
+    const payload = {
+        telefone: tel,
+        nome_contato: nome,
+        lojas,
+        grupos,
+        loja_cnpj: 'ALVO_CUSTOM',
+        loja_nome: resumoGeral ? 'Resumo Geral' : (lojas[0] || (grupos[0] || 'Todos')),
+        resumo_geral: resumoGeral
+    };
+    if (_editandoContatoId) payload.id = _editandoContatoId;
+    const res = await fetchAPI('/api/whatsapp/contatos', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    });
+    if (res && !res.erro) {
+        toast(_editandoContatoId ? 'Contato atualizado!' : 'Contato salvo!', 'success');
+        document.getElementById('formContato').style.display = 'none';
+        _editandoContatoId = null;
+        document.getElementById('contatoTel').disabled = false;
+        carregarContatos();
+    } else toast(res?.erro || 'Erro', 'error');
+}
+
+async function toggleAtivoContato(id) {
+    const c = _contatosCache.find(x => x.id === id);
+    if (!c) return;
     const res = await fetchAPI('/api/whatsapp/contatos', {
         method: 'POST',
         body: JSON.stringify({
-            telefone: tel,
-            nome_contato: nome,
-            lojas,
-            grupos,
-            loja_cnpj: 'ALVO_CUSTOM',
-            loja_nome: lojas[0] || (grupos[0] || 'Todos')
+            id: c.id,
+            telefone: c.telefone,
+            nome_contato: c.nome_contato,
+            lojas: c.lojas || [],
+            grupos: c.grupos || [],
+            loja_cnpj: c.loja_cnpj || 'ALVO_CUSTOM',
+            loja_nome: c.loja_nome || '',
+            ativo: !c.ativo
         })
     });
     if (res && !res.erro) {
-        toast('Contato salvo!', 'success');
-        document.getElementById('formContato').style.display = 'none';
+        toast(c.ativo ? 'Contato desativado' : 'Contato ativado', 'success');
         carregarContatos();
     } else toast(res?.erro || 'Erro', 'error');
 }
 
 async function carregarContatos() {
     const data = await fetchAPI('/api/whatsapp/contatos');
+    _contatosCache = data || [];
     const container = document.getElementById('tabelaContatos');
     if (!data || data.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>';
@@ -5000,19 +5229,31 @@ async function carregarContatos() {
     html += '<th>Alvos</th><th>WhatsApp</th><th>Contato</th><th>Ativo</th><th></th>';
     html += '</tr></thead><tbody>';
     data.forEach(c => {
-        const alvos = []
-            .concat((c.lojas || []).map(x => `Loja: ${x}`))
-            .concat((c.grupos || []).map(x => `Grupo: ${x}`));
+        const alvos = [];
+        if (c.resumo_geral) {
+            alvos.push('<span style="background:rgba(16,185,129,0.15); color:#10b981; padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px; font-weight:600;"><i class="fas fa-table"></i> Resumo Geral</span>');
+        }
+        alvos.push(...(c.lojas || []).map(x => `<span style="background:rgba(99,102,241,0.15); color:#818cf8; padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px;">Loja: ${x}</span>`));
+        alvos.push(...(c.grupos || []).map(x => `<span style="background:rgba(245,158,11,0.15); color:#f59e0b; padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px;">Grupo: ${x}</span>`));
         html += `<tr>
-            <td style="font-size:11px;">${alvos.length ? alvos.join(' | ') : (c.loja_nome || c.loja_cnpj || '-')}</td>
+            <td style="font-size:11px; max-width:400px;">${alvos.length ? alvos.join(' ') : (c.loja_nome || c.loja_cnpj || '-')}</td>
             <td>${c.telefone}</td>
             <td>${c.nome_contato}</td>
-            <td>${c.ativo ? '<span style="color:#25D366;">&#10003;</span>' : '<span style="color:#e74c3c;">&#10007;</span>'}</td>
-            <td><button class="btn btn-secondary" onclick="removerContato(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button></td>
+            <td>
+                <button class="btn btn-secondary" onclick="toggleAtivoContato(${c.id})" style="font-size:10px; padding:2px 6px; cursor:pointer; background:none; border:none;" title="${c.ativo ? 'Clique para desativar' : 'Clique para ativar'}">
+                    ${c.ativo ? '<span style="color:#25D366;">&#10003;</span>' : '<span style="color:#e74c3c;">&#10007;</span>'}
+                </button>
+            </td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-secondary" onclick="editarContato(${c.id})" style="font-size:10px; padding:2px 6px;" title="Editar lojas"><i class="fas fa-edit"></i></button>
+                <button class="btn btn-secondary" onclick="removerContato(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button>
+            </td>
         </tr>`;
     });
     html += '</tbody></table>';
     container.innerHTML = html;
+    // Sincronizar card Envio Automatico
+    if (typeof carregarContatosUnificados === 'function') carregarContatosUnificados();
 }
 
 async function removerContato(id) {
@@ -5023,11 +5264,32 @@ async function removerContato(id) {
 }
 
 // --- CONTATOS EMAIL ---
+let _editandoContatoEmailId = null;
+let _contatosEmailCache = [];
+
 function mostrarFormEmail() {
+    _editandoContatoEmailId = null;
     document.getElementById('formEmail').style.display = 'block';
     document.getElementById('emailNomeContato').value = '';
     document.getElementById('emailEndereco').value = '';
+    document.getElementById('emailEndereco').disabled = false;
+    const btnSalvar = document.querySelector('#formEmail .btn-primary');
+    if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-check"></i> Salvar';
     _renderAlvosFormulario('email', [], []);
+}
+
+function editarContatoEmail(id) {
+    const c = _contatosEmailCache.find(x => x.id === id);
+    if (!c) { toast('Contato nao encontrado', 'error'); return; }
+    _editandoContatoEmailId = id;
+    document.getElementById('formEmail').style.display = 'block';
+    document.getElementById('emailEndereco').value = c.email || '';
+    document.getElementById('emailEndereco').disabled = true;
+    document.getElementById('emailNomeContato').value = c.nome_contato || '';
+    const btnSalvar = document.querySelector('#formEmail .btn-primary');
+    if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-save"></i> Atualizar';
+    _renderAlvosFormulario('email', c.lojas || [], c.grupos || []);
+    document.getElementById('formEmail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function salvarContatoEmail() {
@@ -5035,25 +5297,30 @@ async function salvarContatoEmail() {
     const email = document.getElementById('emailEndereco').value;
     const { lojas, grupos } = _coletarAlvosFormulario('email');
     if (!email || !email.includes('@')) { toast('Email invalido', 'warning'); return; }
+    const payload = {
+        nome_contato: nome,
+        email: email,
+        lojas,
+        grupos,
+        loja_cnpj: 'ALVO_CUSTOM'
+    };
+    if (_editandoContatoEmailId) payload.id = _editandoContatoEmailId;
     const res = await fetchAPI('/api/email/contatos', {
         method: 'POST',
-        body: JSON.stringify({
-            nome_contato: nome,
-            email: email,
-            lojas,
-            grupos,
-            loja_cnpj: 'ALVO_CUSTOM'
-        })
+        body: JSON.stringify(payload)
     });
     if (res && !res.erro) {
-        toast('Contato email salvo!', 'success');
+        toast(_editandoContatoEmailId ? 'Contato atualizado!' : 'Contato email salvo!', 'success');
         document.getElementById('formEmail').style.display = 'none';
+        _editandoContatoEmailId = null;
+        document.getElementById('emailEndereco').disabled = false;
         carregarContatosEmail();
     } else toast(res?.erro || 'Erro', 'error');
 }
 
 async function carregarContatosEmail() {
     const data = await fetchAPI('/api/email/contatos');
+    _contatosEmailCache = data || [];
     const container = document.getElementById('tabelaContatosEmail');
     if (!data || data.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato de email cadastrado.</p>';
@@ -5064,17 +5331,22 @@ async function carregarContatosEmail() {
     html += '</tr></thead><tbody>';
     data.forEach(c => {
         const alvos = []
-            .concat((c.lojas || []).map(x => `Loja: ${x}`))
-            .concat((c.grupos || []).map(x => `Grupo: ${x}`));
+            .concat((c.lojas || []).map(x => `<span style="background:rgba(99,102,241,0.15); color:#818cf8; padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px;">Loja: ${x}</span>`))
+            .concat((c.grupos || []).map(x => `<span style="background:rgba(245,158,11,0.15); color:#f59e0b; padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px;">Grupo: ${x}</span>`));
         html += `<tr>
-            <td style="font-size:11px;">${alvos.length ? alvos.join(' | ') : (c.loja_cnpj || '-')}</td>
+            <td style="font-size:11px; max-width:400px;">${alvos.length ? alvos.join(' ') : (c.loja_cnpj || '-')}</td>
             <td>${c.email}</td>
             <td>${c.nome_contato}</td>
-            <td><button class="btn btn-secondary" onclick="removerContatoEmail(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button></td>
+            <td style="white-space:nowrap;">
+                <button class="btn btn-secondary" onclick="editarContatoEmail(${c.id})" style="font-size:10px; padding:2px 6px;" title="Editar lojas"><i class="fas fa-edit"></i></button>
+                <button class="btn btn-secondary" onclick="removerContatoEmail(${c.id})" style="font-size:10px; padding:2px 6px;" title="Remover"><i class="fas fa-trash"></i></button>
+            </td>
         </tr>`;
     });
     html += '</tbody></table>';
     container.innerHTML = html;
+    // Sincronizar card Envio Automatico
+    if (typeof carregarContatosUnificados === 'function') carregarContatosUnificados();
 }
 
 async function removerContatoEmail(id) {
@@ -5535,13 +5807,17 @@ async function carregarLojasPersistentes() {
     const panel = document.createElement('div');
     panel.id = 'syncResultadoPanel';
     panel.style.cssText = 'margin-top:15px; border:1px solid var(--border); border-radius:8px; overflow:hidden; background:var(--bg-primary);';
+    // Restaurar estado collapse do localStorage
+    let _lojasCollapsed = false;
+    try { _lojasCollapsed = JSON.parse(localStorage.getItem('beka_card_states') || '{}')['lojasPanel'] || false; } catch(e) {}
     panel.innerHTML = `
-        <div style="background:linear-gradient(135deg, ${totalPedidos > 0 ? '#1a6b35, #145528' : '#333, #444'}); color:#fff; padding:10px 15px; display:flex; justify-content:space-between; align-items:center;">
+        <div data-collapse-id="lojasPanel" onclick="toggleCardCollapse('lojasPanel')" style="background:linear-gradient(135deg, ${totalPedidos > 0 ? '#1a6b35, #145528' : '#333, #444'}); color:#fff; padding:10px 15px; display:flex; justify-content:space-between; align-items:center; cursor:pointer; user-select:none;">
             <span style="font-weight:600; font-size:13px;">
                 <i class="fas fa-store"></i>
                 ${lojas.length} Loja${lojas.length !== 1 ? 's' : ''} - ${totalPedidos} pedido${totalPedidos !== 1 ? 's' : ''} pendente${totalPedidos !== 1 ? 's' : ''}
+                <i class="fas fa-chevron-down collapse-chevron${_lojasCollapsed ? ' collapsed' : ''}" style="color:#fff;"></i>
             </span>
-            <div style="display:flex;align-items:center;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;" onclick="event.stopPropagation()">
                 <button id="btnAtualizarTodasLojas" class="btn btn-secondary" onclick="${isMarketplaceMode ? 'sincronizarMarketplaceApi()' : 'atualizarTodasLojas(this)'}" style="font-size:10px;padding:3px 8px;">
                     <i class="fas fa-sync-alt"></i> ${isMarketplaceMode ? 'Sincronizar API' : 'Atualizar Lojas'}
                 </button>
@@ -5550,6 +5826,7 @@ async function carregarLojasPersistentes() {
         </div>
 
         <!-- Atalhos do UpSeller -->
+        <div id="collapse-body-lojasPanel" style="display:${_lojasCollapsed ? 'none' : 'block'};">
         <div style="display:flex;gap:8px;padding:10px 15px;flex-wrap:wrap;">
             ${atalhosHTML}
         </div>
@@ -5583,6 +5860,7 @@ async function carregarLojasPersistentes() {
                 </button>
             </div>
         </div>
+        </div><!-- /collapse-body-lojasPanel -->
     `;
 
     _appendToAutomacaoAnchor(panel);
@@ -5627,14 +5905,16 @@ async function salvarAgendamento() {
 async function carregarAgendamentos() {
     const data = await fetchAPI('/api/agendamentos');
     const container = document.getElementById('tabelaAgendamentos');
-    if (!data || data.length === 0) {
+    // Filtrar apenas agendamentos 'completo' (os 'direto' aparecem no painel Envio Automatico)
+    const completos = (data || []).filter(s => s.modo_pipeline !== 'direto');
+    if (!completos || completos.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum agendamento configurado.</p>';
         return;
     }
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
     html += '<th>Nome</th><th>Horario</th><th>Dias</th><th>Alvos</th><th>Proxima</th><th>Ultimo</th><th>Status</th><th></th>';
     html += '</tr></thead><tbody>';
-    data.forEach(s => {
+    completos.forEach(s => {
         const statusColor = s.ultimo_status === 'sucesso' ? '#25D366' : s.ultimo_status === 'erro' ? '#e74c3c' : s.ultimo_status === 'parcial' ? '#f39c12' : 'var(--text-secondary)';
         const ativoIcon = s.ativo ? '&#9654;' : '&#9646;&#9646;';
         const alvos = []
@@ -5683,6 +5963,308 @@ async function executarPipelineAgora() {
     const res = await fetchAPI('/api/agendamentos/executar-agora', { method: 'POST' });
     if (res && !res.erro) toast('Pipeline iniciado em background!', 'success');
     else toast(res?.erro || 'Erro', 'error');
+}
+
+// ============================================
+// ENVIO AUTOMATICO (DIRETO)
+// ============================================
+
+// Estado local dos horarios de cada contato (para edicao inline)
+const _contatosHorarios = {};
+
+async function executarContato(tipo, id) {
+    if (!confirm('Executar envio para este contato agora?')) return;
+    toast('Iniciando envio individual...', 'info');
+    try {
+        const res = await fetchAPI(`/api/contato/${tipo}/${id}/executar-agora`, {
+            method: 'POST'
+        });
+        if (res && !res.erro) {
+            toast(res.mensagem || 'Envio iniciado!', 'success');
+        } else {
+            toast(res?.erro || 'Erro ao executar', 'error');
+        }
+    } catch(e) {
+        toast('Erro ao executar', 'error');
+    }
+}
+
+// ---- Renderizar resumo compacto dos horarios ----
+function _renderResumoAgendamento(horarios) {
+    if (!horarios || !horarios.length) return '<span style="color:var(--text-muted); font-size:10px;">Sem agendamento</span>';
+    const diasLabelsMap = {seg:'S',ter:'T',qua:'Q',qui:'Q',sex:'S',sab:'S',dom:'D'};
+    const parts = [];
+    horarios.forEach(linha => {
+        const dias = (linha.dias || []).map(d => diasLabelsMap[d] || d.charAt(0).toUpperCase()).join(' ');
+        const horas = (linha.horas || []).join(' ');
+        if (dias && horas) parts.push(`<span style="color:var(--accent); font-weight:bold; font-size:9px;">${dias}</span> <span style="font-size:10px;">${horas}</span>`);
+    });
+    return parts.join(' <span style="color:var(--border);">|</span> ') || '<span style="color:var(--text-muted); font-size:10px;">Sem agendamento</span>';
+}
+
+// ---- Renderizar editor expandido inline ----
+function _renderEditorAgendamento(tipo, id) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    const diasSemana = ['seg','ter','qua','qui','sex','sab','dom'];
+    const diasLabels = ['S','T','Q','Q','S','S','D'];
+
+    let html = '<div style="background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px; margin-top:4px;">';
+
+    horarios.forEach((linha, idxLinha) => {
+        html += `<div style="margin-bottom:6px; padding:6px; background:rgba(255,255,255,0.03); border-radius:4px; position:relative;">`;
+        // Botao remover linha
+        if (horarios.length > 1) {
+            html += `<button onclick="_removerLinhaAgendamento('${tipo}',${id},${idxLinha})" title="Remover linha"
+                style="position:absolute; top:2px; right:2px; background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:11px; padding:2px 4px;">
+                <i class="fas fa-times"></i></button>`;
+        }
+        // Dias
+        html += '<div style="margin-bottom:4px;">';
+        diasSemana.forEach((d, i) => {
+            const ativo = (linha.dias || []).includes(d);
+            html += `<span onclick="_toggleDiaLinha('${tipo}',${id},${idxLinha},'${d}')"
+                style="cursor:pointer; display:inline-block; width:18px; height:18px; line-height:18px; text-align:center;
+                border-radius:3px; font-size:9px; font-weight:bold; margin:0 1px; user-select:none;
+                background:${ativo ? 'var(--accent)' : 'rgba(255,255,255,0.06)'};
+                color:${ativo ? '#fff' : 'var(--text-muted)'};"
+            >${diasLabels[i]}</span>`;
+        });
+        html += '</div>';
+        // Horas
+        html += '<div style="display:flex; flex-wrap:wrap; gap:3px; align-items:center;">';
+        (linha.horas || []).forEach((h, idxHora) => {
+            html += `<div style="display:flex; align-items:center; gap:1px;">
+                <input type="time" value="${h}" onchange="_alterarHoraLinha('${tipo}',${id},${idxLinha},${idxHora},this.value)"
+                    style="background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:3px; padding:1px 3px; font-size:10px; width:72px;">
+                <button onclick="_removerHoraLinha('${tipo}',${id},${idxLinha},${idxHora})" title="Remover"
+                    style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:9px; padding:1px;">
+                    <i class="fas fa-times"></i></button>
+            </div>`;
+        });
+        html += `<button onclick="_adicionarHoraLinha('${tipo}',${id},${idxLinha})" title="Adicionar horario"
+            style="background:none; border:1px dashed var(--border); color:var(--text-muted); cursor:pointer; font-size:9px;
+            border-radius:3px; padding:2px 6px;">+ hora</button>`;
+        html += '</div></div>';
+    });
+
+    html += `<button onclick="_adicionarLinhaAgendamento('${tipo}',${id})"
+        style="background:none; border:1px dashed var(--border); color:var(--accent); cursor:pointer; font-size:10px;
+        border-radius:4px; padding:3px 8px; width:100%; margin-top:2px;">
+        <i class="fas fa-plus" style="font-size:8px;"></i> Nova linha de agendamento</button>`;
+
+    html += `<div style="margin-top:6px; text-align:right;">
+        <button onclick="_salvarHorariosContato('${tipo}',${id})"
+            style="background:var(--accent); color:#fff; border:none; border-radius:4px; padding:4px 12px; cursor:pointer; font-size:10px;">
+            <i class="fas fa-save"></i> Salvar</button>
+    </div>`;
+
+    html += '</div>';
+    return html;
+}
+
+// ---- Acoes do editor ----
+function _toggleAgendamentoEditor(tipo, id) {
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (!editorDiv) return;
+    if (editorDiv.style.display === 'none' || !editorDiv.innerHTML) {
+        editorDiv.style.display = 'block';
+        editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+    } else {
+        editorDiv.style.display = 'none';
+        editorDiv.innerHTML = '';
+    }
+}
+
+function _toggleDiaLinha(tipo, id, idxLinha, dia) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    if (!horarios[idxLinha]) return;
+    const dias = horarios[idxLinha].dias || [];
+    const idx = dias.indexOf(dia);
+    if (idx >= 0) dias.splice(idx, 1);
+    else dias.push(dia);
+    // Ordenar dias na ordem correta
+    const ordem = ['seg','ter','qua','qui','sex','sab','dom'];
+    dias.sort((a, b) => ordem.indexOf(a) - ordem.indexOf(b));
+    horarios[idxLinha].dias = dias;
+    _contatosHorarios[key] = horarios;
+    // Re-render editor
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+}
+
+function _alterarHoraLinha(tipo, id, idxLinha, idxHora, valor) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    if (horarios[idxLinha] && horarios[idxLinha].horas) {
+        horarios[idxLinha].horas[idxHora] = valor;
+    }
+}
+
+function _adicionarHoraLinha(tipo, id, idxLinha) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    if (!horarios[idxLinha]) return;
+    if (!horarios[idxLinha].horas) horarios[idxLinha].horas = [];
+    horarios[idxLinha].horas.push('08:00');
+    _contatosHorarios[key] = horarios;
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+}
+
+function _removerHoraLinha(tipo, id, idxLinha, idxHora) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    if (horarios[idxLinha] && horarios[idxLinha].horas) {
+        horarios[idxLinha].horas.splice(idxHora, 1);
+        // Remover linha se ficar sem horas
+        if (horarios[idxLinha].horas.length === 0) {
+            horarios.splice(idxLinha, 1);
+        }
+    }
+    _contatosHorarios[key] = horarios;
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+}
+
+function _adicionarLinhaAgendamento(tipo, id) {
+    const key = `${tipo}_${id}`;
+    if (!_contatosHorarios[key]) _contatosHorarios[key] = [];
+    _contatosHorarios[key].push({dias: ['seg','ter','qua','qui','sex'], horas: ['08:00']});
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+}
+
+function _removerLinhaAgendamento(tipo, id, idx) {
+    const key = `${tipo}_${id}`;
+    const horarios = _contatosHorarios[key] || [];
+    horarios.splice(idx, 1);
+    _contatosHorarios[key] = horarios;
+    const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+    if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
+}
+
+async function _salvarHorariosContato(tipo, id) {
+    const key = `${tipo}_${id}`;
+    const horarios = (_contatosHorarios[key] || []).filter(l => l.dias && l.dias.length && l.horas && l.horas.length);
+    _contatosHorarios[key] = horarios;
+
+    const url = tipo === 'whatsapp' ? '/api/whatsapp/contatos' : '/api/email/contatos';
+    const body = { id: id, horarios: horarios };
+
+    try {
+        const res = await fetchAPI(url, {
+            method: 'POST',
+            body: JSON.stringify(body)
+        });
+        if (res && !res.erro) {
+            toast('Agendamento salvo!', 'success');
+            // Re-render resumo
+            const resumoEl = document.getElementById(`agendamento-resumo-${tipo}-${id}`);
+            if (resumoEl) resumoEl.innerHTML = _renderResumoAgendamento(horarios);
+            // Fechar editor
+            const editorDiv = document.getElementById(`agendamento-editor-${tipo}-${id}`);
+            if (editorDiv) { editorDiv.style.display = 'none'; editorDiv.innerHTML = ''; }
+        } else {
+            toast(res?.erro || 'Erro ao salvar', 'error');
+        }
+    } catch(e) {
+        console.error('Erro ao salvar horarios:', e);
+        toast('Erro ao salvar agendamento', 'error');
+    }
+}
+
+async function carregarContatosUnificados() {
+    const [waData, emailData] = await Promise.all([
+        fetchAPI('/api/whatsapp/contatos'),
+        fetchAPI('/api/email/contatos'),
+    ]);
+
+    const container = document.getElementById('tabelaContatosUnificados');
+    const contatos = [];
+
+    (waData || []).forEach(c => contatos.push({...c, tipo: 'whatsapp'}));
+    (emailData || []).forEach(c => contatos.push({...c, tipo: 'email'}));
+
+    if (contatos.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado. Adicione contatos WhatsApp ou Email acima.</p>';
+        return;
+    }
+
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
+    html += '<th>Canal</th><th>Destino</th><th>Contato</th><th>Lojas / Grupos</th><th>Ativo</th><th>Agendamento</th><th>A\u00e7\u00f5es</th>';
+    html += '</tr></thead><tbody>';
+
+    contatos.forEach(c => {
+        const isWa = c.tipo === 'whatsapp';
+        const icone = isWa
+            ? '<i class="fab fa-whatsapp" style="color:#25D366;"></i>'
+            : '<i class="fas fa-envelope" style="color:#2196F3;"></i>';
+        const destino = isWa ? (c.telefone || '') : (c.email || '');
+        const alvos = []
+            .concat((c.lojas || []).map(x => x))
+            .concat((c.grupos || []).map(x => `[${x}]`));
+        const ativoIcon = c.ativo !== false
+            ? '<span style="color:#25D366;">&#10003;</span>'
+            : '<span style="color:#e74c3c;">&#10007;</span>';
+
+        // Guardar horarios no estado local
+        const horarios = c.horarios || [];
+        const key = `${c.tipo}_${c.id}`;
+        _contatosHorarios[key] = JSON.parse(JSON.stringify(horarios)); // deep copy
+
+        const resumoHtml = _renderResumoAgendamento(horarios);
+
+        html += `<tr>
+            <td>${icone}</td>
+            <td style="font-size:11px;">${escapeHtml(destino)}</td>
+            <td>${escapeHtml(c.nome_contato || '-')}</td>
+            <td style="font-size:10px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(alvos.join(', '))}">${alvos.length ? escapeHtml(alvos.join(', ')) : '<span style="color:var(--text-muted);">Todas</span>'}</td>
+            <td>${ativoIcon}</td>
+            <td style="min-width:160px;">
+                <div onclick="_toggleAgendamentoEditor('${c.tipo}',${c.id})" style="cursor:pointer;" title="Clique para editar agendamento">
+                    <span id="agendamento-resumo-${c.tipo}-${c.id}">${resumoHtml}</span>
+                    <i class="fas fa-pen" style="font-size:8px; color:var(--text-muted); margin-left:4px;"></i>
+                </div>
+                <div id="agendamento-editor-${c.tipo}-${c.id}" style="display:none;"></div>
+            </td>
+            <td style="text-align:center; white-space:nowrap;">
+                <button onclick="executarContato('${c.tipo}', ${c.id})" title="Executar agora"
+                    style="background:var(--accent); color:#fff; border:none; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:10px; margin-right:4px;">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button onclick="${isWa ? `removerContato(${c.id})` : `removerContatoEmail(${c.id})`}" title="Remover"
+                    style="background:transparent; color:var(--text-muted); border:none; cursor:pointer; font-size:14px;">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function executarEnvioAutoDireto() {
+    const btn = document.getElementById('btnExecDireto');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Executando...'; }
+    toast('Iniciando pipeline direto...', 'info');
+
+    try {
+        const res = await fetchAPI('/api/agendamentos/executar-agora', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modo_pipeline: 'direto' })
+        });
+        if (res && !res.erro) {
+            toast(res.mensagem || 'Envio direto iniciado em background!', 'success');
+        } else {
+            toast(res?.erro || 'Erro ao executar', 'error');
+        }
+    } catch(e) {
+        toast('Erro: ' + e.message, 'error');
+    }
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-rocket"></i> Executar Todos (Direto)'; }
 }
 
 async function enviarWhatsAppManual() {
