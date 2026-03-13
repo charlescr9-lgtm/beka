@@ -82,7 +82,7 @@ class BekaScheduler:
             job_defaults={
                 'coalesce': True,       # Se perder execucao, roda 1x ao retornar
                 'max_instances': 1,      # Nunca rodar 2 instancias do mesmo job
-                'misfire_grace_time': 7200,  # 2h de tolerancia — garante execucao apos reinicio
+                'misfire_grace_time': 120,  # 2min de tolerancia — evita execucao fantasma apos restart
             }
         )
         self._started = False
@@ -177,6 +177,16 @@ class BekaScheduler:
             except Exception:
                 continue
             for contato in ativos:
+                # Pular contatos com agendamento individual desativado
+                if getattr(contato, 'agendamento_ativo', True) is False:
+                    continue
+                # Pular contatos que pertencem a lotes (lote cuida deles)
+                try:
+                    _lids = json.loads(getattr(contato, 'lote_ids_json', '[]') or '[]')
+                except Exception:
+                    _lids = []
+                if _lids:
+                    continue
                 try:
                     horarios = json.loads(getattr(contato, "horarios_json", "[]") or "[]")
                 except Exception:
@@ -997,11 +1007,24 @@ class BekaScheduler:
         self._remover_jobs_contato_prefixo(prefixo)
 
     def _carregar_jobs_contatos(self):
-        """Carrega jobs individuais de todos os contatos ativos com horarios definidos."""
+        """Carrega jobs individuais de todos os contatos ativos com horarios definidos.
+        Contatos associados a lotes sao ignorados aqui (gerenciados por registrar_jobs_lotes).
+        """
         from models import WhatsAppContact, EmailContact
         total = 0
         try:
             for c in WhatsAppContact.query.filter_by(ativo=True).all():
+                # Pular contatos que pertencem a algum lote
+                lote_ids = []
+                try:
+                    lote_ids = json.loads(getattr(c, 'lote_ids_json', '[]') or '[]')
+                except Exception:
+                    lote_ids = []
+                if lote_ids:
+                    continue  # Gerenciado pelos lotes
+                # Pular se agendamento individual desativado
+                if getattr(c, 'agendamento_ativo', True) is False:
+                    continue
                 horarios_raw = getattr(c, 'horarios_json', '[]') or '[]'
                 try:
                     horarios = json.loads(horarios_raw)
@@ -1011,6 +1034,17 @@ class BekaScheduler:
                     self.registrar_job_contato(c, 'whatsapp')
                     total += 1
             for c in EmailContact.query.filter_by(ativo=True).all():
+                # Pular contatos que pertencem a algum lote
+                lote_ids = []
+                try:
+                    lote_ids = json.loads(getattr(c, 'lote_ids_json', '[]') or '[]')
+                except Exception:
+                    lote_ids = []
+                if lote_ids:
+                    continue  # Gerenciado pelos lotes
+                # Pular se agendamento individual desativado
+                if getattr(c, 'agendamento_ativo', True) is False:
+                    continue
                 horarios_raw = getattr(c, 'horarios_json', '[]') or '[]'
                 try:
                     horarios = json.loads(horarios_raw)
@@ -1019,9 +1053,405 @@ class BekaScheduler:
                 if horarios:
                     self.registrar_job_contato(c, 'email')
                     total += 1
-            logger.info(f"[Scheduler] {total} contato(s) com jobs individuais carregados")
+            logger.info(f"[Scheduler] {total} contato(s) com jobs individuais carregados (sem lote)")
         except Exception as e:
             logger.error(f"[Scheduler] Erro ao carregar jobs de contatos: {e}")
+
+        # Carregar jobs de lotes para todos os usuarios
+        self._carregar_jobs_lotes_todos()
+
+    def _carregar_jobs_lotes_todos(self):
+        """Carrega jobs de lotes para todos os usuarios que possuem lotes ativos."""
+        from models import TimeLote, db
+        try:
+            user_ids = db.session.query(TimeLote.user_id).filter_by(ativo=True).distinct().all()
+            total = 0
+            for (uid,) in user_ids:
+                n = self.registrar_jobs_lotes(uid)
+                total += n
+            logger.info(f"[Scheduler] {total} job(s) de lote carregados para {len(user_ids)} usuario(s)")
+        except Exception as e:
+            logger.error(f"[Scheduler] Erro ao carregar jobs de lotes: {e}")
+
+    def registrar_jobs_lotes(self, user_id: int) -> int:
+        """Cria/atualiza jobs APScheduler para todos os TimeLotes ativos de um usuario.
+
+        Retorna quantidade de jobs registrados.
+        """
+        from models import TimeLote
+
+        # Remover jobs de lote existentes para este usuario
+        prefixo = f"beka_lote_{user_id}_"
+        try:
+            jobs_to_remove = [
+                j for j in self.scheduler.get_jobs()
+                if j.id.startswith(prefixo)
+            ]
+            for j in jobs_to_remove:
+                self.scheduler.remove_job(j.id)
+            if jobs_to_remove:
+                logger.info(f"[Scheduler] {len(jobs_to_remove)} job(s) de lote removidos para user {user_id}")
+        except Exception as e:
+            logger.error(f"[Scheduler] Erro ao remover jobs de lote para user {user_id}: {e}")
+
+        # Registrar novos jobs
+        lotes = TimeLote.query.filter_by(user_id=user_id, ativo=True).all()
+        registrados = 0
+        for lote in lotes:
+            try:
+                hora_str = (lote.hora or '').strip()
+                if not hora_str:
+                    continue
+                hora, minuto = _parse_hora(hora_str)
+
+                # Parse dias_semana
+                dias_raw = []
+                try:
+                    dias_raw = json.loads(lote.dias_semana or '[]')
+                except Exception:
+                    dias_raw = []
+                if not dias_raw:
+                    dias_raw = ['seg', 'ter', 'qua', 'qui', 'sex']
+
+                dias_cron_parts = []
+                for d in dias_raw:
+                    d_lower = str(d).strip().lower()
+                    if d_lower in DIAS_MAP:
+                        dias_cron_parts.append(DIAS_MAP[d_lower])
+                    elif d_lower:
+                        dias_cron_parts.append(d_lower)
+                if not dias_cron_parts:
+                    continue
+                dias_cron = ",".join(dias_cron_parts)
+
+                job_id = f"beka_lote_{user_id}_{lote.id}"
+                trigger = CronTrigger(
+                    day_of_week=dias_cron,
+                    hour=hora,
+                    minute=minuto,
+                    timezone="America/Sao_Paulo",
+                )
+
+                self.scheduler.add_job(
+                    func=self._executar_lote,
+                    trigger=trigger,
+                    id=job_id,
+                    args=[user_id, lote.id],
+                    name=f"Lote: {lote.nome or lote.hora} (user {user_id})",
+                    replace_existing=True,
+                    misfire_grace_time=600,  # 10min tolerancia para lotes
+                )
+
+                logger.info(f"[Scheduler] Job lote registrado: {job_id} "
+                            f"- {hora_str} dias={dias_cron}")
+                registrados += 1
+            except Exception as e:
+                logger.error(f"[Scheduler] Erro ao registrar job lote {lote.id}: {e}")
+
+        return registrados
+
+    def _executar_lote(self, user_id: int, lote_id: int):
+        """Pipeline batch: processa etiquetas UMA VEZ e distribui para todos os contatos do lote.
+
+        1. Busca TimeLote no banco
+        2. Encontra todos os contatos WhatsApp + Email que tem este lote_id em lote_ids_json
+        3. Unifica todas as lojas alvo (lojas_json + grupos expandidos)
+        4. Adquire exec_lock
+        5. Chama _executar_imprimir_direto UMA VEZ com todas as lojas
+        6. Para cada contato: filtra resultado para suas lojas e envia
+        7. Registra ExecutionLog com tipo="lote"
+        """
+        from models import TimeLote, WhatsAppContact, EmailContact, ExecutionLog, User, db
+
+        with self.app.app_context():
+            # Criar log de execucao
+            log_exec = ExecutionLog(
+                user_id=user_id,
+                schedule_id=None,
+                tipo="lote",
+                inicio=_agora_brasil(),
+                status="executando",
+            )
+            db.session.add(log_exec)
+            db.session.commit()
+
+            # Serializar execucoes do mesmo usuario
+            exec_lock = self._get_exec_lock(user_id)
+            logger.info(f"[Lote] lote #{lote_id}: aguardando fila (user {user_id})...")
+            acquired = exec_lock.acquire(timeout=900)
+            if not acquired:
+                logger.error(f"[Lote] TIMEOUT na fila para user {user_id}, lote #{lote_id}")
+                log_exec.status = "erro"
+                log_exec.fim = _agora_brasil()
+                log_exec.detalhes = json.dumps(
+                    {"erro": "Timeout aguardando fila de execucao (outra execucao demorou mais de 15 min)"},
+                    ensure_ascii=False,
+                )
+                db.session.commit()
+                return
+            logger.info(f"[Lote] lote #{lote_id}: fila liberada, executando (user {user_id})")
+
+            detalhes = {"etapas": [], "tipo": "lote", "lote_id": lote_id}
+            status_final = "sucesso"
+
+            try:
+                # 1. Buscar lote
+                lote = TimeLote.query.get(lote_id)
+                if not lote or not lote.ativo:
+                    detalhes["erro_geral"] = "Lote nao encontrado ou inativo"
+                    status_final = "erro"
+                    raise RuntimeError("Lote nao encontrado ou inativo")
+
+                detalhes["lote_nome"] = lote.nome or lote.hora
+
+                # 2. Encontrar todos os contatos que pertencem a este lote
+                contatos_whatsapp = []
+                contatos_email = []
+                try:
+                    for c in WhatsAppContact.query.filter_by(user_id=user_id, ativo=True).all():
+                        c_lote_ids = []
+                        try:
+                            c_lote_ids = json.loads(getattr(c, 'lote_ids_json', '[]') or '[]')
+                        except Exception:
+                            c_lote_ids = []
+                        if lote_id in c_lote_ids:
+                            contatos_whatsapp.append(c)
+
+                    for c in EmailContact.query.filter_by(user_id=user_id, ativo=True).all():
+                        c_lote_ids = []
+                        try:
+                            c_lote_ids = json.loads(getattr(c, 'lote_ids_json', '[]') or '[]')
+                        except Exception:
+                            c_lote_ids = []
+                        if lote_id in c_lote_ids:
+                            contatos_email.append(c)
+                except Exception as e_c:
+                    logger.error(f"[Lote] Erro ao buscar contatos do lote: {e_c}")
+
+                detalhes["contatos_whatsapp"] = len(contatos_whatsapp)
+                detalhes["contatos_email"] = len(contatos_email)
+
+                if not contatos_whatsapp and not contatos_email:
+                    detalhes["aviso"] = "Nenhum contato associado a este lote"
+                    logger.info(f"[Lote] Nenhum contato associado ao lote #{lote_id}")
+                    status_final = "parcial"
+                    raise RuntimeError("Nenhum contato associado a este lote")
+
+                # 3. Unificar todas as lojas alvo de todos os contatos
+                todas_lojas = []
+                for c in contatos_whatsapp + contatos_email:
+                    lojas_cfg = _parse_json_list(getattr(c, "lojas_json", "[]"))
+                    grupos_cfg = _parse_json_list(getattr(c, "grupos_json", "[]"))
+                    todas_lojas.extend(lojas_cfg)
+                    if grupos_cfg:
+                        try:
+                            from dashboard import _get_estado
+                            estado_tmp = _get_estado(user_id) or {}
+                            agrup = estado_tmp.get("agrupamentos", []) or []
+                            grupos_norm = {str(x).strip().lower() for x in grupos_cfg if str(x).strip()}
+                            for g in agrup:
+                                nome_g = str((g or {}).get("nome", "") or "").strip().lower()
+                                if nome_g and nome_g in grupos_norm:
+                                    for ln in (g or {}).get("nomes_lojas", []) or []:
+                                        ln = str(ln or "").strip()
+                                        if ln:
+                                            todas_lojas.append(ln)
+                        except Exception as e_g:
+                            logger.warning(f"[Lote] Erro ao expandir grupos: {e_g}")
+
+                # Dedupe preservando ordem
+                todas_lojas = list(dict.fromkeys([x for x in todas_lojas if str(x).strip()]))
+                detalhes["lojas_unificadas"] = todas_lojas
+                logger.info(f"[Lote] lote #{lote_id}: {len(todas_lojas)} loja(s) unificada(s), "
+                            f"{len(contatos_whatsapp)} WhatsApp, {len(contatos_email)} Email")
+
+                # 5. Executar imprimir_direto UMA VEZ com todas as lojas
+                detalhes["etapas"].append({"etapa": "imprimir_direto", "status": "iniciando"})
+                from dashboard import _executar_imprimir_direto
+                resultado_direto = _executar_imprimir_direto(
+                    user_id=user_id,
+                    lojas_alvo=todas_lojas,
+                )
+                if resultado_direto.get("ok"):
+                    log_exec.etiquetas_baixadas = resultado_direto.get("pdfs_movidos", 0)
+                    log_exec.etiquetas_processadas = resultado_direto.get("total_etiquetas", 0)
+                    detalhes["etapas"][-1]["status"] = "concluido"
+                    detalhes["etapas"][-1]["etiquetas"] = resultado_direto.get("total_etiquetas", 0)
+                    detalhes["etapas"][-1]["lojas"] = resultado_direto.get("total_lojas", 0)
+                else:
+                    raise RuntimeError(resultado_direto.get("erro", "Falha no imprimir direto"))
+
+                # 6. Para cada contato: filtrar resultado e enviar
+                # --- WhatsApp ---
+                total_wpp_ok = 0
+                for c in contatos_whatsapp:
+                    try:
+                        # Resolver lojas deste contato especifico
+                        c_lojas = _parse_json_list(getattr(c, "lojas_json", "[]"))
+                        c_grupos = _parse_json_list(getattr(c, "grupos_json", "[]"))
+                        lojas_contato = list(c_lojas)
+                        if c_grupos:
+                            try:
+                                from dashboard import _get_estado
+                                estado_tmp = _get_estado(user_id) or {}
+                                agrup = estado_tmp.get("agrupamentos", []) or []
+                                grupos_norm = {str(x).strip().lower() for x in c_grupos if str(x).strip()}
+                                for g in agrup:
+                                    nome_g_raw = str((g or {}).get("nome", "") or "").strip()
+                                    nome_g = nome_g_raw.lower()
+                                    if nome_g and nome_g in grupos_norm:
+                                        # Incluir nome do grupo (usado como nome da pasta no resultado)
+                                        if nome_g_raw:
+                                            lojas_contato.append(nome_g_raw)
+                                        for ln in (g or {}).get("nomes_lojas", []) or []:
+                                            ln = str(ln or "").strip()
+                                            if ln:
+                                                lojas_contato.append(ln)
+                            except Exception:
+                                pass
+                        lojas_contato = list(dict.fromkeys([x for x in lojas_contato if str(x).strip()]))
+
+                        from dashboard import (_enfileirar_whatsapp_todos_arquivos_para_contato,
+                                               _garantir_baileys_rodando)
+                        enq = _enfileirar_whatsapp_todos_arquivos_para_contato(
+                            user_id, c.id, lojas_filtro=lojas_contato if lojas_contato else None
+                        )
+                        if enq.get("ok"):
+                            total_wpp_ok += enq.get("total_entregas", 0)
+                            _garantir_baileys_rodando(motivo="lote")
+                    except Exception as e_wpp:
+                        logger.error(f"[Lote] Erro WhatsApp contato #{c.id}: {e_wpp}")
+
+                if contatos_whatsapp:
+                    detalhes["etapas"].append({
+                        "etapa": "whatsapp_lote",
+                        "status": "concluido" if total_wpp_ok > 0 else "pulado",
+                        "enfileirados": total_wpp_ok,
+                        "contatos": len(contatos_whatsapp),
+                    })
+                    log_exec.whatsapp_enviados = total_wpp_ok
+
+                # --- Email ---
+                total_email_ok = 0
+                for c in contatos_email:
+                    try:
+                        c_lojas = _parse_json_list(getattr(c, "lojas_json", "[]"))
+                        c_grupos = _parse_json_list(getattr(c, "grupos_json", "[]"))
+                        lojas_contato = list(c_lojas)
+                        if c_grupos:
+                            try:
+                                from dashboard import _get_estado
+                                estado_tmp = _get_estado(user_id) or {}
+                                agrup = estado_tmp.get("agrupamentos", []) or []
+                                grupos_norm = {str(x).strip().lower() for x in c_grupos if str(x).strip()}
+                                for g in agrup:
+                                    nome_g_raw = str((g or {}).get("nome", "") or "").strip()
+                                    nome_g = nome_g_raw.lower()
+                                    if nome_g and nome_g in grupos_norm:
+                                        # Incluir nome do grupo (usado como nome da pasta no resultado)
+                                        if nome_g_raw:
+                                            lojas_contato.append(nome_g_raw)
+                                        for ln in (g or {}).get("nomes_lojas", []) or []:
+                                            ln = str(ln or "").strip()
+                                            if ln:
+                                                lojas_contato.append(ln)
+                            except Exception:
+                                pass
+                        lojas_contato = list(dict.fromkeys([x for x in lojas_contato if str(x).strip()]))
+
+                        from dashboard import _get_estado, _smtp_config_resolver
+                        from whatsapp_delivery import montar_destinos_por_resultado
+                        from models import User
+                        import time as _time
+
+                        user = User.query.get(user_id)
+                        estado = _get_estado(user_id)
+                        resultado_ref = estado.get("ultimo_resultado", {}) if estado else {}
+
+                        # Filtrar resultado para lojas deste contato
+                        if lojas_contato and resultado_ref and resultado_ref.get("lojas"):
+                            alvo_norm = {str(x).strip().lower() for x in lojas_contato}
+                            lojas_filtradas = [
+                                l for l in (resultado_ref.get("lojas", []) or [])
+                                if str((l or {}).get("nome", "") or "").strip().lower() in alvo_norm
+                            ]
+                            resultado_ref = {**resultado_ref, "lojas": lojas_filtradas}
+
+                        from_addr = (getattr(user, "email_remetente", "") or "").strip()
+                        smtp_cfg, _ = _smtp_config_resolver(user)
+                        if not smtp_cfg or not from_addr:
+                            continue
+
+                        pasta_saida = self._get_pasta_saida(user_id)
+                        agrupamentos = (estado or {}).get("agrupamentos", []) if estado else []
+                        envios, diagnostico = montar_destinos_por_resultado(
+                            resultado=resultado_ref,
+                            pasta_saida=pasta_saida,
+                            contatos=[c],
+                            destino_attr="email",
+                            agrupamentos_usuario=agrupamentos,
+                        )
+                        if envios:
+                            from dashboard import enviar_email_com_anexos
+                            timestamp = resultado_ref.get("timestamp", "")
+                            from_name = (getattr(user, "nome_remetente", "") or "").strip()
+                            envios_agrupados = {}
+                            for envio in envios:
+                                destino = str(envio.get("destino", "") or "").strip()
+                                loja_e = str(envio.get("loja", "") or "").strip()
+                                file_path = str(envio.get("file_path", envio.get("pdf_path", "")) or "").strip()
+                                if not destino or not file_path:
+                                    continue
+                                chave = (destino.lower(), loja_e)
+                                if chave not in envios_agrupados:
+                                    envios_agrupados[chave] = {"destino": destino, "loja": loja_e, "arquivos": []}
+                                if file_path not in envios_agrupados[chave]["arquivos"]:
+                                    envios_agrupados[chave]["arquivos"].append(file_path)
+
+                            for grupo in envios_agrupados.values():
+                                try:
+                                    res = enviar_email_com_anexos(
+                                        email_destino=grupo["destino"],
+                                        assunto=f"Arquivos {grupo['loja']} - {timestamp}",
+                                        loja_nome=grupo["loja"],
+                                        timestamp=timestamp,
+                                        anexos_paths=grupo["arquivos"],
+                                        from_addr_override=from_addr,
+                                        from_name_override=from_name,
+                                        smtp_override=smtp_cfg,
+                                    )
+                                    if res.get("success"):
+                                        total_email_ok += 1
+                                except Exception as e_mail:
+                                    logger.error(f"[Lote] Erro email contato #{c.id}: {e_mail}")
+                                _time.sleep(2)
+                    except Exception as e_email:
+                        logger.error(f"[Lote] Erro email contato #{c.id}: {e_email}")
+
+                if contatos_email:
+                    detalhes["etapas"].append({
+                        "etapa": "email_lote",
+                        "status": "concluido" if total_email_ok > 0 else "pulado",
+                        "enviados": total_email_ok,
+                        "contatos": len(contatos_email),
+                    })
+
+            except Exception as e:
+                logger.error(f"[Lote] Erro geral: {e}")
+                if status_final != "erro":
+                    status_final = "erro"
+                detalhes["erro_geral"] = str(e)
+
+            finally:
+                exec_lock.release()
+
+            # Finalizar log
+            log_exec.fim = _agora_brasil()
+            log_exec.status = status_final
+            log_exec.detalhes = json.dumps(detalhes, ensure_ascii=False)
+            db.session.commit()
+
+            logger.info(f"[Lote] Concluido: user={user_id} lote={lote_id} status={status_final}")
 
     def _executar_contato_individual(self, user_id: int, contato_id: int, tipo_contato: str):
         """Pipeline individual: processa e envia apenas para um contato especifico.
@@ -1076,6 +1506,25 @@ class BekaScheduler:
                     detalhes["erro_geral"] = "Contato nao encontrado ou inativo"
                     status_final = "erro"
                     raise RuntimeError("Contato nao encontrado ou inativo")
+
+                # GUARD: pular se agendamento individual esta desativado
+                if getattr(contato, 'agendamento_ativo', True) is False:
+                    detalhes["erro_geral"] = "Agendamento individual desativado para este contato"
+                    status_final = "pulado"
+                    logger.info(f"[ContatoIndividual] contato #{contato_id}: agendamento_ativo=False, pulando")
+                    raise RuntimeError("Agendamento individual desativado")
+
+                # GUARD: pular se contato pertence a algum lote (lote cuida dele)
+                c_lote_ids = []
+                try:
+                    c_lote_ids = json.loads(getattr(contato, 'lote_ids_json', '[]') or '[]')
+                except Exception:
+                    c_lote_ids = []
+                if c_lote_ids:
+                    detalhes["erro_geral"] = f"Contato pertence a lote(s) {c_lote_ids}, job individual ignorado"
+                    status_final = "pulado"
+                    logger.info(f"[ContatoIndividual] contato #{contato_id}: pertence a lotes {c_lote_ids}, pulando")
+                    raise RuntimeError("Contato pertence a lote, job individual ignorado")
 
                 # 2. Resolver lojas alvo (lojas_json + expansao de grupos)
                 lojas_alvo = []
@@ -1273,8 +1722,8 @@ class BekaScheduler:
                             detalhes["etapas"][-1]["diagnostico"] = diagnostico
 
             except Exception as e:
-                logger.error(f"[ContatoIndividual] Erro geral: {e}")
-                if status_final != "erro":
+                if status_final not in ("pulado",):
+                    logger.error(f"[ContatoIndividual] Erro geral: {e}")
                     status_final = "erro"
                 detalhes["erro_geral"] = str(e)
 

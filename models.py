@@ -102,6 +102,7 @@ class User(db.Model):
     smtp_user = db.Column(db.String(200), default='')
     smtp_pass_enc = db.Column(db.Text, default='')
     smtp_from = db.Column(db.String(200), default='')
+    pasta_avulsas = db.Column(db.String(500), default='')
 
     payments = db.relationship('Payment', backref='user', lazy=True)
     sessions = db.relationship('Session', backref='user', lazy=True)
@@ -273,6 +274,8 @@ class WhatsAppContact(db.Model):
     dias_semana = db.Column(db.String(50), default='')       # LEGADO - manter para compatibilidade
     horarios_json = db.Column(db.Text, default='[]')         # [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
     resumo_geral = db.Column(db.Boolean, default=False)      # Recebe resumo consolidado de todas as lojas
+    lote_ids_json = db.Column(db.Text, default='[]')         # [1, 3] = IDs de TimeLote
+    agendamento_ativo = db.Column(db.Boolean, default=True)  # False = agendamento individual desligado
     created_at = db.Column(db.DateTime, default=_agora_brasil)
 
     user = db.relationship('User', backref=db.backref('whatsapp_contacts', lazy=True))
@@ -283,6 +286,11 @@ class WhatsAppContact(db.Model):
             horarios = json.loads(self.horarios_json or '[]')
         except Exception:
             horarios = []
+        lote_ids = []
+        try:
+            lote_ids = json.loads(self.lote_ids_json or '[]')
+        except Exception:
+            lote_ids = []
         return {
             "id": self.id,
             "loja_cnpj": self.loja_cnpj,
@@ -294,6 +302,8 @@ class WhatsAppContact(db.Model):
             "ativo": self.ativo,
             "horarios": horarios,
             "resumo_geral": bool(self.resumo_geral),
+            "lote_ids": lote_ids,
+            "agendamento_ativo": self.agendamento_ativo if self.agendamento_ativo is not None else True,
             "created_at": self.created_at.strftime("%d/%m/%Y %H:%M") if self.created_at else '',
         }
 
@@ -467,6 +477,8 @@ class EmailContact(db.Model):
     horario = db.Column(db.String(5), default='')            # LEGADO - manter para compatibilidade
     dias_semana = db.Column(db.String(50), default='')       # LEGADO - manter para compatibilidade
     horarios_json = db.Column(db.Text, default='[]')         # [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
+    lote_ids_json = db.Column(db.Text, default='[]')         # [1, 3] = IDs de TimeLote
+    agendamento_ativo = db.Column(db.Boolean, default=True)  # False = agendamento individual desligado
 
     def to_dict(self):
         horarios = []
@@ -474,6 +486,11 @@ class EmailContact(db.Model):
             horarios = json.loads(self.horarios_json or '[]')
         except Exception:
             horarios = []
+        lote_ids = []
+        try:
+            lote_ids = json.loads(self.lote_ids_json or '[]')
+        except Exception:
+            lote_ids = []
         return {
             "id": self.id,
             "email": self.email,
@@ -483,6 +500,31 @@ class EmailContact(db.Model):
             "grupos": _json_list(self.grupos_json),
             "ativo": self.ativo,
             "horarios": horarios,
+            "lote_ids": lote_ids,
+            "agendamento_ativo": self.agendamento_ativo if self.agendamento_ativo is not None else True,
+        }
+
+
+class TimeLote(db.Model):
+    """Lote de envio — agrupa contatos para processamento em batch."""
+    __tablename__ = 'time_lotes'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    nome = db.Column(db.String(100), default='')
+    hora = db.Column(db.String(5), nullable=False)  # "11:00"
+    dias_semana = db.Column(db.Text, default='["seg","ter","qua","qui","sex"]')
+    ativo = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+
+    def to_dict(self):
+        dias = []
+        try:
+            dias = json.loads(self.dias_semana or '[]')
+        except Exception:
+            dias = []
+        return {
+            "id": self.id, "nome": self.nome, "hora": self.hora,
+            "dias_semana": dias, "ativo": self.ativo,
         }
 
 
@@ -659,4 +701,62 @@ class MarketplaceLoja(db.Model):
             "etiquetas_pendentes": int(self.etiquetas_pendentes or 0),
             "ultima_atualizacao": self.ultima_atualizacao.strftime("%d/%m/%Y %H:%M") if self.ultima_atualizacao else "",
             "ativo": bool(self.ativo),
+        }
+
+
+# ----------------------------------------------------------------
+# AIOS - AI Agent Operating System Config
+# ----------------------------------------------------------------
+
+class AIOSConfig(db.Model):
+    __tablename__ = 'aios_config'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), unique=True, nullable=False)
+    anthropic_key_enc = db.Column(db.Text, default='')
+    openai_key_enc = db.Column(db.Text, default='')
+    modelo_principal = db.Column(db.String(100), default='claude-sonnet-4-20250514')
+    modelo_fallback = db.Column(db.String(100), default='qwen2.5:7b')
+    ollama_url = db.Column(db.String(200), default='http://localhost:11434')
+    kernel_porta = db.Column(db.Integer, default=8000)
+    ativo = db.Column(db.Boolean, default=True)
+    criado_em = db.Column(db.DateTime, default=_agora_brasil)
+    atualizado_em = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
+
+    def set_anthropic_key(self, key):
+        if key:
+            self.anthropic_key_enc = _fernet.encrypt(key.encode()).decode()
+        else:
+            self.anthropic_key_enc = ''
+
+    def get_anthropic_key(self):
+        if self.anthropic_key_enc:
+            try:
+                return _fernet.decrypt(self.anthropic_key_enc.encode()).decode()
+            except Exception:
+                return ''
+        return ''
+
+    def set_openai_key(self, key):
+        if key:
+            self.openai_key_enc = _fernet.encrypt(key.encode()).decode()
+        else:
+            self.openai_key_enc = ''
+
+    def get_openai_key(self):
+        if self.openai_key_enc:
+            try:
+                return _fernet.decrypt(self.openai_key_enc.encode()).decode()
+            except Exception:
+                return ''
+        return ''
+
+    def to_dict(self):
+        return {
+            "modelo_principal": self.modelo_principal,
+            "modelo_fallback": self.modelo_fallback,
+            "ollama_url": self.ollama_url,
+            "kernel_porta": self.kernel_porta,
+            "ativo": bool(self.ativo),
+            "tem_anthropic_key": bool(self.anthropic_key_enc),
+            "tem_openai_key": bool(self.openai_key_enc),
         }

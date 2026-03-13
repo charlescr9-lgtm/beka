@@ -1,0 +1,19 @@
+{
+    "name": "etiquetas_agent",
+    "description": [
+        "Especialista em etiquetas de envio para e-commerce.",
+        "Analisa PDFs de etiquetas, detecta problemas de layout,",
+        "sugere configuracoes ideais de margem/fonte/dimensao,",
+        "e auxilia no processamento de etiquetas Shopee, TikTok Shop e Temu."
+    ],
+    "tools": [],
+    "meta": {
+        "author": "beka",
+        "version": "1.0.0",
+        "license": "MIT"
+    },
+    "build": {
+        "entry": "entry.py",
+        "module": "EtiquetasAgent"
+    }
+}

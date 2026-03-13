@@ -1017,17 +1017,19 @@ class ProcessadorEtiquetasShopee:
         if m_track:
             resultado['tracking'] = m_track.group(1).strip()
 
-        # Extrair CNPJ do remetente (se disponivel)
-        m_cnpj = re.search(r'CPF/CNPJ[:\s]*(\d[\d./-]+)', texto)
-        if m_cnpj:
-            cnpj_raw = re.sub(r'[.\-/]', '', m_cnpj.group(1))
-            if len(cnpj_raw) >= 11:
-                resultado['cnpj_emitente'] = cnpj_raw
-
-        # Extrair nome remetente
-        m_nome = re.search(r'NOME[:\s]*([^\n]+)', texto)
-        if m_nome:
-            resultado['nome_emitente'] = m_nome.group(1).strip()
+        # Extrair CNPJ do remetente (apenas da secao REMETENTE, antes de DESTINATARIO)
+        m_remetente = re.search(r'REMETENTE(.*?)DESTINAT', texto, re.DOTALL | re.IGNORECASE)
+        if m_remetente:
+            texto_rem = m_remetente.group(1)
+            m_cnpj = re.search(r'CPF/CNPJ[:\s]*(\d[\d./-]+)', texto_rem)
+            if m_cnpj:
+                cnpj_raw = re.sub(r'[.\-/]', '', m_cnpj.group(1))
+                if len(cnpj_raw) >= 11:
+                    resultado['cnpj_emitente'] = cnpj_raw
+            # Extrair nome remetente (da secao REMETENTE)
+            m_nome = re.search(r'NOME[:\s]*([^\n]+)', texto_rem)
+            if m_nome:
+                resultado['nome_emitente'] = m_nome.group(1).strip()
 
         # Extrair produtos da tabela IDENTIFICACAO DOS BENS
         # O PyMuPDF extrai cada celula da tabela em uma linha separada.
@@ -1639,9 +1641,10 @@ class ProcessadorEtiquetasShopee:
 
         return total, n_simples, n_multi, com_xml, sem_xml
 
-    def _desenhar_secao_produtos(self, pagina, dados, y_inicio, prod_inicio=0):
+    def _desenhar_secao_produtos(self, pagina, dados, y_inicio, prod_inicio=0, alt_pagina=None):
         """Desenha a secao de codigo de barras + tabela de produtos abaixo da etiqueta.
         prod_inicio: indice do primeiro produto a desenhar (para continuacao).
+        alt_pagina: altura da pagina (usa self.ALTURA_PT se None).
         Retorna indice do proximo produto nao desenhado (len(produtos) se todos couberam).
         """
         preto = (0, 0, 0)
@@ -1712,7 +1715,7 @@ class ProcessadorEtiquetasShopee:
         pagina.draw_line((margem_esq, y), (x_direita, y), color=preto, width=0.5)
         y += line_h
 
-        y_limite = self.ALTURA_PT - self.MARGEM_INFERIOR - 10
+        y_limite = (alt_pagina or self.ALTURA_PT) - self.MARGEM_INFERIOR - 10
         ultimo_desenhado = prod_inicio
 
         for i_abs in range(prod_inicio, len(produtos)):
@@ -3598,10 +3601,7 @@ class ProcessadorEtiquetasShopee:
 
             nova_pag.show_pdf_page(dest_rect, doc_entrada, pag_idx, clip=clip)
 
-            # Tabela de produtos com Variation Name
-            y_inicio = self.MARGEM_TOPO + alt_etiqueta + 5
-            if dados.get('produtos'):
-                self._desenhar_secao_produtos_cpf(nova_pag, dados, y_inicio, larg, alt_pagina=alt)
+            # Sem rodape adicional — manter etiqueta como vem do UpSeller
 
             # Numero de ordem (subido para nao cortar na impressao)
             nova_pag.insert_text(

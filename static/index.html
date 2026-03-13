@@ -863,6 +863,15 @@
     <div class="nav-tab" data-tab="shopee-expert" onclick="trocarTab('shopee-expert')" style="display:none;">
         <i class="fas fa-magic"></i> Shopee Expert
     </div>
+    <div class="nav-tab" data-tab="avulsas" onclick="trocarTab('avulsas')">
+        <i class="fas fa-tags"></i> Etiquetas Avulsas
+    </div>
+    <div class="nav-tab" data-tab="aios" onclick="trocarTab('aios')">
+        <i class="fas fa-brain"></i> AIOS
+    </div>
+    <div class="nav-tab" data-tab="calculadora" onclick="trocarTab('calculadora')">
+        <i class="fas fa-calculator"></i> Calculadora
+    </div>
 </nav>
 
 <!-- TOAST CONTAINER -->
@@ -1213,7 +1222,6 @@
                 </div>
             </div>
             </div><!-- /collapse-body-envioAuto -->
-        </div>
 
         <!-- MARKETPLACE API (ASSINANTE) -->
         <div class="card" id="marketplaceApiCard" style="margin-bottom:20px; display:none;">
@@ -1353,6 +1361,84 @@
             </div>
         </div>
 
+        <!-- LOTES DE ENVIO -->
+        <div class="card" style="margin-bottom:20px; border:1px solid rgba(240,93,35,0.3); border-radius:12px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-boxes-stacked"></i> Lotes de Envio</span>
+                <button class="btn btn-primary" onclick="mostrarModalLote()" style="font-size:11px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Criar Lote
+                </button>
+            </div>
+            <div id="tabelaLotes" style="overflow-x:auto;">
+                <p style="font-size:12px; color:var(--text-secondary);">Nenhum lote cadastrado.</p>
+            </div>
+        </div>
+
+        <!-- MODAL LOTE (create/edit) -->
+        <div id="modalLote" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:9999; backdrop-filter:blur(4px); display:none; align-items:center; justify-content:center;">
+            <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:var(--radius); padding:24px; width:440px; max-width:92vw; max-height:80vh; overflow-y:auto;">
+                <h3 style="font-size:16px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-boxes-stacked" style="color:var(--accent);"></i>
+                    <span id="modalLoteTitulo">Novo Lote</span>
+                </h3>
+                <input type="hidden" id="loteEditId" value="">
+                <div class="form-group">
+                    <label class="form-label">Nome do Lote</label>
+                    <input class="form-input" id="loteNome" placeholder="Ex: Lote Manha, Lote Tarde..." style="font-size:13px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Horario</label>
+                    <input class="form-input" id="loteHorario" type="time" value="08:00" style="font-size:13px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Dias da Semana</label>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap; font-size:12px;">
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="seg" checked style="accent-color:var(--accent);"> Seg
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="ter" checked style="accent-color:var(--accent);"> Ter
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="qua" checked style="accent-color:var(--accent);"> Qua
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="qui" checked style="accent-color:var(--accent);"> Qui
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="sex" checked style="accent-color:var(--accent);"> Sex
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="sab" style="accent-color:var(--accent);"> Sab
+                        </label>
+                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer; padding:4px 8px; border:1px solid var(--border); border-radius:6px; background:rgba(255,255,255,0.02);">
+                            <input type="checkbox" class="loteDia" value="dom" style="accent-color:var(--accent);"> Dom
+                        </label>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-size:12px;">
+                        <input type="checkbox" id="loteAtivo" checked style="accent-color:var(--success);">
+                        <span style="font-weight:600; color:var(--text-primary);">Ativo</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><i class="fas fa-users" style="margin-right:4px;"></i> Contatos deste Lote</label>
+                    <div id="loteContatosContainer" style="max-height:200px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; padding:8px; background:rgba(0,0,0,0.15);">
+                        <span style="color:var(--text-muted); font-size:11px;">Carregando...</span>
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:16px;">
+                    <button class="btn btn-primary" onclick="salvarLote()" style="font-size:12px; flex:1;">
+                        <i class="fas fa-check"></i> Salvar
+                    </button>
+                    <button class="btn btn-secondary" onclick="fecharModalLote()" style="font-size:12px;">
+                        Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- CONTATOS POR LOJA -->
         <div class="card" style="margin-bottom:20px;">
             <div class="card-header">
@@ -1390,6 +1476,14 @@
                         <span>Resumo Geral Diario</span>
                         <span style="color:var(--text-secondary); font-size:10px;">(recebe tabela consolidada de todas as lojas)</span>
                     </label>
+                </div>
+                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
+                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
+                        <i class="fas fa-boxes-stacked" style="color:var(--accent);"></i> Lotes de Envio
+                    </div>
+                    <div id="waAlvoLotes" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;">
+                        <div style="color:var(--text-muted);">Nenhum lote cadastrado.</div>
+                    </div>
                 </div>
                 <div style="display:flex; gap:8px; margin-top:8px;">
                     <button class="btn btn-primary" onclick="salvarContato()" style="font-size:11px;">
@@ -1456,6 +1550,14 @@
                         <i class="fas fa-layer-group"></i> Grupos para este destinatario
                     </div>
                     <div id="emailAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
+                </div>
+                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
+                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
+                        <i class="fas fa-boxes-stacked" style="color:var(--accent);"></i> Lotes de Envio
+                    </div>
+                    <div id="emailAlvoLotes" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;">
+                        <div style="color:var(--text-muted);">Nenhum lote cadastrado.</div>
+                    </div>
                 </div>
                 <div style="display:flex; gap:8px; margin-top:8px;">
                     <button class="btn btn-primary" onclick="salvarContatoEmail()" style="font-size:11px;">
@@ -1574,7 +1676,7 @@
                 Carregando...
             </div>
         </div>
-    </div>
+    </div><!-- /tab-automacao -->
 
     <!-- ==================== ADMIN ==================== -->
     <div class="tab-content" id="tab-admin">
@@ -1694,6 +1796,195 @@
     <!-- ==================== SHOPEE EXPERT ==================== -->
     <div class="tab-content" id="tab-shopee-expert">
         <iframe src="http://localhost:8080" style="width:100%;height:calc(100vh - 120px);border:none;border-radius:var(--radius);background:var(--bg-card);"></iframe>
+    </div>
+
+    <!-- ==================== ETIQUETAS AVULSAS ==================== -->
+    <div class="tab-content" id="tab-avulsas">
+        <div class="card" style="max-width:900px;">
+            <h3 class="section-title"><i class="fas fa-tags"></i> Etiquetas Avulsas</h3>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                Processa etiquetas de qualquer pasta: agrupa por loja, ordena por SKU, recorta bordas, adiciona rodapé com produtos e gera resumo.
+                <strong>Independente do sistema de automação.</strong>
+            </p>
+
+            <!-- Seleção de pasta -->
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+                <label style="font-size:12px; font-weight:600; white-space:nowrap;">Pasta com PDFs:</label>
+                <input type="text" id="avulsas-pasta" placeholder="Ex: C:\Users\Micro\Desktop\atrasados"
+                       style="flex:1; padding:8px 12px; border-radius:var(--radius); border:1px solid var(--border); background:var(--bg-secondary); color:var(--text-primary); font-size:12px;">
+                <button class="btn btn-primary" onclick="avulsasSalvarPasta()" style="font-size:12px; padding:8px 16px;">
+                    <i class="fas fa-save"></i> Salvar
+                </button>
+            </div>
+
+            <!-- Botões de ação -->
+            <div style="display:flex; gap:10px; margin-bottom:16px;">
+                <button class="btn btn-primary" onclick="avulsasProcessar()" id="avulsas-btn-processar" style="font-size:13px; padding:10px 24px;">
+                    <i class="fas fa-cogs"></i> Processar Etiquetas
+                </button>
+                <button class="btn btn-secondary" onclick="avulsasAbrirPasta()" id="avulsas-btn-abrir" style="font-size:12px; padding:8px 16px; display:none;">
+                    <i class="fas fa-folder-open"></i> Abrir Pasta de Saída
+                </button>
+            </div>
+
+            <!-- Status / Progresso -->
+            <div id="avulsas-status" style="display:none; padding:12px; border-radius:var(--radius); background:var(--bg-secondary); margin-bottom:16px;">
+                <div id="avulsas-status-text" style="font-size:12px;"></div>
+            </div>
+
+            <!-- Resultado -->
+            <div id="avulsas-resultado" style="display:none;">
+                <h4 style="font-size:14px; margin-bottom:8px; color:var(--accent);"><i class="fas fa-check-circle"></i> Resultado</h4>
+                <div id="avulsas-resultado-tabela"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== AIOS - Central de Inteligencia ==================== -->
+    <div class="tab-content" id="tab-aios">
+        <h2 class="page-title"><i class="fas fa-brain"></i> AIOS - Central de Inteligencia</h2>
+
+        <!-- Status do AIOS -->
+        <div class="card" id="aiosStatusCard">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 class="section-title" style="margin:0;"><i class="fas fa-microchip"></i> Status do Sistema</h3>
+                <div id="aiosStatusBadge" style="padding:4px 12px;border-radius:20px;font-size:11px;font-weight:600;background:var(--bg-tertiary);color:var(--text-muted);">
+                    Verificando...
+                </div>
+            </div>
+            <div id="aiosBackendsList" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+        </div>
+
+        <!-- Cards de Agentes Especialistas -->
+        <div class="card">
+            <h3 class="section-title"><i class="fas fa-users-cog"></i> Especialistas</h3>
+            <p style="font-size:11px;color:var(--text-secondary);margin-bottom:12px;">Clique em um especialista para iniciar uma conversa</p>
+            <div id="aiosAgentsGrid" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(105px, 1fr));gap:8px;max-height:320px;overflow-y:auto;padding-right:4px;"></div>
+        </div>
+
+        <!-- Painel de Acoes Rapidas -->
+        <div class="card" id="aiosToolsPanel" style="display:none;">
+            <h3 class="section-title"><i class="fas fa-tools"></i> Acoes Rapidas</h3>
+            <div id="aiosToolsList" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+        </div>
+
+        <!-- Chat com Especialista -->
+        <div class="card" id="aiosChatCard">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <h3 class="section-title" style="margin:0;">
+                    <i class="fas fa-comments" id="aiosChatIcon"></i>
+                    <span id="aiosChatTitle">Chat com Especialista</span>
+                </h3>
+                <div style="display:flex;gap:8px;">
+                    <select id="aiosAgentSelect" onchange="_aiosSelectAgent(this.value)" class="form-input" style="font-size:11px;padding:4px 8px;width:auto;">
+                        <option value="">Selecione um agente...</option>
+                    </select>
+                    <button onclick="_aiosClearChat()" class="btn" style="font-size:11px;padding:4px 10px;">
+                        <i class="fas fa-trash-alt"></i> Limpar
+                    </button>
+                </div>
+            </div>
+
+            <!-- Area de mensagens -->
+            <div id="aiosChatMessages" style="
+                min-height:300px; max-height:500px; overflow-y:auto;
+                border:1px solid var(--border); border-radius:8px;
+                padding:12px; margin-bottom:12px;
+                background:var(--bg-secondary);
+            ">
+                <div style="text-align:center;color:var(--text-muted);padding:60px 20px;font-size:13px;">
+                    <i class="fas fa-brain" style="font-size:40px;opacity:0.3;display:block;margin-bottom:12px;"></i>
+                    Selecione um especialista acima para iniciar o chat
+                </div>
+            </div>
+
+            <!-- Preview de imagem anexada -->
+            <div id="aiosImagePreview" style="display:none;margin-bottom:8px;position:relative;width:fit-content;">
+                <img id="aiosImageThumb" style="max-height:80px;border-radius:8px;border:2px solid var(--border);">
+                <button onclick="_aiosRemoveImage()" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#e74c3c;color:#fff;border:none;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;">&times;</button>
+            </div>
+
+            <!-- Input de mensagem -->
+            <div style="display:flex;gap:8px;align-items:flex-end;">
+                <button onclick="document.getElementById('aiosFileInput').click()" class="btn" style="padding:10px 12px;font-size:14px;flex-shrink:0;" title="Anexar imagem">
+                    <i class="fas fa-image"></i>
+                </button>
+                <input type="file" id="aiosFileInput" accept="image/*" style="display:none;" onchange="_aiosHandleFileSelect(this)">
+                <textarea id="aiosChatInput" class="form-input"
+                    placeholder="Digite sua pergunta... (Shift+Enter = nova linha, Ctrl+V = colar imagem)"
+                    style="flex:1;font-size:13px;padding:10px 14px;resize:none;min-height:42px;max-height:150px;overflow-y:auto;line-height:1.4;"
+                    rows="1"
+                    onkeydown="_aiosHandleKeydown(event)"
+                    oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px'"></textarea>
+                <button onclick="_aiosSendMessage()" class="btn btn-primary" id="aiosSendBtn" style="padding:10px 20px;font-size:13px;flex-shrink:0;">
+                    <i class="fas fa-paper-plane"></i> Enviar
+                </button>
+            </div>
+        </div>
+
+        <!-- Configuracao AIOS -->
+        <div class="card">
+            <div class="collapsible" onclick="this.classList.toggle('active');this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';">
+                <h3 class="section-title" style="margin:0;"><i class="fas fa-cog"></i> Configuracao</h3>
+            </div>
+            <div style="display:none;margin-top:12px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+                    <div>
+                        <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Modelo Principal</label>
+                        <select id="aiosModeloPrincipal" class="form-input" style="font-size:12px;">
+                            <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Anthropic)</option>
+                            <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Anthropic)</option>
+                            <option value="claude-opus-4-6">Claude Opus 4.6 (Anthropic)</option>
+                            <option value="gpt-4o">GPT-4o (OpenAI)</option>
+                            <option value="gpt-4o-mini">GPT-4o Mini (OpenAI)</option>
+                            <option value="gpt-4.1">GPT-4.1 Codex (OpenAI)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Modelo Fallback (Local)</label>
+                        <select id="aiosModeloFallback" class="form-input" style="font-size:12px;">
+                            <option value="qwen2.5-coder:latest">Qwen 2.5 Coder (Ollama)</option>
+                            <option value="dolphin-mistral:latest">Dolphin Mistral (Ollama)</option>
+                            <option value="qwen3-coder:30b">Qwen 3 Coder 30B (Ollama)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">API Key Anthropic (Claude)</label>
+                    <div style="display:flex;gap:8px;">
+                        <input id="aiosAnthropicKey" class="form-input" type="password" placeholder="sk-ant-..." style="flex:1;font-size:12px;">
+                        <button onclick="document.getElementById('aiosAnthropicKey').type = document.getElementById('aiosAnthropicKey').type === 'password' ? 'text' : 'password'" class="btn" style="font-size:11px;padding:4px 10px;">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">API Key OpenAI (opcional)</label>
+                    <div style="display:flex;gap:8px;">
+                        <input id="aiosOpenaiKey" class="form-input" type="password" placeholder="sk-..." style="flex:1;font-size:12px;">
+                        <button onclick="document.getElementById('aiosOpenaiKey').type = document.getElementById('aiosOpenaiKey').type === 'password' ? 'text' : 'password'" class="btn" style="font-size:11px;padding:4px 10px;">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">URL Ollama (Local)</label>
+                    <input id="aiosOllamaUrl" class="form-input" type="text" value="http://localhost:11434" style="font-size:12px;">
+                </div>
+
+                <button onclick="_aiosSaveConfig()" class="btn btn-primary" style="width:100%;font-size:13px;padding:10px;">
+                    <i class="fas fa-save"></i> Salvar Configuracao
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===================== TAB CALCULADORA ===================== -->
+    <div class="tab-content" id="tab-calculadora">
+        <iframe id="iframeCalculadora" src="" style="width:100%; height:calc(100vh - 80px); border:none; border-radius:12px; background:var(--bg-card);"></iframe>
     </div>
 
 </div>
@@ -2068,6 +2359,18 @@ function trocarTab(tab) {
         adminCarregarUsuarios();
         carregarMarketplaceApiConfig();
     }
+    if (realTab === 'avulsas') {
+        avulsasCarregarConfig();
+    }
+    if (realTab === 'aios') {
+        carregarAIOS();
+    }
+    if (realTab === 'calculadora') {
+        const iframe = document.getElementById('iframeCalculadora');
+        if (iframe && !iframe.src.includes('5050')) {
+            iframe.src = 'http://localhost:5050';
+        }
+    }
 }
 
 async function carregarLojasLucro() {
@@ -2101,6 +2404,9 @@ async function fetchAPI(url, options = {}) {
         const token = getToken();
         if (!options.headers) options.headers = {};
         if (token) options.headers['Authorization'] = 'Bearer ' + token;
+        if (options.body && typeof options.body === 'string' && !options.headers['Content-Type']) {
+            options.headers['Content-Type'] = 'application/json';
+        }
 
         const res = await fetch(API + url, options);
 
@@ -3532,6 +3838,7 @@ async function carregarDadosAutomacao() {
     carregarHistoricoGeradas24h();
     carregarAgendamentos();
     carregarHistorico();
+    carregarLotes();
     carregarContatosUnificados();
 }
 
@@ -5147,6 +5454,7 @@ function mostrarFormContato() {
     const btnSalvar = document.querySelector('#formContato .btn-primary');
     if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-check"></i> Salvar';
     _renderAlvosFormulario('wa', [], []);
+    _renderLotesFormulario('wa', []);
 }
 
 function editarContato(id) {
@@ -5161,6 +5469,7 @@ function editarContato(id) {
     if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-save"></i> Atualizar';
     document.getElementById('contatoResumoGeral').checked = !!c.resumo_geral;
     _renderAlvosFormulario('wa', c.lojas || [], c.grupos || []);
+    _renderLotesFormulario('wa', c.lote_ids || []);
     document.getElementById('formContato').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -5172,6 +5481,7 @@ async function salvarContato() {
     const { lojas, grupos } = _coletarAlvosFormulario('wa');
     if (!tel || tel.length < 12) { toast('Telefone obrigatorio (com DDD)', 'warning'); return; }
     const resumoGeral = document.getElementById('contatoResumoGeral').checked;
+    const loteIds = _coletarLotesFormulario('wa');
     const payload = {
         telefone: tel,
         nome_contato: nome,
@@ -5179,7 +5489,8 @@ async function salvarContato() {
         grupos,
         loja_cnpj: 'ALVO_CUSTOM',
         loja_nome: resumoGeral ? 'Resumo Geral' : (lojas[0] || (grupos[0] || 'Todos')),
-        resumo_geral: resumoGeral
+        resumo_geral: resumoGeral,
+        lote_ids_json: JSON.stringify(loteIds)
     };
     if (_editandoContatoId) payload.id = _editandoContatoId;
     const res = await fetchAPI('/api/whatsapp/contatos', {
@@ -5276,6 +5587,7 @@ function mostrarFormEmail() {
     const btnSalvar = document.querySelector('#formEmail .btn-primary');
     if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-check"></i> Salvar';
     _renderAlvosFormulario('email', [], []);
+    _renderLotesFormulario('email', []);
 }
 
 function editarContatoEmail(id) {
@@ -5289,6 +5601,7 @@ function editarContatoEmail(id) {
     const btnSalvar = document.querySelector('#formEmail .btn-primary');
     if (btnSalvar) btnSalvar.innerHTML = '<i class="fas fa-save"></i> Atualizar';
     _renderAlvosFormulario('email', c.lojas || [], c.grupos || []);
+    _renderLotesFormulario('email', c.lote_ids || []);
     document.getElementById('formEmail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -5297,12 +5610,14 @@ async function salvarContatoEmail() {
     const email = document.getElementById('emailEndereco').value;
     const { lojas, grupos } = _coletarAlvosFormulario('email');
     if (!email || !email.includes('@')) { toast('Email invalido', 'warning'); return; }
+    const loteIds = _coletarLotesFormulario('email');
     const payload = {
         nome_contato: nome,
         email: email,
         lojas,
         grupos,
-        loja_cnpj: 'ALVO_CUSTOM'
+        loja_cnpj: 'ALVO_CUSTOM',
+        lote_ids_json: JSON.stringify(loteIds)
     };
     if (_editandoContatoEmailId) payload.id = _editandoContatoEmailId;
     const res = await fetchAPI('/api/email/contatos', {
@@ -5380,7 +5695,7 @@ function _sugerirSMTPPorEmail(email) {
 
     if (domain === 'gmail.com') return { host: 'smtp.gmail.com', port: 587 };
     if (['outlook.com', 'hotmail.com', 'live.com', 'msn.com'].includes(domain)) {
-        return { host: 'smtp.office365.com', port: 587 };
+        return { host: 'smtp-mail.outlook.com', port: 587 };
     }
     if (domain === 'yahoo.com' || domain.endsWith('.yahoo.com')) {
         return { host: 'smtp.mail.yahoo.com', port: 587 };
@@ -5969,6 +6284,21 @@ async function executarPipelineAgora() {
 // ENVIO AUTOMATICO (DIRETO)
 // ============================================
 
+// Toggle agendamento individual ativo/desativado
+async function toggleAgendamentoAtivo(tipo, id) {
+    try {
+        const res = await fetchAPI(`/api/contatos/${tipo}/${id}/toggle-agendamento`, { method: 'POST' });
+        if (res && !res.erro) {
+            toast(res.mensagem || 'Agendamento atualizado', 'success');
+            carregarContatosUnificados();
+        } else {
+            toast(res?.erro || 'Erro', 'error');
+        }
+    } catch(e) {
+        toast('Erro: ' + e.message, 'error');
+    }
+}
+
 // Estado local dos horarios de cada contato (para edicao inline)
 const _contatosHorarios = {};
 
@@ -6052,6 +6382,16 @@ function _renderEditorAgendamento(tipo, id) {
         style="background:none; border:1px dashed var(--border); color:var(--accent); cursor:pointer; font-size:10px;
         border-radius:4px; padding:3px 8px; width:100%; margin-top:2px;">
         <i class="fas fa-plus" style="font-size:8px;"></i> Nova linha de agendamento</button>`;
+
+    // Aviso visual se intervalos <= 5 min
+    const _alertasIntv = _verificarIntervaloMinimo(horarios);
+    if (_alertasIntv.length) {
+        html += `<div style="background:rgba(255,170,0,0.12); border:1px solid rgba(255,170,0,0.4); border-radius:4px; padding:6px 8px; margin-top:4px;">
+            <span style="color:#ffaa00; font-size:10px; font-weight:bold;"><i class="fas fa-exclamation-triangle"></i> Intervalo muito curto (≤5 min):</span>
+            <span style="color:#ffaa00; font-size:10px;"> ${_alertasIntv.join(' | ')}</span>
+            <div style="color:var(--text-muted); font-size:9px; margin-top:2px;">Recomendado: minimo 6 minutos entre envios para evitar falhas.</div>
+        </div>`;
+    }
 
     html += `<div style="margin-top:6px; text-align:right;">
         <button onclick="_salvarHorariosContato('${tipo}',${id})"
@@ -6145,10 +6485,37 @@ function _removerLinhaAgendamento(tipo, id, idx) {
     if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
 }
 
+function _verificarIntervaloMinimo(horarios) {
+    // Coleta TODOS os horarios de todas as linhas (mesmo dia pode ter conflito entre linhas)
+    const todasHoras = [];
+    (horarios || []).forEach(linha => {
+        (linha.horas || []).forEach(h => {
+            const [hh, mm] = h.split(':').map(Number);
+            if (!isNaN(hh) && !isNaN(mm)) todasHoras.push({ str: h, min: hh * 60 + mm });
+        });
+    });
+    todasHoras.sort((a, b) => a.min - b.min);
+    const alertas = [];
+    for (let i = 1; i < todasHoras.length; i++) {
+        const diff = todasHoras[i].min - todasHoras[i - 1].min;
+        if (diff <= 5) {
+            alertas.push(`${todasHoras[i - 1].str} e ${todasHoras[i].str} (${diff} min)`);
+        }
+    }
+    return alertas;
+}
+
 async function _salvarHorariosContato(tipo, id) {
     const key = `${tipo}_${id}`;
     const horarios = (_contatosHorarios[key] || []).filter(l => l.dias && l.dias.length && l.horas && l.horas.length);
     _contatosHorarios[key] = horarios;
+
+    // Verificar intervalos <= 5 minutos
+    const alertas = _verificarIntervaloMinimo(horarios);
+    if (alertas.length) {
+        const msg = 'Intervalo muito curto entre horarios:\n' + alertas.join('\n') + '\n\nRecomendado: minimo 6 minutos entre envios.\nDeseja salvar mesmo assim?';
+        if (!confirm(msg)) return;
+    }
 
     const url = tipo === 'whatsapp' ? '/api/whatsapp/contatos' : '/api/email/contatos';
     const body = { id: id, horarios: horarios };
@@ -6176,16 +6543,23 @@ async function _salvarHorariosContato(tipo, id) {
 }
 
 async function carregarContatosUnificados() {
-    const [waData, emailData] = await Promise.all([
-        fetchAPI('/api/whatsapp/contatos'),
-        fetchAPI('/api/email/contatos'),
-    ]);
+    let waData = [], emailData = [];
+    try {
+        [waData, emailData] = await Promise.all([
+            fetchAPI('/api/whatsapp/contatos'),
+            fetchAPI('/api/email/contatos'),
+        ]);
+    } catch(e) {
+        console.error('[carregarContatosUnificados] Erro ao buscar contatos:', e);
+    }
 
     const container = document.getElementById('tabelaContatosUnificados');
+    if (!container) { console.error('[carregarContatosUnificados] container nao encontrado'); return; }
     const contatos = [];
 
     (waData || []).forEach(c => contatos.push({...c, tipo: 'whatsapp'}));
     (emailData || []).forEach(c => contatos.push({...c, tipo: 'email'}));
+    console.log(`[carregarContatosUnificados] WA=${(waData||[]).length} Email=${(emailData||[]).length} Total=${contatos.length}`);
 
     if (contatos.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado. Adicione contatos WhatsApp ou Email acima.</p>';
@@ -6193,7 +6567,7 @@ async function carregarContatosUnificados() {
     }
 
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
-    html += '<th>Canal</th><th>Destino</th><th>Contato</th><th>Lojas / Grupos</th><th>Ativo</th><th>Agendamento</th><th>A\u00e7\u00f5es</th>';
+    html += '<th>Canal</th><th>Destino</th><th>Contato</th><th>Lojas / Grupos</th><th>Lotes</th><th>Ativo</th><th>Agendamento</th><th>A\u00e7\u00f5es</th>';
     html += '</tr></thead><tbody>';
 
     contatos.forEach(c => {
@@ -6215,17 +6589,29 @@ async function carregarContatosUnificados() {
         _contatosHorarios[key] = JSON.parse(JSON.stringify(horarios)); // deep copy
 
         const resumoHtml = _renderResumoAgendamento(horarios);
+        const agAtivo = c.agendamento_ativo !== false && c.agendamento_ativo !== 0 && c.agendamento_ativo !== null;
+        const agToggleColor = agAtivo ? '#25D366' : '#e74c3c';
+        const agToggleIcon = agAtivo ? 'fa-toggle-on' : 'fa-toggle-off';
+        const agToggleTitle = agAtivo ? 'Agendamento individual ATIVO (clique para desativar)' : 'Agendamento individual DESATIVADO (clique para ativar)';
+        const agOpacity = agAtivo ? '1' : '0.45';
 
         html += `<tr>
             <td>${icone}</td>
             <td style="font-size:11px;">${escapeHtml(destino)}</td>
             <td>${escapeHtml(c.nome_contato || '-')}</td>
             <td style="font-size:10px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(alvos.join(', '))}">${alvos.length ? escapeHtml(alvos.join(', ')) : '<span style="color:var(--text-muted);">Todas</span>'}</td>
+            <td style="font-size:10px;">${_renderLotesBadges(c.lote_ids || [])}</td>
             <td>${ativoIcon}</td>
             <td style="min-width:160px;">
-                <div onclick="_toggleAgendamentoEditor('${c.tipo}',${c.id})" style="cursor:pointer;" title="Clique para editar agendamento">
-                    <span id="agendamento-resumo-${c.tipo}-${c.id}">${resumoHtml}</span>
-                    <i class="fas fa-pen" style="font-size:8px; color:var(--text-muted); margin-left:4px;"></i>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <button onclick="toggleAgendamentoAtivo('${c.tipo}',${c.id})" title="${agToggleTitle}"
+                        style="background:none; border:none; cursor:pointer; font-size:16px; color:${agToggleColor}; padding:0; line-height:1;">
+                        <i class="fas ${agToggleIcon}"></i>
+                    </button>
+                    <div onclick="_toggleAgendamentoEditor('${c.tipo}',${c.id})" style="cursor:pointer; opacity:${agOpacity};" title="Clique para editar agendamento">
+                        <span id="agendamento-resumo-${c.tipo}-${c.id}">${resumoHtml}</span>
+                        <i class="fas fa-pen" style="font-size:8px; color:var(--text-muted); margin-left:4px;"></i>
+                    </div>
                 </div>
                 <div id="agendamento-editor-${c.tipo}-${c.id}" style="display:none;"></div>
             </td>
@@ -6347,6 +6733,361 @@ async function carregarHistorico() {
     html += '</tbody></table>';
     container.innerHTML = html;
 }
+
+// ============================================
+// LOTES DE ENVIO
+// ============================================
+let _lotesCache = [];
+
+async function carregarLotes() {
+    try {
+        const data = await fetchAPI('/api/lotes');
+        _lotesCache = data || [];
+        renderLotes(_lotesCache);
+    } catch(e) {
+        console.error('[carregarLotes] Erro:', e);
+        _lotesCache = [];
+    }
+}
+
+function renderLotes(lotes) {
+    const container = document.getElementById('tabelaLotes');
+    if (!container) return;
+    if (!lotes || lotes.length === 0) {
+        container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum lote cadastrado.</p>';
+        return;
+    }
+
+    const diasLabelsMap = {seg:'S',ter:'T',qua:'Q',qui:'Q',sex:'S',sab:'S',dom:'D'};
+    const diasWeekday = ['seg','ter','qua','qui','sex'];
+
+    let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
+    html += '<th>Nome</th><th>Horario</th><th>Dias</th><th>Contatos</th><th>Ativo</th><th style="text-align:center;">Acoes</th>';
+    html += '</tr></thead><tbody>';
+
+    lotes.forEach(lote => {
+        const dias = lote.dias_semana || lote.dias || [];
+        const diasHtml = ['seg','ter','qua','qui','sex','sab','dom'].map(d => {
+            const label = diasLabelsMap[d];
+            const ativo = dias.includes(d);
+            const isWeekend = (d === 'sab' || d === 'dom');
+            let bg, color;
+            if (ativo) {
+                bg = isWeekend ? 'rgba(255,152,0,0.2)' : 'rgba(34,197,94,0.2)';
+                color = isWeekend ? '#ff9800' : '#22c55e';
+            } else {
+                bg = 'rgba(255,255,255,0.04)';
+                color = 'var(--text-muted)';
+            }
+            return `<span style="display:inline-block; width:18px; height:18px; line-height:18px; text-align:center; border-radius:3px; font-size:9px; font-weight:bold; margin:0 1px; background:${bg}; color:${color};">${label}</span>`;
+        }).join('');
+
+        const totalContatos = lote.total_contatos || 0;
+        const ativoIcon = lote.ativo !== false
+            ? '<span style="color:#22c55e; font-weight:bold;">&#10003;</span>'
+            : '<span style="color:#e74c3c;">&#10007;</span>';
+
+        html += `<tr>
+            <td style="font-weight:600;">${escapeHtml(lote.nome || '')}</td>
+            <td><span style="background:rgba(240,93,35,0.15); color:var(--accent); padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600;">${escapeHtml(lote.hora || lote.horario || '')}</span></td>
+            <td>${diasHtml}</td>
+            <td style="text-align:center;"><span style="background:var(--info-bg); color:var(--info); padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600;">${totalContatos}</span></td>
+            <td style="text-align:center;">${ativoIcon}</td>
+            <td style="text-align:center; white-space:nowrap;">
+                <button onclick="executarLote(${lote.id})" title="Executar agora"
+                    style="background:var(--accent); color:#fff; border:none; border-radius:4px; padding:3px 8px; cursor:pointer; font-size:10px; margin-right:2px;">
+                    <i class="fas fa-play"></i>
+                </button>
+                <button onclick="editarLote(${lote.id})" title="Editar"
+                    style="background:var(--bg-input); color:var(--text-secondary); border:1px solid var(--border); border-radius:4px; padding:3px 8px; cursor:pointer; font-size:10px; margin-right:2px;">
+                    <i class="fas fa-edit"></i>
+                </button>
+                <button onclick="excluirLote(${lote.id})" title="Excluir"
+                    style="background:transparent; color:var(--text-muted); border:none; cursor:pointer; font-size:14px;">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        </tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+function _renderLoteContatos(loteId) {
+    const container = document.getElementById('loteContatosContainer');
+    if (!container) return;
+    // Combinar WA + Email
+    const todos = [
+        ...(_contatosCache || []).map(c => ({...c, tipo: 'whatsapp'})),
+        ...(_contatosEmailCache || []).map(c => ({...c, tipo: 'email'})),
+    ];
+    if (todos.length === 0) {
+        container.innerHTML = '<span style="color:var(--text-muted); font-size:11px;">Nenhum contato cadastrado.</span>';
+        return;
+    }
+    let html = '';
+    todos.forEach(c => {
+        const loteIds = c.lote_ids || [];
+        const checked = loteIds.includes(loteId) ? 'checked' : '';
+        const icone = c.tipo === 'whatsapp'
+            ? '<i class="fab fa-whatsapp" style="color:#25D366; font-size:11px;"></i>'
+            : '<i class="fas fa-envelope" style="color:#2196F3; font-size:11px;"></i>';
+        const lojas = (c.lojas || []).join(', ');
+        html += `<label style="display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:4px; cursor:pointer; font-size:12px; margin-bottom:2px; background:rgba(255,255,255,0.02);">
+            <input type="checkbox" class="loteContatoCb" value="${c.tipo}_${c.id}" ${checked} style="accent-color:var(--accent);">
+            ${icone}
+            <span style="font-weight:600; min-width:80px;">${escapeHtml(c.nome_contato || '-')}</span>
+            <span style="color:var(--text-muted); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(lojas)}</span>
+        </label>`;
+    });
+    container.innerHTML = html;
+}
+
+function mostrarModalLote() {
+    document.getElementById('loteEditId').value = '';
+    document.getElementById('modalLoteTitulo').textContent = 'Novo Lote';
+    document.getElementById('loteNome').value = '';
+    document.getElementById('loteHorario').value = '08:00';
+    document.getElementById('loteAtivo').checked = true;
+    document.querySelectorAll('.loteDia').forEach(cb => {
+        cb.checked = ['seg','ter','qua','qui','sex'].includes(cb.value);
+    });
+    _renderLoteContatos(null);
+    document.getElementById('modalLote').style.display = 'flex';
+}
+
+function fecharModalLote() {
+    document.getElementById('modalLote').style.display = 'none';
+}
+
+function editarLote(id) {
+    const lote = _lotesCache.find(l => l.id === id);
+    if (!lote) { toast('Lote nao encontrado', 'error'); return; }
+    document.getElementById('loteEditId').value = id;
+    document.getElementById('modalLoteTitulo').textContent = 'Editar Lote';
+    document.getElementById('loteNome').value = lote.nome || '';
+    document.getElementById('loteHorario').value = lote.hora || lote.horario || '08:00';
+    document.getElementById('loteAtivo').checked = lote.ativo !== false;
+    const dias = lote.dias_semana || lote.dias || [];
+    document.querySelectorAll('.loteDia').forEach(cb => {
+        cb.checked = dias.includes(cb.value);
+    });
+    _renderLoteContatos(id);
+    document.getElementById('modalLote').style.display = 'flex';
+}
+
+async function salvarLote() {
+    const nome = document.getElementById('loteNome').value.trim();
+    const horario = document.getElementById('loteHorario').value;
+    const ativo = document.getElementById('loteAtivo').checked;
+    const dias = Array.from(document.querySelectorAll('.loteDia:checked')).map(cb => cb.value);
+    const editId = document.getElementById('loteEditId').value;
+
+    if (!nome) { toast('Nome do lote obrigatorio', 'warning'); return; }
+    if (!horario) { toast('Horario obrigatorio', 'warning'); return; }
+    if (dias.length === 0) { toast('Selecione pelo menos um dia', 'warning'); return; }
+
+    // Coletar contatos selecionados
+    const contatosSelecionados = Array.from(document.querySelectorAll('.loteContatoCb:checked')).map(cb => cb.value);
+
+    const payload = { nome, hora: horario, dias_semana: dias, ativo, contatos: contatosSelecionados };
+    if (editId) payload.id = parseInt(editId);
+
+    try {
+        const res = await fetchAPI('/api/lotes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (res && !res.erro) {
+            toast(editId ? 'Lote atualizado!' : 'Lote criado!', 'success');
+            fecharModalLote();
+            carregarLotes();
+            carregarContatos();
+            carregarContatosUnificados();
+        } else {
+            toast(res?.erro || 'Erro ao salvar lote', 'error');
+        }
+    } catch(e) {
+        toast('Erro ao salvar lote: ' + e.message, 'error');
+    }
+}
+
+async function excluirLote(id) {
+    if (!confirm('Excluir este lote?')) return;
+    try {
+        const res = await fetchAPI(`/api/lotes/${id}`, { method: 'DELETE' });
+        if (res && !res.erro) {
+            toast('Lote excluido', 'success');
+            carregarLotes();
+        } else {
+            toast(res?.erro || 'Erro ao excluir', 'error');
+        }
+    } catch(e) {
+        toast('Erro ao excluir lote', 'error');
+    }
+}
+
+async function executarLote(id) {
+    if (!confirm('Executar este lote agora?')) return;
+    try {
+        const res = await fetchAPI(`/api/lotes/${id}/executar`, { method: 'POST' });
+        if (res && !res.erro) {
+            toast(res.mensagem || 'Lote em execucao!', 'success');
+        } else {
+            toast(res?.erro || 'Erro ao executar lote', 'error');
+        }
+    } catch(e) {
+        toast('Erro ao executar lote', 'error');
+    }
+}
+
+// Render lote badges for contacts table
+function _renderLotesBadges(loteIds) {
+    if (!loteIds || loteIds.length === 0) return '<span style="color:var(--text-muted);">-</span>';
+    return loteIds.map(id => {
+        const lote = _lotesCache.find(l => l.id === id);
+        const nome = lote ? lote.nome : `#${id}`;
+        return `<span style="background:rgba(240,93,35,0.15); color:var(--accent); padding:1px 6px; border-radius:4px; margin:1px; display:inline-block; font-size:10px;">${escapeHtml(nome)}</span>`;
+    }).join(' ');
+}
+
+// Render lotes checkboxes in contact forms
+function _renderLotesFormulario(prefix, selectedLoteIds = []) {
+    const container = document.getElementById(`${prefix}AlvoLotes`);
+    if (!container) return;
+    const selectedSet = new Set((selectedLoteIds || []).map(x => Number(x)));
+
+    if (!_lotesCache || _lotesCache.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted);">Nenhum lote cadastrado.</div>';
+        return;
+    }
+
+    container.innerHTML = _lotesCache.map(lote => `
+        <label style="display:flex; align-items:center; gap:6px; padding:2px 0;">
+            <input type="checkbox" class="${prefix}-alvo-lote" value="${lote.id}" ${selectedSet.has(lote.id) ? 'checked' : ''} style="accent-color:var(--accent);">
+            <span>${escapeHtml(lote.nome || '')} <span style="color:var(--text-muted); font-size:10px;">(${lote.horario || ''})</span></span>
+        </label>
+    `).join('');
+}
+
+function _coletarLotesFormulario(prefix) {
+    return Array.from(document.querySelectorAll(`.${prefix}-alvo-lote:checked`))
+        .map(el => Number(el.value))
+        .filter(Boolean);
+}
+
+// Close modal on background click
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('modalLote');
+    if (modal && modal.style.display === 'flex' && e.target === modal) {
+        fecharModalLote();
+    }
+});
+
+// ==================== ETIQUETAS AVULSAS (independente) ====================
+
+async function avulsasCarregarConfig() {
+    const data = await fetchAPI('/api/avulsas/config');
+    if (data && data.pasta) {
+        document.getElementById('avulsas-pasta').value = data.pasta;
+    }
+}
+
+async function avulsasSalvarPasta() {
+    const pasta = document.getElementById('avulsas-pasta').value.trim();
+    if (!pasta) { toast('Informe o caminho da pasta', 'error'); return; }
+    const data = await fetchAPI('/api/avulsas/config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({pasta})
+    });
+    if (data && data.ok) {
+        toast('Pasta salva!', 'success');
+    } else {
+        toast(data?.erro || 'Erro ao salvar pasta', 'error');
+    }
+}
+
+async function avulsasProcessar() {
+    const pasta = document.getElementById('avulsas-pasta').value.trim();
+    if (!pasta) { toast('Configure a pasta primeiro', 'error'); return; }
+
+    const btn = document.getElementById('avulsas-btn-processar');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processando...';
+
+    const statusDiv = document.getElementById('avulsas-status');
+    const statusText = document.getElementById('avulsas-status-text');
+    const resultDiv = document.getElementById('avulsas-resultado');
+    resultDiv.style.display = 'none';
+    statusDiv.style.display = 'block';
+    statusText.innerHTML = '<i class="fas fa-spinner fa-spin" style="color:var(--accent);"></i> Processando etiquetas...';
+
+    const res = await fetchAPI('/api/avulsas/processar', {method: 'POST'});
+    if (!res || !res.ok) {
+        toast(res?.erro || 'Erro ao iniciar processamento', 'error');
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-cogs"></i> Processar Etiquetas';
+        statusDiv.style.display = 'none';
+        return;
+    }
+
+    // Poll status
+    const poll = setInterval(async () => {
+        const st = await fetchAPI('/api/avulsas/status');
+        if (!st || st.idle) return;
+        if (st.processando) {
+            statusText.innerHTML = '<i class="fas fa-spinner fa-spin" style="color:var(--accent);"></i> Processando etiquetas...';
+            return;
+        }
+        clearInterval(poll);
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-cogs"></i> Processar Etiquetas';
+
+        if (st.erro) {
+            statusText.innerHTML = `<span style="color:#e74c3c;"><i class="fas fa-times-circle"></i> Erro: ${st.erro}</span>`;
+            toast('Erro no processamento', 'error');
+            return;
+        }
+
+        // Sucesso
+        statusDiv.style.display = 'none';
+        resultDiv.style.display = 'block';
+        document.getElementById('avulsas-btn-abrir').style.display = 'inline-flex';
+        document.getElementById('avulsas-btn-abrir').setAttribute('data-pasta', st.pasta_saida || '');
+
+        let html = `<p style="font-size:12px; margin-bottom:8px;">Total: <strong>${st.total_etiquetas}</strong> etiquetas em <strong>${st.total_lojas}</strong> lojas</p>`;
+        html += `<table style="width:100%; font-size:12px; border-collapse:collapse;">`;
+        html += `<tr style="background:var(--bg-secondary);"><th style="padding:6px 8px; text-align:left; border:1px solid var(--border);">Loja</th><th style="padding:6px 8px; text-align:center; border:1px solid var(--border);">Etiquetas</th><th style="padding:6px 8px; text-align:center; border:1px solid var(--border);">SKUs</th><th style="padding:6px 8px; text-align:center; border:1px solid var(--border);">Unidades</th></tr>`;
+        let totE = 0, totS = 0, totU = 0;
+        (st.lojas || []).forEach(l => {
+            html += `<tr><td style="padding:4px 8px; border:1px solid var(--border);">${l.loja}</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${l.etiquetas}</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${l.skus}</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${l.unidades}</td></tr>`;
+            totE += l.etiquetas; totS += l.skus; totU += l.unidades;
+        });
+        html += `<tr style="font-weight:bold; background:var(--bg-secondary);"><td style="padding:4px 8px; border:1px solid var(--border);">TOTAL</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${totE}</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${totS}</td><td style="padding:4px 8px; text-align:center; border:1px solid var(--border);">${totU}</td></tr>`;
+        html += `</table>`;
+        document.getElementById('avulsas-resultado-tabela').innerHTML = html;
+        toast(`Pronto! ${st.total_etiquetas} etiquetas em ${st.total_lojas} lojas`, 'success');
+    }, 1500);
+}
+
+async function avulsasAbrirPasta() {
+    const btn = document.getElementById('avulsas-btn-abrir');
+    const pasta = btn.getAttribute('data-pasta') || '';
+    if (pasta) {
+        await fetchAPI('/api/avulsas/abrir-pasta', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({pasta})
+        });
+    }
+}
+
+
+// AIOS: codigo movido para static/aios.js (modulo isolado)
+
 </script>
+<script src="/static/aios.js"></script>
 </body>
 </html>

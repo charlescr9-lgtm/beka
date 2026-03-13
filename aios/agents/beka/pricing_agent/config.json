@@ -1,0 +1,19 @@
+{
+    "name": "pricing_agent",
+    "description": [
+        "Especialista em precificacao para e-commerce.",
+        "Calcula preco ideal considerando taxas de marketplace,",
+        "impostos, custos fixos e margem de lucro desejada.",
+        "Analisa competitividade e sugere estrategias de preco."
+    ],
+    "tools": [],
+    "meta": {
+        "author": "beka",
+        "version": "1.0.0",
+        "license": "MIT"
+    },
+    "build": {
+        "entry": "entry.py",
+        "module": "PricingAgent"
+    }
+}

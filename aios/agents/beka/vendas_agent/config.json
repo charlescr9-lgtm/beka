@@ -1,0 +1,19 @@
+{
+    "name": "vendas_agent",
+    "description": [
+        "Especialista em analise de vendas para e-commerce.",
+        "Identifica tendencias, produtos top e flop,",
+        "analisa sazonalidade e sugere estrategias de crescimento.",
+        "Gera insights acionaveis a partir de dados de vendas."
+    ],
+    "tools": [],
+    "meta": {
+        "author": "beka",
+        "version": "1.0.0",
+        "license": "MIT"
+    },
+    "build": {
+        "entry": "entry.py",
+        "module": "VendasAgent"
+    }
+}

@@ -13,3 +13,4 @@ tmp_*.json
 xmls_extraidos/
 __analyze_temp.py
 UsersMicroDesktopEtiquetastmp_check.json
+aios/kernel/

@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "beka-mkt",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "cd /d C:\\Users\\Micro\\Desktop\\2_BEKA_MKT\\Beka MKT\\.claude\\worktrees\\funny-wozniak && python dashboard.py"],
+      "port": 5000
+    },
+    {
+      "name": "beka-mkt-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "beka-mkt-app"
+    }
+  ]
+}

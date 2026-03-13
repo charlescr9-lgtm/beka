@@ -1,0 +1,18 @@
+{
+    "name": "estoque_agent",
+    "description": [
+        "Especialista em gestao de estoque para e-commerce.",
+        "Monitora niveis de estoque por SKU, alerta sobre",
+        "itens em baixa, sugere reposicao e analisa giro."
+    ],
+    "tools": [],
+    "meta": {
+        "author": "beka",
+        "version": "1.0.0",
+        "license": "MIT"
+    },
+    "build": {
+        "entry": "entry.py",
+        "module": "EstoqueAgent"
+    }
+}

@@ -14,6 +14,22 @@ from email.mime.base import MIMEBase
 from email import encoders
 
 
+def _traduzir_erro_smtp(e, host="", port=""):
+    """Traduz erros SMTP comuns para mensagens amigaveis em PT-BR."""
+    erro = str(e).lower()
+    if "application-specific password" in erro or "invalidsecondfactor" in erro:
+        return ("Sua conta Google usa verificacao em duas etapas. "
+                "Voce precisa gerar uma Senha de App no Google e usar ela aqui. "
+                "Acesse: myaccount.google.com > Seguranca > Senhas de app")
+    if "username and password not accepted" in erro or "authentication" in erro:
+        return "Email ou senha SMTP incorretos. Verifique suas credenciais."
+    if "timed out" in erro or "timeout" in erro:
+        return f"Timeout ao conectar em {host}:{port}. Verifique host e porta."
+    if "connection refused" in erro:
+        return f"Conexao recusada em {host}:{port}. Verifique host e porta."
+    return f"Falha SMTP: {e}"
+
+
 def _normalize_smtp_config(cfg):
     """Normaliza config SMTP e valida campos minimos obrigatorios."""
     if not cfg:
@@ -208,8 +224,9 @@ def enviar_email_com_anexo(
         server.quit()
         return {"success": True, "error": None}
     except Exception as e:
-        print(f"Erro ao enviar email com anexo: {e}")
-        return {"success": False, "error": str(e)}
+        msg_erro = _traduzir_erro_smtp(e, cfg.get('host',''), cfg.get('port',''))
+        print(f"Erro ao enviar email com anexo: {msg_erro}")
+        return {"success": False, "error": msg_erro}
 
 
 def enviar_email_com_anexos(
@@ -283,5 +300,6 @@ def enviar_email_com_anexos(
         server.quit()
         return {"success": True, "error": None}
     except Exception as e:
-        print(f"Erro ao enviar email com anexos: {e}")
-        return {"success": False, "error": str(e)}
+        msg_erro = _traduzir_erro_smtp(e, cfg.get('host',''), cfg.get('port',''))
+        print(f"Erro ao enviar email com anexos: {msg_erro}")
+        return {"success": False, "error": msg_erro}

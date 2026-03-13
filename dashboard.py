@@ -11,12 +11,19 @@ import time
 import threading
 
 # Forcar UTF-8 no stdout/stderr do Windows (evita crash 'charmap' em print com acentos)
+# Quando roda via pythonw.exe, stdout/stderr podem ser None — redirecionar para devnull
 if sys.platform == "win32":
     import io as _io
     for _stream_name in ("stdout", "stderr"):
         _stream = getattr(sys, _stream_name, None)
-        if _stream and hasattr(_stream, "buffer"):
-            setattr(sys, _stream_name, _io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace"))
+        if _stream is None or (hasattr(_stream, 'closed') and _stream.closed):
+            # pythonw.exe: sem console, redirecionar para devnull
+            setattr(sys, _stream_name, open(os.devnull, "w", encoding="utf-8"))
+        elif hasattr(_stream, "buffer"):
+            try:
+                setattr(sys, _stream_name, _io.TextIOWrapper(_stream.buffer, encoding="utf-8", errors="replace"))
+            except Exception:
+                setattr(sys, _stream_name, open(os.devnull, "w", encoding="utf-8"))
 import subprocess
 import shutil
 import hmac
@@ -50,7 +57,7 @@ from etiquetas_shopee import ProcessadorEtiquetasShopee
 from models import (db, bcrypt, User, Session, WhatsAppContact, Schedule,
                     UpSellerConfig, ExecutionLog, Loja, EmailContact,
                     WhatsAppQueueItem, MarketplaceApiConfig, MarketplaceLoja,
-                    encrypt_value, decrypt_value)
+                    TimeLote, encrypt_value, decrypt_value)
 from auth import auth_bp
 from email_utils import enviar_email_com_anexo, enviar_email_com_anexos, smtp_configurado, get_smtp_config
 from payments import payments_bp
@@ -76,7 +83,13 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 # Banco de dados SQLite — usar volume persistente do Railway
 # Railway monta o volume no path definido em RAILWAY_VOLUME_MOUNT_PATH
-_VOLUME_PATH = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', os.environ.get('DB_DIR', os.path.join(_BASE_DIR, 'data')))
+# IMPORTANTE: sempre usar o diretorio principal do projeto para o banco,
+# nunca um worktree, para evitar bancos duplicados/dessincronizados
+_MAIN_PROJECT_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__))))
+# Se estamos dentro de um worktree (.claude/worktrees/), usar o DB do projeto principal
+if '.claude' + os.sep + 'worktrees' in _MAIN_PROJECT_DIR:
+    _MAIN_PROJECT_DIR = _MAIN_PROJECT_DIR.split('.claude' + os.sep + 'worktrees')[0].rstrip(os.sep)
+_VOLUME_PATH = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', os.environ.get('DB_DIR', os.path.join(_MAIN_PROJECT_DIR, 'data')))
 os.makedirs(_VOLUME_PATH, exist_ok=True)
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(_VOLUME_PATH, 'app.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -280,6 +293,9 @@ def _jwt_query_param_fallback():
 app.register_blueprint(auth_bp)
 app.register_blueprint(payments_bp)
 
+from aios_routes import aios_bp
+app.register_blueprint(aios_bp)
+
 
 # ----------------------------------------------------------------
 # Auto-login local (desktop) — elimina tela de login
@@ -359,6 +375,8 @@ def _migrate_db():
                 conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN smtp_pass_enc TEXT DEFAULT ''"))
             if 'smtp_from' not in colunas:
                 conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN smtp_from VARCHAR(200) DEFAULT ''"))
+            if 'pasta_avulsas' not in colunas:
+                conn.execute(sqlalchemy.text("ALTER TABLE users ADD COLUMN pasta_avulsas VARCHAR(500) DEFAULT ''"))
 
     # Migrar tabela lojas
     if 'lojas' in inspector.get_table_names():
@@ -454,6 +472,24 @@ def _migrate_db():
             if 'enviar_email' not in cols:
                 conn.execute(sqlalchemy.text("ALTER TABLE schedules ADD COLUMN enviar_email BOOLEAN DEFAULT 0"))
 
+    # Migrar contatos WhatsApp — adicionar lote_ids_json e agendamento_ativo
+    if 'whatsapp_contacts' in inspector.get_table_names():
+        cols_wc = [c['name'] for c in inspector.get_columns('whatsapp_contacts')]
+        with db.engine.begin() as conn:
+            if 'lote_ids_json' not in cols_wc:
+                conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN lote_ids_json TEXT DEFAULT '[]'"))
+            if 'agendamento_ativo' not in cols_wc:
+                conn.execute(sqlalchemy.text("ALTER TABLE whatsapp_contacts ADD COLUMN agendamento_ativo BOOLEAN DEFAULT 1"))
+
+    # Migrar contatos Email — adicionar lote_ids_json e agendamento_ativo
+    if 'email_contacts' in inspector.get_table_names():
+        cols_ec = [c['name'] for c in inspector.get_columns('email_contacts')]
+        with db.engine.begin() as conn:
+            if 'lote_ids_json' not in cols_ec:
+                conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN lote_ids_json TEXT DEFAULT '[]'"))
+            if 'agendamento_ativo' not in cols_ec:
+                conn.execute(sqlalchemy.text("ALTER TABLE email_contacts ADD COLUMN agendamento_ativo BOOLEAN DEFAULT 1"))
+
     # Migrar marketplace_api_config — adicionar oauth_pending_at
     if 'marketplace_api_config' in inspector.get_table_names():
         cols_mkt = [c['name'] for c in inspector.get_columns('marketplace_api_config')]
@@ -468,6 +504,7 @@ with app.app_context():
 
 # Inicializar scheduler de automacao
 beka_scheduler.init_app(app)
+app._beka_scheduler = beka_scheduler  # Referencia para uso nos endpoints de lote
 
 # Recuperar execucoes que ficaram travadas (servidor morreu no meio)
 with app.app_context():
@@ -482,6 +519,37 @@ with app.app_context():
     if _stuck:
         db.session.commit()
         print(f"[Startup] {len(_stuck)} execucao(oes) travada(s) marcada(s) como erro")
+
+# Job scheduler: enviar resumo geral consolidado no fim do dia (21:00)
+def _job_resumo_geral_diario():
+    """Envia resumo geral consolidado (XLSX + JPEG) para contatos com flag resumo_geral=True."""
+    with app.app_context():
+        users = User.query.filter_by(is_active=True).all()
+        for user in users:
+            try:
+                pasta = user.get_pasta_saida() if hasattr(user, 'get_pasta_saida') else os.path.join("C:\\tmp\\users", str(user.id), "Etiquetas prontas")
+                result = _enviar_resumo_geral_whatsapp(user.id, pasta, consolidado=True)
+                if result.get("ok"):
+                    print(f"[ResumoGeral] Consolidado enviado para user {user.id}")
+            except Exception as e:
+                print(f"[ResumoGeral] Erro para user {user.id}: {e}")
+
+with app.app_context():
+    from apscheduler.triggers.cron import CronTrigger
+    try:
+        existing = beka_scheduler.scheduler.get_job('beka_resumo_geral_diario')
+        if existing:
+            beka_scheduler.scheduler.remove_job('beka_resumo_geral_diario')
+        beka_scheduler.scheduler.add_job(
+            _job_resumo_geral_diario,
+            trigger=CronTrigger(hour=21, minute=0, timezone="America/Sao_Paulo"),
+            id='beka_resumo_geral_diario',
+            name='Resumo Geral Diario',
+            replace_existing=True,
+        )
+        print("[Startup] Job resumo geral diario registrado (21:00)")
+    except Exception as e_sched:
+        print(f"[Startup] Erro ao registrar job resumo geral: {e_sched}")
 
 # Emails com acesso vitalicio (plano empresarial permanente)
 EMAILS_VITALICIO = [
@@ -1391,12 +1459,23 @@ def api_escanear_lojas():
         if pdfs_shein:
             shein_etqs = proc.processar_shein(pasta_entrada, pdfs_extras=pdfs_shein)
             if shein_etqs:
-                # Agrupar por cnpj das etiquetas shein
-                for etq in shein_etqs:
-                    cnpj_s = etq.get('cnpj', 'SHEIN')
-                    if not any(l['cnpj'] == cnpj_s for l in lojas):
-                        nome_s = proc.get_nome_loja(cnpj_s)
-                        lojas.append({"cnpj": cnpj_s, "nome": nome_s})
+                # Verificar se ha loja Shein no DB para consolidar
+                _lojas_shein_db = Loja.query.filter(
+                    Loja.user_id == int(user_id),
+                    Loja.nome.ilike('%shein%')
+                ).all()
+                if _lojas_shein_db and len(_lojas_shein_db) == 1:
+                    # 1 loja Shein no DB: todos os CNPJs (transportadoras) vao para ela
+                    _nome_shein = _lojas_shein_db[0].nome
+                    if not any(l['nome'] == _nome_shein for l in lojas):
+                        lojas.append({"cnpj": "SHEIN", "nome": _nome_shein})
+                else:
+                    # Sem loja Shein no DB ou multiplas: listar por CNPJ
+                    for etq in shein_etqs:
+                        cnpj_s = etq.get('cnpj', 'SHEIN')
+                        if not any(l['cnpj'] == cnpj_s for l in lojas):
+                            nome_s = proc.get_nome_loja(cnpj_s)
+                            lojas.append({"cnpj": cnpj_s, "nome": nome_s})
 
         lojas.sort(key=lambda x: x["nome"])
         return jsonify({"lojas": lojas})
@@ -2934,7 +3013,8 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     shein_por_cnpj[etq.get('cnpj', '')].append(etq)
 
                 # Mapear CNPJs Shein para nomes de loja do DB/UpSeller
-                # proc.get_nome_loja retorna o proprio CNPJ se nao tiver mapeamento
+                # Shein usa varias transportadoras (cada uma com CNPJ diferente),
+                # entao varios CNPJs pertencem a mesma loja.
                 _shein_cnpj_nome_map = {}
                 try:
                     lojas_db_shein = Loja.query.filter(
@@ -2942,10 +3022,12 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                         Loja.nome.ilike('%shein%')
                     ).all()
                     if lojas_db_shein:
-                        # Se ha apenas 1 loja Shein no DB e 1 CNPJ, mapeia direto
                         cnpjs_shein = list(shein_por_cnpj.keys())
-                        if len(lojas_db_shein) == 1 and len(cnpjs_shein) == 1:
-                            _shein_cnpj_nome_map[cnpjs_shein[0]] = lojas_db_shein[0].nome
+                        if len(lojas_db_shein) == 1:
+                            # 1 loja Shein → TODOS os CNPJs vao para ela
+                            # (transportadoras diferentes = CNPJs diferentes, mas mesma loja)
+                            for cnpj_sh in cnpjs_shein:
+                                _shein_cnpj_nome_map[cnpj_sh] = lojas_db_shein[0].nome
                         else:
                             # Multiplas lojas Shein: tenta associar por ordem
                             for idx, cnpj_sh in enumerate(sorted(cnpjs_shein)):
@@ -2954,8 +3036,13 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 except Exception as e_map:
                     print(f"[Shein] Aviso: falha ao mapear nomes Shein: {e_map}")
 
+                # Consolidar por nome de loja (varios CNPJs podem pertencer a mesma loja)
+                _shein_por_loja = dd(list)
                 for cnpj_s, etqs_s in shein_por_cnpj.items():
                     nome_loja_s = _shein_cnpj_nome_map.get(cnpj_s) or proc.get_nome_loja(cnpj_s)
+                    _shein_por_loja[nome_loja_s].extend(etqs_s)
+
+                for nome_loja_s, etqs_s in _shein_por_loja.items():
                     pasta_loja_s = os.path.join(pasta_saida, nome_loja_s)
                     if not os.path.exists(pasta_loja_s):
                         os.makedirs(pasta_loja_s)
@@ -2978,10 +3065,13 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     except Exception:
                         pass
 
+                    # Coletar todos os CNPJs deste grupo consolidado
+                    cnpjs_grupo = set(e.get('cnpj', '') for e in etqs_s)
+
                     # Adicionar Shein ao resultado para WhatsApp delivery
                     info_shein = {
                         "nome": nome_loja_s,
-                        "cnpj": cnpj_s,
+                        "cnpj": ",".join(cnpjs_grupo) if len(cnpjs_grupo) > 1 else next(iter(cnpjs_grupo), ""),
                         "etiquetas": len(etqs_s),
                         "paginas": total_shein,
                         "simples": 0,
@@ -3284,22 +3374,53 @@ def _calc_backoff_seconds(tentativas: int) -> int:
 # RESUMO GERAL DIARIO: acumula lojas do dia e gera JPEG consolidado
 # ================================================================
 
+def _caminho_resumo_diario(user_id: int) -> str:
+    """Retorna caminho do arquivo JSON para persistir resumo diario."""
+    return os.path.join("data", f"resumo_diario_{user_id}.json")
+
+
+def _carregar_resumo_diario_disco(user_id: int) -> dict:
+    """Carrega resumo diario do disco (sobrevive reinicializacoes)."""
+    caminho = _caminho_resumo_diario(user_id)
+    if os.path.exists(caminho):
+        try:
+            with open(caminho, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def _salvar_resumo_diario_disco(user_id: int, dados: dict):
+    """Salva resumo diario em disco."""
+    caminho = _caminho_resumo_diario(user_id)
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    try:
+        with open(caminho, 'w', encoding='utf-8') as f:
+            json.dump(dados, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[ResumoGeral] Erro ao salvar disco: {e}")
+
+
 def _acumular_resumo_diario(user_id: int, resultado_lojas: list):
     """Acumula lojas processadas no dia para gerar resumo geral consolidado.
-    Armazena no estado do usuario em resumo_diario[data_hoje]."""
+    Persiste em disco (JSON) para sobreviver reinicializacoes do servidor."""
     estado = _get_estado(user_id)
     if not estado:
         return
     hoje = datetime.now().strftime("%Y-%m-%d")
-    if "resumo_diario" not in estado:
-        estado["resumo_diario"] = {}
+
+    # Carregar do disco (mais confiavel que so memoria)
+    dados_disco = _carregar_resumo_diario_disco(user_id)
+
     # Limpar dias antigos (manter so hoje)
-    for k in list(estado["resumo_diario"].keys()):
+    for k in list(dados_disco.keys()):
         if k != hoje:
-            del estado["resumo_diario"][k]
-    if hoje not in estado["resumo_diario"]:
-        estado["resumo_diario"][hoje] = {}
-    diario = estado["resumo_diario"][hoje]
+            del dados_disco[k]
+    if hoje not in dados_disco:
+        dados_disco[hoje] = {}
+    diario = dados_disco[hoje]
+
     for loja in (resultado_lojas or []):
         nome = str(loja.get("nome", "") or "").strip()
         if not nome:
@@ -3316,16 +3437,102 @@ def _acumular_resumo_diario(user_id: int, resultado_lojas: list):
                 "unidades": int(loja.get("total_qtd", 0) or 0),
             }
 
+    # Persistir em disco
+    _salvar_resumo_diario_disco(user_id, dados_disco)
+    # Manter em memoria tambem
+    estado["resumo_diario"] = dados_disco
+
+
+def _obter_diario_hoje(user_id: int) -> dict:
+    """Retorna o dict do resumo diario de hoje (disco + memoria)."""
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    # Tentar disco primeiro (mais confiavel)
+    dados_disco = _carregar_resumo_diario_disco(user_id)
+    diario = dados_disco.get(hoje, {})
+    if diario:
+        return diario
+    # Fallback: memoria
+    estado = _get_estado(user_id)
+    if estado:
+        return (estado.get("resumo_diario") or {}).get(hoje, {})
+    return {}
+
+
+def _gerar_xlsx_resumo_geral(user_id: int, pasta_saida: str) -> str:
+    """Gera XLSX consolidado com todas as lojas do dia.
+    Formato identico ao resumo_geral individual (Loja|Etiquetas|SKUs|Unidades|TOTAL).
+    Retorna caminho do XLSX gerado ou string vazia."""
+    diario = _obter_diario_hoje(user_id)
+    if not diario:
+        return ""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Border, Side
+    except Exception:
+        return ""
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Resumo Geral"
+    header_font = Font(bold=True, size=11)
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    total_fill = PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid")
+    borda = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+
+    headers = ['Loja', 'Etiquetas', 'SKUs', 'Unidades']
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = borda
+
+    row = 2
+    sum_etiq = sum_skus = sum_un = 0
+    for nome in sorted(diario.keys()):
+        d = diario[nome]
+        etiq = d.get("etiquetas", 0)
+        skus = d.get("skus", 0)
+        un = d.get("unidades", 0)
+        ws.cell(row=row, column=1, value=nome).border = borda
+        ws.cell(row=row, column=2, value=etiq).border = borda
+        ws.cell(row=row, column=3, value=skus).border = borda
+        ws.cell(row=row, column=4, value=un).border = borda
+        sum_etiq += etiq
+        sum_skus += skus
+        sum_un += un
+        row += 1
+
+    for col, val in enumerate(['TOTAL', sum_etiq, sum_skus, sum_un], 1):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.font = Font(bold=True, size=11)
+        cell.fill = total_fill
+        cell.border = borda
+
+    ws.column_dimensions['A'].width = 30
+    ws.column_dimensions['B'].width = 15
+    ws.column_dimensions['C'].width = 12
+    ws.column_dimensions['D'].width = 15
+
+    os.makedirs(pasta_saida, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    caminho = os.path.join(pasta_saida, f"resumo_geral_{timestamp}.xlsx")
+    try:
+        wb.save(caminho)
+        wb.close()
+        return caminho
+    except Exception as e:
+        print(f"[ResumoGeral] Erro ao salvar XLSX: {e}")
+        return ""
+
 
 def _gerar_jpeg_resumo_geral(user_id: int, pasta_saida: str) -> str:
     """Gera JPEG com tabela consolidada de todas as lojas do dia.
     Estilo: header escuro, linhas claras, coluna Loja|Etiquetas|SKUs|Unidades, TOTAL.
     Retorna caminho do JPEG gerado ou string vazia."""
-    estado = _get_estado(user_id)
-    if not estado:
-        return ""
-    hoje = datetime.now().strftime("%Y-%m-%d")
-    diario = (estado.get("resumo_diario") or {}).get(hoje, {})
+    diario = _obter_diario_hoje(user_id)
     if not diario:
         return ""
 
@@ -3437,8 +3644,10 @@ def _gerar_jpeg_resumo_geral(user_id: int, pasta_saida: str) -> str:
         return ""
 
 
-def _enviar_resumo_geral_whatsapp(user_id: int, pasta_saida: str) -> dict:
-    """Gera e enfileira resumo geral diario para contatos com flag resumo_geral=True."""
+def _enviar_resumo_geral_whatsapp(user_id: int, pasta_saida: str, consolidado: bool = False) -> dict:
+    """Gera e enfileira resumo geral para contatos com flag resumo_geral=True.
+    consolidado=False: envia so JPEG parcial (apos cada processamento — comportamento original)
+    consolidado=True:  envia XLSX + JPEG completo (fim do dia, resumo consolidado)"""
     uid = int(user_id)
     contatos = WhatsAppContact.query.filter_by(user_id=uid, ativo=True, resumo_geral=True).all()
     if not contatos:
@@ -3448,34 +3657,59 @@ def _enviar_resumo_geral_whatsapp(user_id: int, pasta_saida: str) -> dict:
     if not caminho_jpeg or not os.path.exists(caminho_jpeg):
         return {"ok": False, "motivo": "falha_gerar_jpeg"}
 
+    # XLSX so no consolidado do fim do dia
+    caminho_xlsx = ""
+    if consolidado:
+        caminho_xlsx = _gerar_xlsx_resumo_geral(uid, pasta_saida)
+
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     agora = _agora_utc()
     enfileirados = 0
     hoje_label = datetime.now().strftime("%d/%m/%Y")
+    label = "Resumo Geral do Dia" if consolidado else "Resumo Geral"
+
     for c in contatos:
         telefone = str(getattr(c, "telefone", "") or "").strip()
         if not telefone:
             continue
-        if _ja_na_fila_whatsapp(uid, telefone, caminho_jpeg):
-            continue
-        db.session.add(WhatsAppQueueItem(
-            user_id=uid,
-            batch_id=batch_id,
-            origem="resumo_geral",
-            loja_nome="Resumo Geral",
-            telefone=telefone,
-            pdf_path=caminho_jpeg,
-            caption=f"Resumo Geral - {hoje_label}",
-            status="pending",
-            tentativas=0,
-            max_tentativas=5,
-            next_attempt_at=agora,
-        ))
-        enfileirados += 1
+        # Enviar JPEG (imagem do resumo)
+        if not _ja_na_fila_whatsapp(uid, telefone, caminho_jpeg):
+            db.session.add(WhatsAppQueueItem(
+                user_id=uid,
+                batch_id=batch_id,
+                origem="resumo_geral",
+                loja_nome=label,
+                telefone=telefone,
+                pdf_path=caminho_jpeg,
+                caption=f"{label} - {hoje_label}",
+                status="pending",
+                tentativas=0,
+                max_tentativas=5,
+                next_attempt_at=agora,
+            ))
+            enfileirados += 1
+        # Enviar XLSX (so no consolidado do fim do dia)
+        if caminho_xlsx and os.path.exists(caminho_xlsx) and not _ja_na_fila_whatsapp(uid, telefone, caminho_xlsx):
+            db.session.add(WhatsAppQueueItem(
+                user_id=uid,
+                batch_id=batch_id,
+                origem="resumo_geral",
+                loja_nome=label,
+                telefone=telefone,
+                pdf_path=caminho_xlsx,
+                caption=f"{label} - {hoje_label}",
+                status="pending",
+                tentativas=0,
+                max_tentativas=5,
+                next_attempt_at=agora,
+            ))
+            enfileirados += 1
+
     if enfileirados:
         db.session.commit()
         _garantir_baileys_rodando(motivo="resumo_geral")
-        print(f"[ResumoGeral] Enfileirados {enfileirados} resumo(s) geral(is)")
+        tipo = "consolidado XLSX+JPEG" if consolidado else "parcial JPEG"
+        print(f"[ResumoGeral] Enfileirados {enfileirados} item(ns) ({tipo})")
     return {"ok": enfileirados > 0, "enfileirados": enfileirados}
 
 
@@ -4403,12 +4637,16 @@ def _enfileirar_envio_whatsapp_para_contato(user_id: int, contato_id: int) -> di
     return {"ok": True, "batch_id": batch_id, "total_entregas": enfileirados, "diagnostico": diagnostico}
 
 
-def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: int) -> dict:
+def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: int, lojas_filtro=None) -> dict:
     """
     Enfileira TODOS os arquivos do ultimo resultado para UM contato,
     SEM depender de matching de nomes de lojas.
     Usado na execucao individual: como ja filtramos no download,
     todo conteudo pertence a esse contato.
+
+    Args:
+        lojas_filtro: lista opcional de nomes de lojas. Quando fornecido,
+                      enfileira apenas arquivos dessas lojas especificas.
     """
     uid = int(user_id)
     user = User.query.get(uid)
@@ -4432,6 +4670,11 @@ def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: i
     timestamp = resultado_ref.get("timestamp", "")
     lojas_resultado = resultado_ref.get("lojas", []) or []
 
+    # Normalizar lojas_filtro para comparacao case-insensitive
+    lojas_filtro_norm = None
+    if lojas_filtro:
+        lojas_filtro_norm = {str(x).strip().lower() for x in lojas_filtro if str(x).strip()}
+
     # Coletar TODOS os arquivos de TODAS as lojas do resultado
     from whatsapp_delivery import _listar_arquivos_loja
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -4442,6 +4685,9 @@ def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: i
 
     for loja_info in lojas_resultado:
         nome = str((loja_info or {}).get("nome", "") or "")
+        # Filtrar por lojas_filtro se fornecido
+        if lojas_filtro_norm and nome.strip().lower() not in lojas_filtro_norm:
+            continue
         pdf_nome = str((loja_info or {}).get("pdf", "") or "")
         arquivos = _listar_arquivos_loja(pasta_saida, nome, pdf_hint=pdf_nome)
         caption_base = f"Etiquetas {nome} - {timestamp}"
@@ -7298,7 +7544,7 @@ def api_upseller_gerar():
                             status_final["aviso_whatsapp"] = auto_res.get("erro", "Falha ao enfileirar WhatsApp")
                     except Exception as e_auto:
                         status_final["aviso_whatsapp"] = f"Falha no auto-envio WhatsApp: {e_auto}"
-                    # Resumo geral diario para contatos com flag resumo_geral
+                    # Resumo geral diario: enviar JPEG parcial + acumular para consolidado
                     try:
                         _enviar_resumo_geral_whatsapp(user_id, user.get_pasta_saida())
                     except Exception as e_rg:
@@ -8198,7 +8444,7 @@ def api_upseller_imprimir():
                             app._imprimir_status[user_id]["aviso_whatsapp"] = auto_res.get("erro", "Falha ao enfileirar WhatsApp")
                     except Exception as e_auto:
                         app._imprimir_status[user_id]["aviso_whatsapp"] = f"Falha no auto-envio WhatsApp: {e_auto}"
-                    # Resumo geral diario para contatos com flag resumo_geral
+                    # Resumo geral diario: enviar JPEG parcial + acumular
                     try:
                         _enviar_resumo_geral_whatsapp(user_id, user.get_pasta_saida())
                     except Exception as e_rg:
@@ -8269,6 +8515,11 @@ def api_upseller_imprimir_status():
         "em_andamento": False,
         "atualizando_pedidos": _esta_atualizando_lojas(user_id),
     })
+
+
+# ----------------------------------------------------------------
+# ENDPOINTS AIOS: movidos para aios_routes.py (Blueprint separado)
+# ----------------------------------------------------------------
 
 
 # ----------------------------------------------------------------
@@ -8398,6 +8649,8 @@ def api_whatsapp_contatos_salvar():
             contato.horarios_json = json.dumps(horarios, ensure_ascii=False)
         if "resumo_geral" in data:
             contato.resumo_geral = _to_bool(data.get("resumo_geral"), False)
+        if "agendamento_ativo" in data:
+            contato.agendamento_ativo = _to_bool(data.get("agendamento_ativo"), True)
     else:
         # Criar novo
         contato = WhatsAppContact(
@@ -8440,6 +8693,39 @@ def api_whatsapp_contatos_remover(contato_id):
     db.session.delete(contato)
     db.session.commit()
     return jsonify({"mensagem": "Contato removido"})
+
+
+@app.route('/api/contatos/<string:tipo>/<int:contato_id>/toggle-agendamento', methods=['POST'])
+@jwt_required()
+def api_toggle_agendamento(tipo, contato_id):
+    """Ativa/desativa agendamento individual de um contato (sem apagar horarios)."""
+    user_id = int(get_jwt_identity())
+    if tipo == 'whatsapp':
+        contato = WhatsAppContact.query.filter_by(id=contato_id, user_id=user_id).first()
+    elif tipo == 'email':
+        contato = EmailContact.query.filter_by(id=contato_id, user_id=user_id).first()
+    else:
+        return jsonify({"erro": "Tipo invalido"}), 400
+    if not contato:
+        return jsonify({"erro": "Contato nao encontrado"}), 404
+
+    atual = getattr(contato, 'agendamento_ativo', True)
+    if atual is None:
+        atual = True
+    contato.agendamento_ativo = not atual
+    db.session.commit()
+
+    # Sincronizar scheduler
+    try:
+        if contato.agendamento_ativo:
+            beka_scheduler.registrar_job_contato(contato, tipo)
+        else:
+            beka_scheduler.remover_job_contato(contato_id, tipo)
+    except Exception:
+        pass
+
+    status = "ativado" if contato.agendamento_ativo else "desativado"
+    return jsonify({"mensagem": f"Agendamento individual {status}", "agendamento_ativo": contato.agendamento_ativo})
 
 
 @app.route('/api/whatsapp/enviar-teste', methods=['POST'])
@@ -8688,6 +8974,10 @@ def api_email_config_set():
         return jsonify({"erro": "Email do remetente e obrigatorio"}), 400
     if "@" not in email_rem:
         return jsonify({"erro": "Email do remetente invalido"}), 400
+    # Se o email remetente mudou, resetar TODA a config SMTP
+    old_rem = (getattr(user, "email_remetente", "") or "").strip().lower()
+    email_mudou = old_rem and old_rem != email_rem.lower()
+
     user.email_remetente = email_rem
     user.nome_remetente = nome_rem
 
@@ -8699,31 +8989,49 @@ def api_email_config_set():
     smtp_pass_in = data.get("smtp_pass", None)
     smtp_limpar_senha = _to_bool(data.get("smtp_limpar_senha"), False)
 
-    if smtp_host_in is not None:
-        user.smtp_host = str(smtp_host_in or "").strip()
-    elif not (getattr(user, "smtp_host", "") or "").strip():
-        user.smtp_host = "smtp.gmail.com"
-
-    if smtp_port_in is not None:
-        try:
-            smtp_port = int(str(smtp_port_in).strip() or "587")
-            if smtp_port <= 0 or smtp_port > 65535:
-                raise ValueError()
-            user.smtp_port = smtp_port
-        except Exception:
-            return jsonify({"erro": "Porta SMTP invalida"}), 400
-    elif not getattr(user, "smtp_port", None):
+    # Se email mudou, auto-detectar SMTP pelo dominio e limpar senha antiga
+    if email_mudou:
+        domain = email_rem.split("@")[-1].lower() if "@" in email_rem else ""
+        smtp_hosts = {
+            "gmail.com": "smtp.gmail.com",
+            "hotmail.com": "smtp-mail.outlook.com",
+            "outlook.com": "smtp-mail.outlook.com",
+            "live.com": "smtp-mail.outlook.com",
+            "yahoo.com": "smtp.mail.yahoo.com",
+            "yahoo.com.br": "smtp.mail.yahoo.com",
+        }
+        user.smtp_host = smtp_hosts.get(domain, f"smtp.{domain}")
         user.smtp_port = 587
-
-    if smtp_user_in is not None:
-        user.smtp_user = str(smtp_user_in or "").strip()
-    elif not (getattr(user, "smtp_user", "") or "").strip():
         user.smtp_user = email_rem
-
-    if smtp_from_in is not None:
-        user.smtp_from = str(smtp_from_in or "").strip()
-    elif not (getattr(user, "smtp_from", "") or "").strip():
         user.smtp_from = email_rem
+        user.smtp_pass_enc = ""  # Limpar senha antiga — nao serve mais
+    else:
+        # Manter logica normal se email nao mudou
+        if smtp_host_in is not None:
+            user.smtp_host = str(smtp_host_in or "").strip()
+        elif not (getattr(user, "smtp_host", "") or "").strip():
+            user.smtp_host = "smtp.gmail.com"
+
+        if smtp_port_in is not None:
+            try:
+                smtp_port = int(str(smtp_port_in).strip() or "587")
+                if smtp_port <= 0 or smtp_port > 65535:
+                    raise ValueError()
+                user.smtp_port = smtp_port
+            except Exception:
+                return jsonify({"erro": "Porta SMTP invalida"}), 400
+        elif not getattr(user, "smtp_port", None):
+            user.smtp_port = 587
+
+        if smtp_user_in is not None:
+            user.smtp_user = str(smtp_user_in or "").strip()
+        elif not (getattr(user, "smtp_user", "") or "").strip():
+            user.smtp_user = email_rem
+
+        if smtp_from_in is not None:
+            user.smtp_from = str(smtp_from_in or "").strip()
+        elif not (getattr(user, "smtp_from", "") or "").strip():
+            user.smtp_from = email_rem
 
     if smtp_pass_in is not None:
         smtp_pass_txt = str(smtp_pass_in or "").strip()
@@ -8783,7 +9091,9 @@ def api_email_validar():
             server.login(user_smtp, pass_smtp)
             server.quit()
     except Exception as e:
-        return jsonify({"sucesso": False, "erro": f"Falha SMTP: {e}"}), 400
+        from email_utils import _traduzir_erro_smtp
+        msg = _traduzir_erro_smtp(e, host, port)
+        return jsonify({"sucesso": False, "erro": msg}), 400
 
     return jsonify({
         "sucesso": True,
@@ -8797,6 +9107,12 @@ def api_email_contatos_listar():
     """Lista contatos de email do usuario."""
     user_id = int(get_jwt_identity())
     contatos = EmailContact.query.filter_by(user_id=user_id).all()
+    # Debug: logar se nao encontrar contatos
+    if not contatos:
+        all_contacts = EmailContact.query.all()
+        print(f"[DEBUG email/contatos] user_id={user_id} retornou 0 contatos. "
+              f"Total no banco: {len(all_contacts)} "
+              f"(user_ids: {[c.user_id for c in all_contacts]})")
     return jsonify([c.to_dict() for c in contatos])
 
 
@@ -8882,6 +9198,279 @@ def api_email_contatos_deletar(contato_id):
     db.session.delete(contato)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+# ============================================================
+# API - Lotes (TimeLote) — CRUD + execucao manual
+# ============================================================
+
+@app.route('/api/lotes', methods=['GET'])
+@jwt_required()
+def api_lotes_listar():
+    user_id = int(get_jwt_identity())
+    lotes = TimeLote.query.filter_by(user_id=user_id).order_by(TimeLote.hora).all()
+    result = []
+    for l in lotes:
+        d = l.to_dict()
+        # Contar contatos atribuidos a este lote
+        total = 0
+        for c in WhatsAppContact.query.filter_by(user_id=user_id, ativo=True).all():
+            try:
+                ids = json.loads(c.lote_ids_json or '[]')
+            except Exception:
+                ids = []
+            if l.id in ids:
+                total += 1
+        for c in EmailContact.query.filter_by(user_id=user_id, ativo=True).all():
+            try:
+                ids = json.loads(c.lote_ids_json or '[]')
+            except Exception:
+                ids = []
+            if l.id in ids:
+                total += 1
+        d['total_contatos'] = total
+        result.append(d)
+    return jsonify(result)
+
+
+@app.route('/api/lotes', methods=['POST'])
+@jwt_required()
+def api_lotes_salvar():
+    user_id = int(get_jwt_identity())
+    data = request.get_json()
+    lote_id = data.get('id')
+    if lote_id:
+        lote = TimeLote.query.get(lote_id)
+        if not lote or lote.user_id != user_id:
+            return jsonify({"erro": "Lote nao encontrado"}), 404
+    else:
+        lote = TimeLote(user_id=user_id)
+        db.session.add(lote)
+
+    hora_val = (data.get('hora') or data.get('horario') or '').strip()
+    lote.nome = data.get('nome', '').strip() or f"Lote {hora_val}"
+    lote.hora = hora_val
+    lote.dias_semana = json.dumps(data.get('dias_semana', data.get('dias', ['seg', 'ter', 'qua', 'qui', 'sex'])))
+    lote.ativo = data.get('ativo', True)
+    db.session.commit()
+
+    # Atualizar contatos atribuidos ao lote (se enviado)
+    contatos_raw = data.get('contatos')  # ["whatsapp_7", "whatsapp_9", "email_1"]
+    if contatos_raw is not None:
+        # Parse selecionados
+        wa_ids_selecionados = set()
+        email_ids_selecionados = set()
+        for item in contatos_raw:
+            parts = str(item).split('_', 1)
+            if len(parts) == 2:
+                tipo, cid = parts[0], int(parts[1])
+                if tipo == 'whatsapp':
+                    wa_ids_selecionados.add(cid)
+                elif tipo == 'email':
+                    email_ids_selecionados.add(cid)
+
+        # Atualizar WhatsApp contacts
+        for c in WhatsAppContact.query.filter_by(user_id=user_id).all():
+            try:
+                ids = json.loads(c.lote_ids_json or '[]')
+            except Exception:
+                ids = []
+            tinha = lote.id in ids
+            deve_ter = c.id in wa_ids_selecionados
+            if deve_ter and not tinha:
+                ids.append(lote.id)
+            elif not deve_ter and tinha:
+                ids = [x for x in ids if x != lote.id]
+            else:
+                continue
+            c.lote_ids_json = json.dumps(ids)
+
+        # Atualizar Email contacts
+        for c in EmailContact.query.filter_by(user_id=user_id).all():
+            try:
+                ids = json.loads(c.lote_ids_json or '[]')
+            except Exception:
+                ids = []
+            tinha = lote.id in ids
+            deve_ter = c.id in email_ids_selecionados
+            if deve_ter and not tinha:
+                ids.append(lote.id)
+            elif not deve_ter and tinha:
+                ids = [x for x in ids if x != lote.id]
+            else:
+                continue
+            c.lote_ids_json = json.dumps(ids)
+
+        db.session.commit()
+
+    # Re-register scheduler jobs
+    if hasattr(app, '_beka_scheduler') and app._beka_scheduler:
+        app._beka_scheduler.registrar_jobs_lotes(user_id)
+
+    return jsonify(lote.to_dict())
+
+
+@app.route('/api/lotes/<int:lote_id>', methods=['DELETE'])
+@jwt_required()
+def api_lotes_excluir(lote_id):
+    user_id = int(get_jwt_identity())
+    lote = TimeLote.query.get(lote_id)
+    if not lote or lote.user_id != user_id:
+        return jsonify({"erro": "Nao encontrado"}), 404
+    db.session.delete(lote)
+    db.session.commit()
+
+    # Re-register scheduler jobs (remove the deleted lote's job)
+    if hasattr(app, '_beka_scheduler') and app._beka_scheduler:
+        app._beka_scheduler.registrar_jobs_lotes(user_id)
+
+    return jsonify({"ok": True})
+
+
+@app.route('/api/lotes/<int:lote_id>/executar', methods=['POST'])
+@jwt_required()
+def api_lotes_executar(lote_id):
+    user_id = int(get_jwt_identity())
+    lote = TimeLote.query.get(lote_id)
+    if not lote or lote.user_id != user_id:
+        return jsonify({"erro": "Nao encontrado"}), 404
+    # Execute in background thread
+    import threading
+    if hasattr(app, '_beka_scheduler') and app._beka_scheduler:
+        t = threading.Thread(target=app._beka_scheduler._executar_lote, args=(user_id, lote_id), daemon=True)
+        t.start()
+        return jsonify({"ok": True, "msg": f"Lote '{lote.nome}' iniciado"})
+    return jsonify({"erro": "Scheduler nao disponivel"}), 500
+
+
+# ─── ETIQUETAS AVULSAS (independente) ────────────────────────────────
+
+@app.route('/api/avulsas/config', methods=['GET'])
+@jwt_required()
+def api_avulsas_config():
+    """Retorna a pasta salva para etiquetas avulsas."""
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    pasta = getattr(user, 'pasta_avulsas', '') or ''
+    return jsonify({"pasta": pasta})
+
+
+@app.route('/api/avulsas/config', methods=['POST'])
+@jwt_required()
+def api_avulsas_config_salvar():
+    """Salva a pasta para etiquetas avulsas."""
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    data = request.get_json(silent=True) or {}
+    pasta = data.get('pasta', '').strip()
+    if not pasta:
+        return jsonify({"erro": "Pasta nao informada"}), 400
+    if not os.path.isdir(pasta):
+        return jsonify({"erro": f"Pasta nao encontrada: {pasta}"}), 400
+    user.pasta_avulsas = pasta
+    db.session.commit()
+    return jsonify({"ok": True, "pasta": pasta})
+
+
+@app.route('/api/avulsas/processar', methods=['POST'])
+@jwt_required()
+def api_avulsas_processar():
+    """Processa etiquetas avulsas da pasta configurada."""
+    import threading
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    pasta = getattr(user, 'pasta_avulsas', '') or ''
+    if not pasta or not os.path.isdir(pasta):
+        return jsonify({"erro": "Pasta nao configurada ou nao existe"}), 400
+
+    def _run():
+        try:
+            # Importar o processador avulso
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("recortar_etiquetas",
+                os.path.join(script_dir, "recortar_etiquetas.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
+            etiquetas = mod.ler_pdfs(pasta)
+            if not etiquetas:
+                app._avulsas_resultado = {"erro": "Nenhum PDF valido encontrado na pasta."}
+                return
+
+            from collections import defaultdict
+            lojas = defaultdict(list)
+            for etq in etiquetas:
+                lojas[etq['loja']].append(etq)
+
+            output_base = os.path.join(pasta, "etiquetas_prontas")
+            os.makedirs(output_base, exist_ok=True)
+
+            import re as _re
+            resultado_lojas = []
+            for loja, etqs in sorted(lojas.items()):
+                loja_safe = _re.sub(r'[<>:"/\\|?*]', '_', loja)
+                loja_dir = os.path.join(output_base, loja_safe)
+                os.makedirs(loja_dir, exist_ok=True)
+
+                pdf_path = os.path.join(loja_dir, f"etiquetas_{loja_safe}.pdf")
+                n = mod.gerar_pdf_loja(etqs, pdf_path)
+
+                xlsx_path = os.path.join(loja_dir, f"resumo_{loja_safe}.xlsx")
+                res = mod.gerar_resumo_xlsx(etqs, xlsx_path, loja)
+                n_skus = res[0] if res else 0
+                n_units = res[1] if res else 0
+
+                resultado_lojas.append({
+                    "loja": loja,
+                    "etiquetas": len(etqs),
+                    "skus": n_skus,
+                    "unidades": n_units,
+                    "pdf": pdf_path,
+                })
+
+            # Resumo geral
+            lojas_info = {r['loja']: {'etiquetas': r['etiquetas'], 'skus': r['skus'], 'unidades': r['unidades']} for r in resultado_lojas}
+            mod.gerar_resumo_geral(lojas_info, os.path.join(output_base, "resumo_geral.xlsx"))
+
+            app._avulsas_resultado = {
+                "ok": True,
+                "total_etiquetas": len(etiquetas),
+                "total_lojas": len(lojas),
+                "lojas": resultado_lojas,
+                "pasta_saida": output_base,
+            }
+        except Exception as e:
+            import traceback
+            app._avulsas_resultado = {"erro": str(e), "trace": traceback.format_exc()}
+
+    app._avulsas_resultado = {"processando": True}
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "msg": "Processamento iniciado"})
+
+
+@app.route('/api/avulsas/status', methods=['GET'])
+@jwt_required()
+def api_avulsas_status():
+    """Retorna status do processamento avulso."""
+    resultado = getattr(app, '_avulsas_resultado', None)
+    if resultado is None:
+        return jsonify({"idle": True})
+    return jsonify(resultado)
+
+
+@app.route('/api/avulsas/abrir-pasta', methods=['POST'])
+@jwt_required()
+def api_avulsas_abrir_pasta():
+    """Abre a pasta de saida no explorer."""
+    data = request.get_json(silent=True) or {}
+    pasta = data.get('pasta', '')
+    if pasta and os.path.isdir(pasta):
+        import subprocess
+        subprocess.Popen(f'explorer "{pasta}"', shell=True)
+        return jsonify({"ok": True})
+    return jsonify({"erro": "Pasta nao encontrada"}), 400
 
 
 @app.route('/api/email/enviar-lote', methods=['POST'])
@@ -9180,7 +9769,7 @@ def api_agendamentos_executar_agora():
                             _enviar_email_resultado_agendado(user_id=user_id)
                         except Exception as e_em:
                             print(f"[ExecDireto] Erro Email: {e_em}")
-                        # Acumular resumo diario e enviar resumo geral
+                        # Resumo geral: enviar JPEG parcial + acumular para consolidado
                         try:
                             estado_tmp = _get_estado(user_id)
                             lojas_res = ((estado_tmp or {}).get("ultimo_resultado") or {}).get("lojas", [])

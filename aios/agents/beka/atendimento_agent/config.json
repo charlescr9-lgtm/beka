@@ -1,0 +1,19 @@
+{
+    "name": "atendimento_agent",
+    "description": [
+        "Especialista em atendimento ao cliente para e-commerce.",
+        "Gera respostas profissionais para WhatsApp e Email,",
+        "trata reclamacoes, duvidas sobre envio, trocas e devolucoes.",
+        "Adapta tom e linguagem por marketplace."
+    ],
+    "tools": [],
+    "meta": {
+        "author": "beka",
+        "version": "1.0.0",
+        "license": "MIT"
+    },
+    "build": {
+        "entry": "entry.py",
+        "module": "AtendimentoAgent"
+    }
+}

@@ -17,3 +17,6 @@ playwright>=1.40.0
 APScheduler>=3.10.0
 cryptography>=41.0.0
 requests
+# AIOS - Download/edicao de videos
+yt-dlp>=2024.0.0
+ffmpeg-python>=0.2.0
