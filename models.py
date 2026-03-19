@@ -582,7 +582,7 @@ class MarketplaceApiConfig(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     marketplace = db.Column(db.String(40), default='shopee', nullable=False)
     loja_nome = db.Column(db.String(200), default='')
-    api_base_url = db.Column(db.String(300), default='https://openplatform.sandbox.test-stable.shopee.sg')
+    api_base_url = db.Column(db.String(300), default='https://partner.test-stable.shopeemobile.com')
 
     partner_id = db.Column(db.String(80), default='')
     partner_key_enc = db.Column(db.Text, default='')
@@ -659,7 +659,7 @@ class MarketplaceApiConfig(db.Model):
             "id": self.id,
             "marketplace": self.marketplace,
             "loja_nome": (self.loja_nome or '').strip(),
-            "api_base_url": (self.api_base_url or '').strip() or 'https://openplatform.sandbox.test-stable.shopee.sg',
+            "api_base_url": (self.api_base_url or '').strip() or 'https://partner.test-stable.shopeemobile.com',
             "partner_id": (self.partner_id or '').strip(),
             "shop_id": (self.shop_id or '').strip(),
             "status_conexao": (self.status_conexao or 'nao_configurado'),
@@ -759,4 +759,155 @@ class AIOSConfig(db.Model):
             "ativo": bool(self.ativo),
             "tem_anthropic_key": bool(self.anthropic_key_enc),
             "tem_openai_key": bool(self.openai_key_enc),
+        }
+
+
+# =============================================
+# FUNCIONARIOS / FOLHA DE PAGAMENTO
+# =============================================
+
+class Funcionario(db.Model):
+    __tablename__ = 'funcionarios'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    nome = db.Column(db.String(200), nullable=False)
+    salario_mensal = db.Column(db.Float, nullable=False, default=0)
+    ativo = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+
+    folhas = db.relationship('FolhaPagamento', backref='funcionario', lazy=True)
+    vales = db.relationship('ValeParcela', backref='funcionario', lazy=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "nome": self.nome,
+            "salario_mensal": self.salario_mensal,
+            "ativo": bool(self.ativo),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class FolhaPagamento(db.Model):
+    __tablename__ = 'folha_pagamento'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    funcionario_id = db.Column(db.Integer, db.ForeignKey('funcionarios.id'), nullable=False)
+    periodo = db.Column(db.String(20), nullable=False)  # "2026-03-1" ou "2026-03-2"
+    faltas = db.Column(db.Float, default=0)
+    vale1 = db.Column(db.Float, default=0)
+    vale2 = db.Column(db.Float, default=0)
+    horas_extras = db.Column(db.Float, default=0)
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    updated_at = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
+
+    __table_args__ = (
+        db.UniqueConstraint('user_id', 'funcionario_id', 'periodo', name='uq_folha_func_periodo'),
+    )
+
+    def to_dict(self):
+        sal = self.funcionario.salario_mensal if self.funcionario else 0
+        quinzena_base = sal / 2
+        desc_faltas = (self.faltas or 0) * (sal / 30) * 2
+        valor_h_extra = (self.horas_extras or 0) * (sal / 30 / 8) * 1.5 if (self.horas_extras or 0) > 0 else 0
+        a_receber = quinzena_base - desc_faltas - (self.vale1 or 0) - (self.vale2 or 0) + valor_h_extra
+        return {
+            "id": self.id,
+            "funcionario_id": self.funcionario_id,
+            "nome": self.funcionario.nome if self.funcionario else "",
+            "salario_mensal": sal,
+            "periodo": self.periodo,
+            "faltas": self.faltas or 0,
+            "vale1": self.vale1 or 0,
+            "vale2": self.vale2 or 0,
+            "horas_extras": self.horas_extras or 0,
+            "quinzena_base": round(quinzena_base, 2),
+            "desc_faltas": round(desc_faltas, 2),
+            "valor_h_extra": round(valor_h_extra, 2),
+            "a_receber": round(a_receber, 2),
+        }
+
+
+class ValeParcela(db.Model):
+    __tablename__ = 'vales_parcelas'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    funcionario_id = db.Column(db.Integer, db.ForeignKey('funcionarios.id'), nullable=False)
+    descricao = db.Column(db.String(300), nullable=False)
+    valor_total = db.Column(db.Float, default=0)
+    valor_parcela = db.Column(db.Float, default=0)
+    num_parcelas = db.Column(db.Integer, default=0)
+    pagas = db.Column(db.Integer, default=0)
+    prox_desconto = db.Column(db.String(100), default='')
+    created_at = db.Column(db.DateTime, default=_agora_brasil)
+    updated_at = db.Column(db.DateTime, default=_agora_brasil, onupdate=_agora_brasil)
+
+    def to_dict(self):
+        restantes = max(0, (self.num_parcelas or 0) - (self.pagas or 0))
+        status = "QUITADO" if restantes <= 0 and (self.num_parcelas or 0) > 0 else "PENDENTE"
+        return {
+            "id": self.id,
+            "funcionario_id": self.funcionario_id,
+            "nome": self.funcionario.nome if self.funcionario else "",
+            "descricao": self.descricao,
+            "valor_total": self.valor_total or 0,
+            "valor_parcela": self.valor_parcela or 0,
+            "num_parcelas": self.num_parcelas or 0,
+            "pagas": self.pagas or 0,
+            "restantes": restantes,
+            "prox_desconto": self.prox_desconto or "",
+            "status": status,
+        }
+
+
+# =============================================
+# SHOPEE MONITOR
+# =============================================
+
+class ShopeeMonitorConfig(db.Model):
+    __tablename__ = 'shopee_monitor_config'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, unique=True)
+    horario = db.Column(db.String(5), default='07:00')
+    dias_json = db.Column(db.Text, default='["seg","ter","qua","qui","sex"]')
+    cdp_port = db.Column(db.Integer, default=9222)
+    ativo = db.Column(db.Boolean, default=False)
+
+    def to_dict(self):
+        import json as _json
+        return {
+            "horario": self.horario or '07:00',
+            "dias": _json.loads(self.dias_json) if self.dias_json else [],
+            "cdp_port": self.cdp_port or 9222,
+            "ativo": bool(self.ativo),
+        }
+
+
+class ShopeeMonitorLog(db.Model):
+    __tablename__ = 'shopee_monitor_logs'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    inicio = db.Column(db.DateTime, default=_agora_brasil)
+    fim = db.Column(db.DateTime, nullable=True)
+    status = db.Column(db.String(20), default='rodando')  # rodando, concluido, erro
+    etapa_atual = db.Column(db.Integer, default=0)
+    total_lojas = db.Column(db.Integer, default=0)
+    total_alertas = db.Column(db.Integer, default=0)
+    total_etiquetas = db.Column(db.Integer, default=0)
+    log_text = db.Column(db.Text, default='')
+    resultado_json = db.Column(db.Text, default='{}')
+
+    def to_dict(self):
+        import json as _json
+        return {
+            "id": self.id,
+            "inicio": self.inicio.isoformat() if self.inicio else None,
+            "fim": self.fim.isoformat() if self.fim else None,
+            "status": self.status,
+            "etapa_atual": self.etapa_atual or 0,
+            "total_lojas": self.total_lojas or 0,
+            "total_alertas": self.total_alertas or 0,
+            "total_etiquetas": self.total_etiquetas or 0,
+            "log_text": self.log_text or '',
+            "resultado": _json.loads(self.resultado_json) if self.resultado_json else {},
         }

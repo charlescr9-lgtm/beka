@@ -32,6 +32,7 @@ import smtplib
 import secrets
 import re as _re
 import unicodedata
+from contextlib import contextmanager
 from urllib.parse import urlparse, quote_plus, urlencode
 from datetime import datetime, timedelta, timezone
 
@@ -57,7 +58,8 @@ from etiquetas_shopee import ProcessadorEtiquetasShopee
 from models import (db, bcrypt, User, Session, WhatsAppContact, Schedule,
                     UpSellerConfig, ExecutionLog, Loja, EmailContact,
                     WhatsAppQueueItem, MarketplaceApiConfig, MarketplaceLoja,
-                    TimeLote, encrypt_value, decrypt_value)
+                    TimeLote, encrypt_value, decrypt_value,
+                    Funcionario, FolhaPagamento, ValeParcela)
 from auth import auth_bp
 from email_utils import enviar_email_com_anexo, enviar_email_com_anexos, smtp_configurado, get_smtp_config
 from payments import payments_bp
@@ -93,6 +95,8 @@ _VOLUME_PATH = os.environ.get('RAILWAY_VOLUME_MOUNT_PATH', os.environ.get('DB_DI
 os.makedirs(_VOLUME_PATH, exist_ok=True)
 app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{os.path.join(_VOLUME_PATH, 'app.db')}"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+_WEBVIEW_STORAGE_DIR = os.path.join(_VOLUME_PATH, 'webview_profile')
+os.makedirs(_WEBVIEW_STORAGE_DIR, exist_ok=True)
 
 
 def _normalizar_base_url(raw: str) -> str:
@@ -283,8 +287,8 @@ def _jwt_query_param_fallback():
     """Injeta JWT do query param no header para endpoints de download.
     pywebview/WebView2 nao suporta blob download via JS, entao usamos
     window.open(url?jwt=...) que precisa do token no query string."""
-    if '/download' in (request.path or ''):
-        qt = request.args.get('jwt')
+    if '/download' in (request.path or '') or '/export' in (request.path or ''):
+        qt = request.args.get('jwt') or request.args.get('qt')
         if qt and 'authorization' not in {k.lower() for k in request.headers.keys()}:
             request.environ['HTTP_AUTHORIZATION'] = f'Bearer {qt}'
 
@@ -295,6 +299,12 @@ app.register_blueprint(payments_bp)
 
 from aios_routes import aios_bp
 app.register_blueprint(aios_bp)
+
+from funcionarios_routes import funcionarios_bp
+app.register_blueprint(funcionarios_bp)
+
+from shopee_monitor_routes import shopee_monitor_bp
+app.register_blueprint(shopee_monitor_bp)
 
 
 # ----------------------------------------------------------------
@@ -2563,6 +2573,80 @@ def _formatar_excel_lucro(caminho_arquivo, linhas_sem_custo):
     wb.save(caminho_arquivo)
 
 
+def _normalizar_nome_loja_saida(valor: str) -> str:
+    txt = _re.sub(r"\s+", " ", str(valor or "")).strip().lower()
+    if not txt:
+        return ""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", txt)
+        if unicodedata.category(ch) != "Mn"
+    )
+
+
+def _resolver_nome_final_loja_saida(proc, cnpj: str, etiquetas_loja: list, estado: dict) -> str:
+    """Resolve o nome final da loja, priorizando o nome UpSeller do PDF baixado."""
+    pdf_loja_map = (estado or {}).get("_pdf_loja_map", {}) or {}
+    for etq in (etiquetas_loja or []):
+        pdf_path = str((etq or {}).get("caminho_pdf", "") or "").strip()
+        if not pdf_path:
+            continue
+        nome_upseller = pdf_loja_map.get(os.path.basename(pdf_path))
+        if nome_upseller:
+            return str(nome_upseller).strip()
+    return str(proc.get_nome_loja(cnpj) or cnpj or "Loja_Desconhecida").strip()
+
+
+def _agrupar_lojas_para_saida(proc, lojas_por_cnpj: dict, estado: dict):
+    """
+    Consolida lojas que terminariam com o mesmo nome final na pasta de saida.
+
+    Isso evita gerar dois PDFs/JPEGs para a mesma loja quando multiplos CNPJs
+    ou nomes marketplace diferentes convergem para um unico nome UpSeller.
+    """
+    buckets = {}
+    ordem = []
+
+    for cnpj, etiquetas_loja in (lojas_por_cnpj or {}).items():
+        nome_final = _resolver_nome_final_loja_saida(proc, cnpj, etiquetas_loja, estado)
+        chave = _normalizar_nome_loja_saida(nome_final) or str(cnpj).strip().lower()
+        bucket = buckets.get(chave)
+        if bucket is None:
+            bucket = {
+                "nome": nome_final or str(cnpj).strip() or "Loja_Desconhecida",
+                "cnpjs": [],
+                "etiquetas": [],
+            }
+            buckets[chave] = bucket
+            ordem.append(chave)
+
+        cnpj_txt = str(cnpj or "").strip()
+        if cnpj_txt and cnpj_txt not in bucket["cnpjs"]:
+            bucket["cnpjs"].append(cnpj_txt)
+        bucket["etiquetas"].extend(etiquetas_loja or [])
+
+    lojas_saida = []
+    for chave in ordem:
+        bucket = buckets[chave]
+        if len(bucket["cnpjs"]) > 1:
+            antes = len(bucket["etiquetas"])
+            try:
+                bucket["etiquetas"], duplicadas = proc.remover_duplicatas(bucket["etiquetas"])
+            except Exception:
+                duplicadas = []
+            removidas = max(0, antes - len(bucket["etiquetas"]))
+            cnpjs_fmt = ", ".join(bucket["cnpjs"])
+            msg = (
+                f"Consolidando loja '{bucket['nome']}' em 1 saida "
+                f"({len(bucket['cnpjs'])} origens: {cnpjs_fmt})"
+            )
+            if removidas > 0 or duplicadas:
+                msg += f" | {removidas or len(duplicadas)} duplicata(s) removida(s)"
+            adicionar_log(estado, msg, "warning")
+        lojas_saida.append(bucket)
+
+    return lojas_saida
+
+
 @app.route('/api/agrupar', methods=['POST'])
 @jwt_required()
 def api_agrupar():
@@ -2621,9 +2705,7 @@ def api_agrupar():
         if duplicadas:
             adicionar_log(estado, f"  Agrupamento: {len(duplicadas)} duplicatas removidas", "warning")
 
-        etiq_regular = [e for e in etiquetas_combinadas if e.get('tipo_especial') != 'cpf']
-        etiq_cpf = [e for e in etiquetas_combinadas if e.get('tipo_especial') == 'cpf']
-
+        # Todas as etiquetas juntas no mesmo PDF (regular, cpf, retirada)
         pasta_grupo = os.path.join(pasta_saida, nome_grupo)
         if not os.path.exists(pasta_grupo):
             os.makedirs(pasta_grupo)
@@ -2631,14 +2713,10 @@ def api_agrupar():
 
         total_pags = 0
 
-        if etiq_regular:
+        if etiquetas_combinadas:
             caminho_pdf = os.path.join(pasta_grupo, f"agrupado_{nome_grupo}_{timestamp}.pdf")
-            t, _, _, _, _ = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
+            t, _, _, _, _ = proc.gerar_pdf_loja(etiquetas_combinadas, caminho_pdf)
             total_pags += t
-
-        if etiq_cpf:
-            caminho_cpf = os.path.join(pasta_grupo, f"cpf_{nome_grupo}_{timestamp}.pdf")
-            total_pags += proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf)
 
         # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
         caminho_xlsx = os.path.join(pasta_grupo, f"resumo_{nome_grupo}_{timestamp}.xlsx")
@@ -2853,14 +2931,15 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 adicionar_log(estado, "Nenhuma duplicata encontrada", "info")
 
             adicionar_log(estado, "Separando etiquetas por loja...", "info")
-            lojas = proc.separar_por_loja(todas_etiquetas)
-            adicionar_log(estado, f"{len(lojas)} lojas para processar", "info")
+            lojas_por_cnpj = proc.separar_por_loja(todas_etiquetas)
+            lojas_saida = _agrupar_lojas_para_saida(proc, lojas_por_cnpj, estado)
+            adicionar_log(estado, f"{len(lojas_saida)} lojas para processar", "info")
             # Avisos sobre tipos especiais de etiquetas
             n_retirada = sum(1 for e in todas_etiquetas if e.get('tipo_especial') == 'retirada')
             if n_retirada > 0:
                 adicionar_log(estado, f"AVISO: {n_retirada} etiqueta(s) de RETIRADA (cliente retira na loja - sem endereço)", "warning")
 
-            total_etiquetas_lojas = sum(len(v) for v in lojas.values())
+            total_etiquetas_lojas = sum(len(item.get("etiquetas", []) or []) for item in lojas_saida)
             if total_etiquetas_lojas <= 0:
                 raise RuntimeError(
                     "Nenhuma etiqueta foi extraida dos PDFs do lote atual. "
@@ -2873,7 +2952,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 shutil.rmtree(pasta_saida)
             os.makedirs(pasta_saida, exist_ok=True)
 
-            estado["_etiquetas_por_cnpj"] = dict(lojas)
+            estado["_etiquetas_por_cnpj"] = dict(lojas_por_cnpj)
             estado["_proc_config"] = {
                 "largura_pt": proc.LARGURA_PT,
                 "altura_pt": proc.ALTURA_PT,
@@ -2884,14 +2963,17 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                 "fonte_produto": proc.fonte_produto,
                 "cnpj_loja": dict(proc.cnpj_loja),
                 "cnpj_nome": dict(proc.cnpj_nome),
+                "resumo_sku_somente": bool(resumo_sku_somente),
             }
 
             # Contar etiquetas sem XML/declaracao para aviso
             etiquetas_sem_nf = []
 
             resultado_lojas = []
-            for cnpj, etiquetas_loja in lojas.items():
-                nome_loja = proc.get_nome_loja(cnpj)
+            for loja_saida_info in lojas_saida:
+                nome_loja = str(loja_saida_info.get("nome", "") or "").strip() or "Loja_Desconhecida"
+                etiquetas_loja = loja_saida_info.get("etiquetas", []) or []
+                cnpjs_loja = [str(x).strip() for x in (loja_saida_info.get("cnpjs", []) or []) if str(x).strip()]
                 n_etiquetas = len(etiquetas_loja)
 
                 # Pular lojas sem etiquetas ou "Loja_Desconhecida" vazia
@@ -2916,34 +2998,17 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
 
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-                    etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf', 'retirada')]
-                    etiq_cpf = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
-                    etiq_retirada = [e for e in etiquetas_loja if e.get('tipo_especial') == 'retirada']
-
+                    # Todas as etiquetas vão no mesmo PDF (regular, cpf e retirada juntas)
                     total_pags = 0
                     n_simples = n_multi = com_xml = sem_xml = 0
                     pdf_nome = ''
 
-                    if etiq_regular:
+                    if etiquetas_loja:
                         caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
-                        t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiq_regular, caminho_pdf)
+                        t, ns, nm, cx, sx = proc.gerar_pdf_loja(etiquetas_loja, caminho_pdf)
                         total_pags += t
                         n_simples, n_multi, com_xml, sem_xml = ns, nm, cx, sx
                         pdf_nome = os.path.basename(caminho_pdf)
-
-                    if etiq_cpf:
-                        caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
-                        total_cpf = proc.gerar_pdf_cpf(etiq_cpf, caminho_cpf_pdf)
-                        total_pags += total_cpf
-                        if not pdf_nome:
-                            pdf_nome = os.path.basename(caminho_cpf_pdf)
-                        adicionar_log(estado, f"  {nome_loja}: {total_cpf} etiquetas CPF", "info")
-                    
-                    if etiq_retirada:
-                        caminho_retirada_pdf = os.path.join(pasta_loja, f"retirada_{nome_loja}_{timestamp}.pdf")
-                        total_retirada = proc.gerar_pdf_cpf(etiq_retirada, caminho_retirada_pdf)  # Usa mesmo formato do CPF
-                        total_pags += total_retirada
-                        adicionar_log(estado, f"  {nome_loja}: {total_retirada} etiquetas RETIRADA (cliente retira na loja - sem endereço)", "warning")
 
                     # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
                     caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
@@ -2967,7 +3032,7 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
 
                     info_loja = {
                         "nome": nome_loja,
-                        "cnpj": cnpj,
+                        "cnpj": ",".join(cnpjs_loja) if len(cnpjs_loja) > 1 else (cnpjs_loja[0] if cnpjs_loja else ""),
                         "etiquetas": n_etiquetas,
                         "paginas": total_pags,
                         "simples": n_simples,
@@ -3099,8 +3164,8 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     etiquetas_grupo = []
                     nomes_g = []
                     for c in cnpjs_grupo:
-                        if c in lojas:
-                            etiquetas_grupo.extend(lojas[c])
+                        if c in lojas_por_cnpj:
+                            etiquetas_grupo.extend(lojas_por_cnpj[c])
                             nomes_g.append(proc.get_nome_loja(c))
 
                     if len(nomes_g) < 2:
@@ -3110,23 +3175,17 @@ def _executar_processamento(user_id, sem_recorte=True, resumo_sku_somente=False,
                     try:
                         etiquetas_grupo, _ = proc.remover_duplicatas(etiquetas_grupo)
 
-                        etiq_reg_g = [e for e in etiquetas_grupo if e.get('tipo_especial') != 'cpf']
-                        etiq_cpf_g = [e for e in etiquetas_grupo if e.get('tipo_especial') == 'cpf']
-
+                        # Todas as etiquetas juntas no mesmo PDF (regular, cpf, retirada)
                         pasta_grupo = os.path.join(pasta_saida, nome_grupo)
                         if not os.path.exists(pasta_grupo):
                             os.makedirs(pasta_grupo)
                         timestamp_g = datetime.now().strftime("%Y%m%d_%H%M%S")
 
                         total_pags_g = 0
-                        if etiq_reg_g:
-                            caminho_agrup = os.path.join(pasta_grupo, f"agrupado_{nome_grupo}_{timestamp_g}.pdf")
-                            t_g, _, _, _, _ = proc.gerar_pdf_loja(etiq_reg_g, caminho_agrup)
+                        if etiquetas_grupo:
+                            caminho_agrup = os.path.join(pasta_grupo, f"etiquetas_{nome_grupo}_{timestamp_g}.pdf")
+                            t_g, _, _, _, _ = proc.gerar_pdf_loja(etiquetas_grupo, caminho_agrup)
                             total_pags_g += t_g
-
-                        if etiq_cpf_g:
-                            caminho_cpf_g = os.path.join(pasta_grupo, f"cpf_{nome_grupo}_{timestamp_g}.pdf")
-                            total_pags_g += proc.gerar_pdf_cpf(etiq_cpf_g, caminho_cpf_g)
 
                         # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
                         caminho_xlsx_g = os.path.join(pasta_grupo, f"resumo_{nome_grupo}_{timestamp_g}.xlsx")
@@ -3256,6 +3315,12 @@ _BAILEYS_LAST_START_TS = 0.0
 _BAILEYS_LOG_HANDLES = []
 _BACKGROUND_WORKERS_STARTED = False
 _BACKGROUND_WORKERS_LOCK = threading.Lock()
+_WHATSAPP_ENQUEUE_LOCKS = {}
+_WHATSAPP_ENQUEUE_LOCKS_LOCK = threading.Lock()
+_WHATSAPP_WORKER_RUN_LOCK = threading.Lock()
+_WHATSAPP_PHONE_SEND_LOCK = threading.Lock()
+_WHATSAPP_LAST_SENT_TS = {}
+_WHATSAPP_MIN_INTERVAL_SAME_PHONE = max(0, int(os.environ.get("WHATSAPP_MIN_INTERVAL_SAME_PHONE", "20") or 0))
 
 
 def _whatsapp_api_base_url() -> str:
@@ -3264,6 +3329,105 @@ def _whatsapp_api_base_url() -> str:
 
 def _agora_utc() -> datetime:
     return _agora_brasil()
+
+
+def _get_whatsapp_enqueue_lock(user_id: int) -> threading.Lock:
+    uid = int(user_id)
+    with _WHATSAPP_ENQUEUE_LOCKS_LOCK:
+        lock = _WHATSAPP_ENQUEUE_LOCKS.get(uid)
+        if lock is None:
+            lock = threading.Lock()
+            _WHATSAPP_ENQUEUE_LOCKS[uid] = lock
+        return lock
+
+
+def _normalizar_telefone_whatsapp(telefone: str) -> str:
+    numero = "".join(ch for ch in str(telefone or "") if ch.isdigit())
+    if len(numero) in (10, 11):
+        numero = "55" + numero
+    return numero
+
+
+def _normalizar_chave_whatsapp_queue(telefone: str, file_path: str, loja_nome: str = ""):
+    telefone_norm = _normalizar_telefone_whatsapp(telefone)
+
+    caminho = str(file_path or "").strip()
+    caminho_norm = os.path.normcase(os.path.abspath(caminho)) if caminho else ""
+    arquivo_base = os.path.basename(caminho_norm).strip().lower() if caminho_norm else ""
+    loja_norm = _re.sub(r"\s+", " ", str(loja_nome or "")).strip().casefold()
+    return telefone_norm, caminho_norm, arquivo_base, loja_norm
+
+
+def _whatsapp_worker_lock_path() -> str:
+    return os.path.join(_VOLUME_PATH, "whatsapp_queue_worker.lock")
+
+
+@contextmanager
+def _try_acquire_whatsapp_worker_lock():
+    os.makedirs(_VOLUME_PATH, exist_ok=True)
+    lock_path = _whatsapp_worker_lock_path()
+    handle = open(lock_path, "a+b")
+    acquired = False
+    try:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                acquired = True
+            except OSError:
+                acquired = False
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except OSError:
+                acquired = False
+        yield handle if acquired else None
+    finally:
+        try:
+            if acquired:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def _try_acquire_whatsapp_worker_guard():
+    with _try_acquire_whatsapp_worker_lock() as worker_lock:
+        if worker_lock is None:
+            yield None
+            return
+        acquired = _WHATSAPP_WORKER_RUN_LOCK.acquire(blocking=False)
+        try:
+            yield worker_lock if acquired else None
+        finally:
+            if acquired:
+                _WHATSAPP_WORKER_RUN_LOCK.release()
+
+
+def _chave_dedupe_batch_whatsapp(telefone: str, file_path: str, loja_nome: str = ""):
+    telefone_norm, caminho_norm, arquivo_base, loja_norm = _normalizar_chave_whatsapp_queue(
+        telefone, file_path, loja_nome
+    )
+    if not telefone_norm or not caminho_norm:
+        return None
+    return telefone_norm, caminho_norm, arquivo_base, loja_norm
 
 
 def _to_bool(value, default=False):
@@ -3278,10 +3442,45 @@ def _to_bool(value, default=False):
         return True
     if txt in ("0", "false", "no", "nao", "off"):
         return False
-    return default
+        return default
+
+
+def _to_int_list(value):
+    """Normaliza listas de IDs aceitando lista Python ou JSON string."""
+    if value is None:
+        return None
+
+    raw = value
+    if isinstance(raw, str):
+        txt = raw.strip()
+        if not txt:
+            return []
+        try:
+            raw = json.loads(txt)
+        except Exception:
+            raw = [txt]
+
+    if not isinstance(raw, (list, tuple, set)):
+        raw = [raw]
+
+    items = []
+    seen = set()
+    for item in raw:
+        try:
+            num = int(item)
+        except Exception:
+            continue
+        if num in seen or num <= 0:
+            continue
+        seen.add(num)
+        items.append(num)
+    return items
 
 
 def _baileys_healthy(timeout=2.0) -> bool:
+    from whatsapp_service import DEFAULT_PROVIDER
+    if DEFAULT_PROVIDER == "uazapi":
+        return True  # Baileys nao e usado com UAZAPI
     try:
         resp = requests.get(f"{_whatsapp_api_base_url()}/health", timeout=timeout)
         return resp.status_code == 200
@@ -3289,8 +3488,63 @@ def _baileys_healthy(timeout=2.0) -> bool:
         return False
 
 
+def _erro_sessao_whatsapp_desconectada(msg: str) -> bool:
+    texto = str(msg or "").strip().lower()
+    if not texto:
+        return False
+    sinais = (
+        "sessao nao conectada",
+        "sessão não conectada",
+        "session not connected",
+        "not connected",
+    )
+    return any(s in texto for s in sinais)
+
+
+def _whatsapp_provider_pronto(wa: WhatsAppService = None) -> tuple:
+    from whatsapp_service import DEFAULT_PROVIDER
+    if DEFAULT_PROVIDER != "uazapi":
+        return _baileys_healthy(), ""
+    try:
+        svc = wa or WhatsAppService()
+        status = svc.verificar_conexao() or {}
+        if status.get("connected"):
+            return True, ""
+        return False, str(status.get("error") or "Sessao nao conectada")
+    except Exception as e:
+        return False, str(e)
+
+
+def _aplicar_cooldown_envio_whatsapp(telefone: str):
+    numero = _normalizar_telefone_whatsapp(telefone)
+    intervalo = int(_WHATSAPP_MIN_INTERVAL_SAME_PHONE or 0)
+    if not numero or intervalo <= 0:
+        return
+    while True:
+        with _WHATSAPP_PHONE_SEND_LOCK:
+            agora_ts = time.time()
+            ultimo = float(_WHATSAPP_LAST_SENT_TS.get(numero, 0.0) or 0.0)
+            restante = intervalo - (agora_ts - ultimo)
+            if restante <= 0:
+                return
+        time.sleep(min(restante, 1.0))
+
+
+def _registrar_envio_whatsapp(telefone: str):
+    numero = _normalizar_telefone_whatsapp(telefone)
+    if not numero:
+        return
+    with _WHATSAPP_PHONE_SEND_LOCK:
+        _WHATSAPP_LAST_SENT_TS[numero] = time.time()
+
+
 def _garantir_baileys_rodando(motivo: str = "") -> bool:
-    """Tenta manter o baileys-api ativo (sem derrubar fluxo principal)."""
+    """Tenta manter o baileys-api ativo (sem derrubar fluxo principal).
+    Quando o provider é UAZAPI, Baileys não é necessário."""
+    from whatsapp_service import DEFAULT_PROVIDER
+    if DEFAULT_PROVIDER == "uazapi":
+        return True  # UAZAPI gerencia conexao na nuvem, Baileys desnecessario
+
     global _BAILEYS_PROC, _BAILEYS_LAST_START_TS
     if _baileys_healthy():
         return True
@@ -3667,46 +3921,48 @@ def _enviar_resumo_geral_whatsapp(user_id: int, pasta_saida: str, consolidado: b
     enfileirados = 0
     hoje_label = datetime.now().strftime("%d/%m/%Y")
     label = "Resumo Geral do Dia" if consolidado else "Resumo Geral"
+    with _get_whatsapp_enqueue_lock(uid):
+        for c in contatos:
+            telefone = str(getattr(c, "telefone", "") or "").strip()
+            if not telefone:
+                continue
+            # Enviar JPEG (imagem do resumo)
+            if not _ja_na_fila_whatsapp(uid, telefone, caminho_jpeg, label):
+                db.session.add(WhatsAppQueueItem(
+                    user_id=uid,
+                    batch_id=batch_id,
+                    origem="resumo_geral",
+                    loja_nome=label,
+                    telefone=telefone,
+                    pdf_path=caminho_jpeg,
+                    caption=f"{label} - {hoje_label}",
+                    status="pending",
+                    tentativas=0,
+                    max_tentativas=5,
+                    next_attempt_at=agora,
+                ))
+                enfileirados += 1
+            # Enviar XLSX (so no consolidado do fim do dia)
+            if caminho_xlsx and os.path.exists(caminho_xlsx) and not _ja_na_fila_whatsapp(uid, telefone, caminho_xlsx, label):
+                db.session.add(WhatsAppQueueItem(
+                    user_id=uid,
+                    batch_id=batch_id,
+                    origem="resumo_geral",
+                    loja_nome=label,
+                    telefone=telefone,
+                    pdf_path=caminho_xlsx,
+                    caption=f"{label} - {hoje_label}",
+                    status="pending",
+                    tentativas=0,
+                    max_tentativas=5,
+                    next_attempt_at=agora,
+                ))
+                enfileirados += 1
 
-    for c in contatos:
-        telefone = str(getattr(c, "telefone", "") or "").strip()
-        if not telefone:
-            continue
-        # Enviar JPEG (imagem do resumo)
-        if not _ja_na_fila_whatsapp(uid, telefone, caminho_jpeg):
-            db.session.add(WhatsAppQueueItem(
-                user_id=uid,
-                batch_id=batch_id,
-                origem="resumo_geral",
-                loja_nome=label,
-                telefone=telefone,
-                pdf_path=caminho_jpeg,
-                caption=f"{label} - {hoje_label}",
-                status="pending",
-                tentativas=0,
-                max_tentativas=5,
-                next_attempt_at=agora,
-            ))
-            enfileirados += 1
-        # Enviar XLSX (so no consolidado do fim do dia)
-        if caminho_xlsx and os.path.exists(caminho_xlsx) and not _ja_na_fila_whatsapp(uid, telefone, caminho_xlsx):
-            db.session.add(WhatsAppQueueItem(
-                user_id=uid,
-                batch_id=batch_id,
-                origem="resumo_geral",
-                loja_nome=label,
-                telefone=telefone,
-                pdf_path=caminho_xlsx,
-                caption=f"{label} - {hoje_label}",
-                status="pending",
-                tentativas=0,
-                max_tentativas=5,
-                next_attempt_at=agora,
-            ))
-            enfileirados += 1
+        if enfileirados:
+            db.session.commit()
 
     if enfileirados:
-        db.session.commit()
         _garantir_baileys_rodando(motivo="resumo_geral")
         tipo = "consolidado XLSX+JPEG" if consolidado else "parcial JPEG"
         print(f"[ResumoGeral] Enfileirados {enfileirados} item(ns) ({tipo})")
@@ -3851,29 +4107,16 @@ def _mesclar_lojas_agrupadas(pasta_saida: str, estado: dict, user_id: int):
         os.makedirs(pasta_temp, exist_ok=True)
         timestamp_g = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # Separar regular vs especial (cpf/retirada)
-        etiq_reg = [e for e in etiquetas_grupo if not e.get('tipo_especial')]
-        etiq_esp = [e for e in etiquetas_grupo if e.get('tipo_especial')]
-
+        # Todas as etiquetas juntas no mesmo PDF (regular, cpf, retirada)
         total_pags = 0
         pdf_name = ""
 
-        # Gerar PDF regular (com ordenacao + rodape) usando gerar_pdf_loja
-        if etiq_reg:
+        if etiquetas_grupo:
             caminho_pdf = os.path.join(pasta_temp, f"etiquetas_{nome_grupo}_{timestamp_g}.pdf")
-            t, _, _, _, _ = proc.gerar_pdf_loja(etiq_reg, caminho_pdf)
+            t, _, _, _, _ = proc.gerar_pdf_loja(etiquetas_grupo, caminho_pdf)
             total_pags += t
             pdf_name = os.path.basename(caminho_pdf)
-            print(f"[Agrupamento]   PDF regular: {t} paginas (ordenado por SKU)")
-
-        # Gerar PDF especial (cpf/retirada) se houver
-        if etiq_esp:
-            caminho_cpf = os.path.join(pasta_temp, f"retirada_{nome_grupo}_{timestamp_g}.pdf")
-            t_cpf = proc.gerar_pdf_cpf(etiq_esp, caminho_cpf)
-            total_pags += t_cpf
-            if not pdf_name:
-                pdf_name = os.path.basename(caminho_cpf)
-            print(f"[Agrupamento]   PDF especial: {t_cpf} paginas")
+            print(f"[Agrupamento]   PDF etiquetas: {t} paginas (ordenado por SKU)")
 
         # Gerar XLSX temporario → JPEG do resumo → deletar XLSX
         caminho_xlsx = os.path.join(pasta_temp, f"resumo_{nome_grupo}_{timestamp_g}.xlsx")
@@ -3922,6 +4165,7 @@ def _mesclar_lojas_agrupadas(pasta_saida: str, estado: dict, user_id: int):
             "xlsx": "",
         })
         lojas_resultado[:] = novas_lojas
+        ultimo_resultado["total_lojas"] = len(lojas_resultado)
         mesclou = True
         print(f"[Agrupamento] Grupo '{nome_grupo}' OK: {total_pags} pags, {total_etiq} etiq, {total_qtd} un")
 
@@ -4059,6 +4303,7 @@ def _renomear_pastas_saida_para_upseller(
 
     # Atualizar ultimo_resultado no estado e salvar em disco
     if ultimo_resultado:
+        ultimo_resultado["total_lojas"] = len(lojas_resultado)
         estado["ultimo_resultado"] = ultimo_resultado
         resultado_path = os.path.join(pasta_saida, "_ultimo_resultado.json")
         try:
@@ -4234,6 +4479,9 @@ def _executar_imprimir_direto(user_id: int, lojas_alvo: list = None) -> dict:
         return {"ok": False, "erro": "Nenhum PDF foi movido para o lote"}
 
     # Processar com Beka MKT
+    estado = _get_estado(user_id)
+    if estado is not None:
+        estado["_pdf_loja_map"] = dict(_pdf_loja_map)
     proc_result = _executar_processamento(
         user_id,
         sem_recorte=True,
@@ -4267,7 +4515,7 @@ def _executar_imprimir_direto(user_id: int, lojas_alvo: list = None) -> dict:
     pasta_saida = user.get_pasta_saida()
 
     # Salvar mapa PDF→UpSeller no estado para uso no agrupamento
-    if _pdf_loja_map:
+    if estado is not None:
         estado["_pdf_loja_map"] = dict(_pdf_loja_map)
 
     if _pdf_loja_map and resultado_proc:
@@ -4474,29 +4722,43 @@ def _enviar_email_para_contato_direto(user_id: int, contato_id: int) -> dict:
     return {"ok": total_ok > 0, "enviados": total_ok}
 
 
-def _ja_na_fila_whatsapp(uid: int, telefone: str, file_path: str) -> bool:
+def _ja_na_fila_whatsapp(uid: int, telefone: str, file_path: str, loja_nome: str = "") -> bool:
     """Verifica se um item identico ja esta pendente ou foi enviado recentemente (2h).
     Evita duplicacao tanto cross-batch (pendentes) quanto re-envio (recentes)."""
-    # 1) Pendente/enviando agora?
-    pendente = WhatsAppQueueItem.query.filter(
-        WhatsAppQueueItem.user_id == uid,
-        WhatsAppQueueItem.telefone == telefone,
-        WhatsAppQueueItem.pdf_path == file_path,
-        WhatsAppQueueItem.status.in_(["pending", "retry", "sending"]),
-    ).first()
-    if pendente:
-        return True
-    # 2) Enviado com sucesso nas ultimas 2h?
+    telefone_norm, caminho_norm, arquivo_base, loja_norm = _normalizar_chave_whatsapp_queue(
+        telefone, file_path, loja_nome
+    )
+    if not telefone_norm or not caminho_norm:
+        return False
+
     limite = _agora_utc() - timedelta(hours=2)
-    enviado = WhatsAppQueueItem.query.filter(
-        WhatsAppQueueItem.user_id == uid,
-        WhatsAppQueueItem.telefone == telefone,
-        WhatsAppQueueItem.pdf_path == file_path,
-        WhatsAppQueueItem.status == "sent",
-        WhatsAppQueueItem.sent_at >= limite,
-    ).first()
-    if enviado:
-        return True
+    candidatos = []
+    candidatos.extend(
+        WhatsAppQueueItem.query.filter(
+            WhatsAppQueueItem.user_id == uid,
+            WhatsAppQueueItem.status.in_(["pending", "retry", "sending"]),
+        ).all()
+    )
+    candidatos.extend(
+        WhatsAppQueueItem.query.filter(
+            WhatsAppQueueItem.user_id == uid,
+            WhatsAppQueueItem.status == "sent",
+            WhatsAppQueueItem.sent_at >= limite,
+        ).all()
+    )
+
+    for item in candidatos:
+        tel_item, caminho_item, arquivo_item, loja_item = _normalizar_chave_whatsapp_queue(
+            getattr(item, "telefone", ""),
+            getattr(item, "pdf_path", ""),
+            getattr(item, "loja_nome", ""),
+        )
+        if tel_item != telefone_norm:
+            continue
+        if caminho_item == caminho_norm:
+            return True
+        if loja_norm and loja_item == loja_norm and arquivo_base and arquivo_item == arquivo_base:
+            return True
     return False
 
 
@@ -4538,36 +4800,59 @@ def _enfileirar_envio_whatsapp_resultado(
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     agora = _agora_utc()
     enfileirados = 0
+    duplicados_batch = 0
     duplicados_cross = 0
-    for ent in entregas:
-        file_path = ent.get("file_path", ent.get("pdf_path", ""))
-        if not file_path:
-            continue
-        telefone_ent = ent.get("telefone", "")
-        # Cross-batch dedup: pular se pendente ou enviado recentemente
-        if _ja_na_fila_whatsapp(uid, telefone_ent, file_path):
-            duplicados_cross += 1
-            continue
-        db.session.add(WhatsAppQueueItem(
-            user_id=uid,
-            batch_id=batch_id,
-            origem=origem,
-            loja_nome=ent.get("loja", ""),
-            telefone=telefone_ent,
-            pdf_path=file_path,
-            caption=ent.get("caption", ""),
-            status="pending",
-            tentativas=0,
-            max_tentativas=5,
-            next_attempt_at=agora,
-        ))
-        enfileirados += 1
+    dedupe_batch = set()
+    with _get_whatsapp_enqueue_lock(uid):
+        for ent in entregas:
+            file_path = ent.get("file_path", ent.get("pdf_path", ""))
+            if not file_path:
+                continue
+            telefone_ent = ent.get("telefone", "")
+            loja_ent = ent.get("loja", "")
+            chave_batch = _chave_dedupe_batch_whatsapp(telefone_ent, file_path, loja_ent)
+            if chave_batch and chave_batch in dedupe_batch:
+                duplicados_batch += 1
+                print(f"[WhatsApp] Dedupe skip (batch): loja={loja_ent} tel={telefone_ent} arquivo={os.path.basename(file_path)}")
+                continue
+            if chave_batch:
+                dedupe_batch.add(chave_batch)
+            # Cross-batch dedup: pular se pendente ou enviado recentemente
+            if _ja_na_fila_whatsapp(uid, telefone_ent, file_path, loja_ent):
+                duplicados_cross += 1
+                print(f"[WhatsApp] Dedupe skip: loja={loja_ent} tel={telefone_ent} arquivo={os.path.basename(file_path)}")
+                continue
+            db.session.add(WhatsAppQueueItem(
+                user_id=uid,
+                batch_id=batch_id,
+                origem=origem,
+                loja_nome=loja_ent,
+                telefone=telefone_ent,
+                pdf_path=file_path,
+                caption=ent.get("caption", ""),
+                status="pending",
+                tentativas=0,
+                max_tentativas=5,
+                next_attempt_at=agora,
+            ))
+            enfileirados += 1
+        if enfileirados > 0:
+            db.session.commit()
+    if duplicados_batch:
+        print(f"[WhatsApp] {duplicados_batch} item(ns) ignorado(s) por dedup no batch atual")
     if duplicados_cross:
         print(f"[WhatsApp] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup")
     if enfileirados <= 0:
         db.session.rollback()
+        if duplicados_batch > 0 or duplicados_cross > 0:
+            return {
+                "ok": False,
+                "erro": "Todos os arquivos dessa selecao ja foram enviados recentemente no WhatsApp.",
+                "diagnostico": diagnostico,
+                "duplicados_batch": duplicados_batch,
+                "duplicados_ignorados": duplicados_cross,
+            }
         return {"ok": False, "erro": "Nenhum arquivo valido para enfileirar", "diagnostico": diagnostico}
-    db.session.commit()
 
     _garantir_baileys_rodando(motivo=f"queue:{origem}")
     return {
@@ -4609,30 +4894,52 @@ def _enfileirar_envio_whatsapp_para_contato(user_id: int, contato_id: int) -> di
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     agora = _agora_utc()
     enfileirados = 0
+    duplicados_batch = 0
     duplicados_cross = 0
-    for ent in entregas:
-        file_path = ent.get("file_path", ent.get("pdf_path", ""))
-        if not file_path:
-            continue
-        telefone_ent = ent.get("telefone", "")
-        # Cross-batch dedup: pular se pendente ou enviado recentemente
-        if _ja_na_fila_whatsapp(uid, telefone_ent, file_path):
-            duplicados_cross += 1
-            continue
-        db.session.add(WhatsAppQueueItem(
-            user_id=uid, batch_id=batch_id, origem="individual",
-            loja_nome=ent.get("loja", ""), telefone=telefone_ent,
-            pdf_path=file_path, caption=ent.get("caption", ""),
-            status="pending", tentativas=0, max_tentativas=5,
-            next_attempt_at=agora,
-        ))
-        enfileirados += 1
+    dedupe_batch = set()
+    with _get_whatsapp_enqueue_lock(uid):
+        for ent in entregas:
+            file_path = ent.get("file_path", ent.get("pdf_path", ""))
+            if not file_path:
+                continue
+            telefone_ent = ent.get("telefone", "")
+            loja_ent = ent.get("loja", "")
+            chave_batch = _chave_dedupe_batch_whatsapp(telefone_ent, file_path, loja_ent)
+            if chave_batch and chave_batch in dedupe_batch:
+                duplicados_batch += 1
+                print(f"[WhatsApp] Dedupe skip (batch contato): loja={loja_ent} tel={telefone_ent} arquivo={os.path.basename(file_path)}")
+                continue
+            if chave_batch:
+                dedupe_batch.add(chave_batch)
+            # Cross-batch dedup: pular se pendente ou enviado recentemente
+            if _ja_na_fila_whatsapp(uid, telefone_ent, file_path, loja_ent):
+                duplicados_cross += 1
+                print(f"[WhatsApp] Dedupe skip (contato): loja={loja_ent} tel={telefone_ent} arquivo={os.path.basename(file_path)}")
+                continue
+            db.session.add(WhatsAppQueueItem(
+                user_id=uid, batch_id=batch_id, origem="individual",
+                loja_nome=loja_ent, telefone=telefone_ent,
+                pdf_path=file_path, caption=ent.get("caption", ""),
+                status="pending", tentativas=0, max_tentativas=5,
+                next_attempt_at=agora,
+            ))
+            enfileirados += 1
+        if enfileirados > 0:
+            db.session.commit()
+    if duplicados_batch:
+        print(f"[WhatsApp] {duplicados_batch} item(ns) ignorado(s) por dedup no batch atual (contato)")
     if duplicados_cross:
         print(f"[WhatsApp] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup (contato)")
     if enfileirados <= 0:
         db.session.rollback()
+        if duplicados_batch > 0 or duplicados_cross > 0:
+            return {
+                "ok": False,
+                "erro": "Os arquivos desse contato ja foram enviados recentemente no WhatsApp.",
+                "duplicados_batch": duplicados_batch,
+                "duplicados_ignorados": duplicados_cross,
+            }
         return {"ok": False, "erro": "Nenhum arquivo valido para enfileirar"}
-    db.session.commit()
     _garantir_baileys_rodando(motivo="individual")
     return {"ok": True, "batch_id": batch_id, "total_entregas": enfileirados, "diagnostico": diagnostico}
 
@@ -4676,12 +4983,16 @@ def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: i
         lojas_filtro_norm = {str(x).strip().lower() for x in lojas_filtro if str(x).strip()}
 
     # Coletar TODOS os arquivos de TODAS as lojas do resultado
-    from whatsapp_delivery import _listar_arquivos_loja
+    from whatsapp_delivery import _listar_arquivos_loja, _deduplicar_entregas_logicas
     batch_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     agora = _agora_utc()
     enfileirados = 0
+    duplicados_batch = 0
     duplicados_cross = 0
-    dedupe = set()
+    duplicados_logicos = 0
+    dedupe_arquivos = set()
+    dedupe_batch = set()
+    candidatos = []
 
     for loja_info in lojas_resultado:
         nome = str((loja_info or {}).get("nome", "") or "")
@@ -4694,29 +5005,64 @@ def _enfileirar_whatsapp_todos_arquivos_para_contato(user_id: int, contato_id: i
 
         for file_path in arquivos:
             abs_path = os.path.abspath(file_path)
-            if abs_path in dedupe:
+            if abs_path in dedupe_arquivos:
                 continue
-            dedupe.add(abs_path)
+            dedupe_arquivos.add(abs_path)
+            candidatos.append({
+                "telefone": telefone,
+                "file_path": file_path,
+                "pdf_path": file_path,
+                "loja": nome,
+                "caption": f"{caption_base} - {os.path.basename(file_path)}",
+            })
+
+    candidatos, duplicados_logicos = _deduplicar_entregas_logicas(candidatos, "telefone")
+
+    with _get_whatsapp_enqueue_lock(uid):
+        for ent in candidatos:
+            file_path = ent.get("file_path", ent.get("pdf_path", ""))
+            nome = ent.get("loja", "")
+            chave_batch = _chave_dedupe_batch_whatsapp(telefone, file_path, nome)
+            if chave_batch and chave_batch in dedupe_batch:
+                duplicados_batch += 1
+                print(f"[ExecIndividual] Dedupe skip (batch): loja={nome} tel={telefone} arquivo={os.path.basename(file_path)}")
+                continue
+            if chave_batch:
+                dedupe_batch.add(chave_batch)
             # Cross-batch dedup: pular se pendente ou enviado recentemente
-            if _ja_na_fila_whatsapp(uid, telefone, file_path):
+            if _ja_na_fila_whatsapp(uid, telefone, file_path, nome):
                 duplicados_cross += 1
+                print(f"[ExecIndividual] Dedupe skip: loja={nome} tel={telefone} arquivo={os.path.basename(file_path)}")
                 continue
             db.session.add(WhatsAppQueueItem(
                 user_id=uid, batch_id=batch_id, origem="individual",
                 loja_nome=nome, telefone=telefone,
                 pdf_path=file_path,
-                caption=f"{caption_base} - {os.path.basename(file_path)}",
+                caption=ent.get("caption", ""),
                 status="pending", tentativas=0, max_tentativas=5,
                 next_attempt_at=agora,
             ))
             enfileirados += 1
+        if enfileirados > 0:
+            db.session.commit()
 
+    if duplicados_logicos:
+        print(f"[ExecIndividual] {duplicados_logicos} item(ns) logico(s) ignorado(s), mantendo apenas a versao mais recente")
+    if duplicados_batch:
+        print(f"[ExecIndividual] {duplicados_batch} item(ns) ignorado(s) por dedup no batch atual")
     if duplicados_cross:
         print(f"[ExecIndividual] {duplicados_cross} item(ns) ignorado(s) por cross-batch dedup")
     if enfileirados <= 0:
         db.session.rollback()
+        if duplicados_logicos > 0 or duplicados_batch > 0 or duplicados_cross > 0:
+            return {
+                "ok": False,
+                "erro": "Os arquivos desse contato ja foram enviados recentemente no WhatsApp.",
+                "duplicados_logicos": duplicados_logicos,
+                "duplicados_batch": duplicados_batch,
+                "duplicados_ignorados": duplicados_cross,
+            }
         return {"ok": False, "erro": "Nenhum arquivo encontrado no resultado"}
-    db.session.commit()
     _garantir_baileys_rodando(motivo="individual_direto")
     print(f"[ExecIndividual] Enfileirados {enfileirados} arquivo(s) direto para tel={telefone}")
     return {"ok": True, "batch_id": batch_id, "total_entregas": enfileirados}
@@ -4759,95 +5105,130 @@ def _status_batch_fila_whatsapp(user_id: int, batch_id: str) -> dict:
 
 def _processar_fila_whatsapp_once() -> int:
     """Processa ate 8 itens da fila. Retorna quantos itens foram pegos."""
-    agora = _agora_utc()
+    with _try_acquire_whatsapp_worker_guard() as worker_lock:
+        if worker_lock is None:
+            return 0
 
-    # Rearm de itens presos em "sending".
-    limite_stale = agora - timedelta(minutes=10)
-    stale = WhatsAppQueueItem.query.filter(
-        WhatsAppQueueItem.status == "sending",
-        WhatsAppQueueItem.updated_at < limite_stale
-    ).all()
-    for item in stale:
-        item.status = "retry"
-        item.next_attempt_at = agora
-        item.last_error = "Timeout interno: item rearmado automaticamente."
-    if stale:
-        db.session.commit()
+        agora = _agora_utc()
 
-    itens = WhatsAppQueueItem.query.filter(
-        WhatsAppQueueItem.status.in_(["pending", "retry"]),
-        WhatsAppQueueItem.next_attempt_at <= agora
-    ).order_by(
-        WhatsAppQueueItem.next_attempt_at.asc(),
-        WhatsAppQueueItem.id.asc()
-    ).limit(8).all()
-    if not itens:
-        return 0
-
-    if not _baileys_healthy():
-        _garantir_baileys_rodando(motivo="worker")
-        return len(itens)
-
-    wa = WhatsAppService()
-    for item in itens:
-        try:
-            # Re-verificar status atomicamente (protecao contra duplo worker)
-            fresh = WhatsAppQueueItem.query.get(item.id)
-            if not fresh or fresh.status not in ("pending", "retry"):
-                continue  # Ja foi processado por outro worker
-            fresh.status = "sending"
-            fresh.tentativas = (fresh.tentativas or 0) + 1
-            fresh.updated_at = _agora_utc()
+        # Rearm de itens presos em "sending".
+        limite_stale = agora - timedelta(minutes=10)
+        stale = WhatsAppQueueItem.query.filter(
+            WhatsAppQueueItem.status == "sending",
+            WhatsAppQueueItem.updated_at < limite_stale
+        ).all()
+        for item in stale:
+            item.status = "retry"
+            item.next_attempt_at = agora
+            item.last_error = "Timeout interno: item rearmado automaticamente."
+        if stale:
             db.session.commit()
-            item = fresh  # usar referencia atualizada
 
-            if not os.path.exists(item.pdf_path or ""):
-                raise FileNotFoundError(f"Arquivo nao encontrado: {item.pdf_path}")
+        itens = WhatsAppQueueItem.query.filter(
+            WhatsAppQueueItem.status.in_(["pending", "retry"]),
+            WhatsAppQueueItem.next_attempt_at <= agora
+        ).order_by(
+            WhatsAppQueueItem.next_attempt_at.asc(),
+            WhatsAppQueueItem.id.asc()
+        ).limit(8).all()
+        if not itens:
+            return 0
 
-            ext = os.path.splitext(item.pdf_path or "")[1].lower()
-            if ext in (".jpg", ".jpeg", ".png", ".webp"):
-                res = wa.enviar_imagem(item.telefone, item.pdf_path, item.caption or "")
-            else:
-                res = wa.enviar_arquivo(item.telefone, item.pdf_path, item.caption or "")
-            if res.get("success"):
-                item.status = "sent"
-                item.sent_at = _agora_utc()
-                item.message_id = (res.get("messageId") or "")[:190]
-                item.last_error = ""
-            else:
-                msg = (res.get("error") or "Falha desconhecida")[:500]
-                if (item.tentativas or 0) >= (item.max_tentativas or 5):
-                    item.status = "dead"
-                    item.last_error = msg
-                else:
-                    item.status = "retry"
-                    item.next_attempt_at = _agora_utc() + timedelta(
-                        seconds=_calc_backoff_seconds(item.tentativas or 1)
-                    )
-                    item.last_error = msg
-            item.updated_at = _agora_utc()
+        if not _baileys_healthy():
+            _garantir_baileys_rodando(motivo="worker")
+            return len(itens)
+
+        wa = WhatsAppService()
+        prov_pronto, prov_erro = _whatsapp_provider_pronto(wa)
+        if not prov_pronto:
+            msg = (prov_erro or "Sessao nao conectada")[:500]
+            for item in itens:
+                fresh = WhatsAppQueueItem.query.get(item.id)
+                if not fresh or fresh.status not in ("pending", "retry"):
+                    continue
+                fresh.status = "retry"
+                fresh.next_attempt_at = _agora_utc() + timedelta(minutes=2)
+                fresh.last_error = msg
+                fresh.updated_at = _agora_utc()
             db.session.commit()
-        except Exception as e:
-            db.session.rollback()
+            print(f"[WhatsAppWorker] Provedor indisponivel, itens rearmados para retry: {msg}")
+            return len(itens)
+
+        for item in itens:
             try:
-                item_ref = WhatsAppQueueItem.query.get(item.id)
-                if item_ref:
-                    item_ref.tentativas = (item_ref.tentativas or 0) + 1
-                    msg = str(e)[:500]
-                    if (item_ref.tentativas or 0) >= (item_ref.max_tentativas or 5):
-                        item_ref.status = "dead"
-                        item_ref.last_error = msg
+                _aplicar_cooldown_envio_whatsapp(item.telefone)
+
+                # Re-verificar status atomicamente (protecao contra duplo worker)
+                fresh = WhatsAppQueueItem.query.get(item.id)
+                if not fresh or fresh.status not in ("pending", "retry"):
+                    continue  # Ja foi processado por outro worker
+                fresh.status = "sending"
+                fresh.tentativas = (fresh.tentativas or 0) + 1
+                fresh.updated_at = _agora_utc()
+                db.session.commit()
+                item = fresh  # usar referencia atualizada
+
+                if not os.path.exists(item.pdf_path or ""):
+                    raise FileNotFoundError(f"Arquivo nao encontrado: {item.pdf_path}")
+
+                ext = os.path.splitext(item.pdf_path or "")[1].lower()
+                if ext in (".jpg", ".jpeg", ".png", ".webp"):
+                    res = wa.enviar_imagem(item.telefone, item.pdf_path, item.caption or "")
+                else:
+                    res = wa.enviar_arquivo(item.telefone, item.pdf_path, item.caption or "")
+                if res.get("success"):
+                    item.status = "sent"
+                    item.sent_at = _agora_utc()
+                    item.message_id = (res.get("messageId") or "")[:190]
+                    item.last_error = ""
+                else:
+                    msg = (res.get("error") or "Falha desconhecida")[:500]
+                    if _erro_sessao_whatsapp_desconectada(msg):
+                        item.status = "retry"
+                        item.tentativas = max(0, (item.tentativas or 1) - 1)
+                        item.next_attempt_at = _agora_utc() + timedelta(minutes=2)
+                        item.last_error = msg
+                    elif (item.tentativas or 0) >= (item.max_tentativas or 5):
+                        item.status = "dead"
+                        item.last_error = msg
                     else:
-                        item_ref.status = "retry"
-                        item_ref.next_attempt_at = _agora_utc() + timedelta(
-                            seconds=_calc_backoff_seconds(item_ref.tentativas or 1)
+                        item.status = "retry"
+                        item.next_attempt_at = _agora_utc() + timedelta(
+                            seconds=_calc_backoff_seconds(item.tentativas or 1)
                         )
-                        item_ref.last_error = msg
-                    item_ref.updated_at = _agora_utc()
-                    db.session.commit()
-            except Exception:
+                        item.last_error = msg
+                _registrar_envio_whatsapp(item.telefone)
+                item.updated_at = _agora_utc()
+                db.session.commit()
+            except Exception as e:
                 db.session.rollback()
-    return len(itens)
+                try:
+                    item_ref = WhatsAppQueueItem.query.get(item.id)
+                    if item_ref:
+                        msg = str(e)[:500]
+                        if _erro_sessao_whatsapp_desconectada(msg):
+                            item_ref.status = "retry"
+                            item_ref.next_attempt_at = _agora_utc() + timedelta(minutes=2)
+                            item_ref.last_error = msg
+                        else:
+                            item_ref.tentativas = (item_ref.tentativas or 0) + 1
+                            if (item_ref.tentativas or 0) >= (item_ref.max_tentativas or 5):
+                                item_ref.status = "dead"
+                                item_ref.last_error = msg
+                            else:
+                                item_ref.status = "retry"
+                                item_ref.next_attempt_at = _agora_utc() + timedelta(
+                                    seconds=_calc_backoff_seconds(item_ref.tentativas or 1)
+                                )
+                                item_ref.last_error = msg
+                        _registrar_envio_whatsapp(item_ref.telefone)
+                        if _erro_sessao_whatsapp_desconectada(msg):
+                            item_ref.tentativas = max(0, item_ref.tentativas or 0)
+                        item_ref.updated_at = _agora_utc()
+                        db.session.commit()
+                except Exception:
+                    db.session.rollback()
+        return len(itens)
 
 
 def _whatsapp_queue_worker_loop():
@@ -4927,7 +5308,7 @@ def _get_or_create_marketplace_api_config(user_id, marketplace: str = "shopee"):
         cfg = MarketplaceApiConfig(
             user_id=user_id,
             marketplace=mp,
-            api_base_url="https://openplatform.sandbox.test-stable.shopee.sg",
+            api_base_url="https://partner.test-stable.shopeemobile.com",
             status_conexao="nao_configurado",
             ativo=False,
         )
@@ -5026,7 +5407,7 @@ class _ShopeeOpenApiClient:
 
     def __init__(self, cfg: MarketplaceApiConfig):
         self.cfg = cfg
-        self.base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+        self.base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
         self.partner_id = str(cfg.partner_id or "").strip()
         self.partner_key = str(cfg.get_partner_key() or "").strip()
         self.shop_id = str(cfg.shop_id or "").strip()
@@ -6088,7 +6469,7 @@ def api_marketplace_shopee_debug_sign():
 
     redirect_url = _get_shopee_redirect_url()
     state = _build_shopee_oauth_state(user_id)
-    auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    auth_base = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
     query = {
         "partner_id": partner_id,
         "timestamp": ts,
@@ -6175,7 +6556,7 @@ def _shopee_exchange_code_for_tokens_fast(
     t0 = time.time()
     code_txt = str(code or "").strip()
     shop_txt = str(shop_id or "").strip()
-    base_url = (base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    base_url = (base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
 
     if not partner_id:
         return {"ok": False, "erro": "Partner ID nao configurado."}
@@ -6225,6 +6606,7 @@ def _shopee_exchange_code_for_tokens_fast(
         data = {"error": f"http_{resp.status_code}", "message": (resp.text or "")[:400]}
 
     print(f"[Shopee token/get] Status={resp.status_code} error={data.get('error','')} msg={data.get('message','')[:80]} total={int((t_resp-t0)*1000)}ms", flush=True, file=sys.stderr)
+    print(f"[Shopee token/get] FULL RESPONSE: {json.dumps(data, default=str)[:1000]}", flush=True, file=sys.stderr)
 
     if resp.status_code >= 400:
         msg = (data or {}).get("message") or (data or {}).get("error") or f"http_{resp.status_code}"
@@ -6260,7 +6642,7 @@ def _diagnosticar_partner_key_v2(cfg: MarketplaceApiConfig, partner_id: str, ts:
     Faz um GET simples no auth_partner para checar se a Shopee aceita o sign.
     Sem logica v1/v2 — apenas testa e reporta.
     """
-    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
     path = "/api/v2/shop/auth_partner"
     try:
         r = requests.get(
@@ -6354,7 +6736,7 @@ def api_marketplace_shopee_login_url():
         }), 400
 
     # Registrar OAuth pendente no DB (funciona cross-worker no Railway).
-    auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
+    auth_base = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
     _register_pending_oauth(user_id)
     auth_url = (
         f"{auth_base}{path}"
@@ -6416,7 +6798,7 @@ def api_marketplace_shopee_callback():
     # --- FASE 2: Decrypt + Exchange IMEDIATO ---
     partner_id = str(cfg.partner_id or "").strip()
     partner_key = str(cfg.get_partner_key() or "").strip()
-    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip()
+    base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip()
     print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms creds OK pid={partner_id} key={'SET' if partner_key else 'VAZIO'}", flush=True, file=sys.stderr)
 
     troca = _shopee_exchange_code_for_tokens_fast(
@@ -6479,7 +6861,7 @@ def api_marketplace_config_set():
     data = request.get_json(force=True, silent=True) or {}
 
     cfg.loja_nome = str(data.get("loja_nome", cfg.loja_nome or "") or "").strip()
-    cfg.api_base_url = str(data.get("api_base_url", cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg") or "").strip() or "https://openplatform.sandbox.test-stable.shopee.sg"
+    cfg.api_base_url = str(data.get("api_base_url", cfg.api_base_url or "https://partner.test-stable.shopeemobile.com") or "").strip() or "https://partner.test-stable.shopeemobile.com"
     cfg.partner_id = str(data.get("partner_id", cfg.partner_id or "") or "").strip()
     cfg.shop_id = str(data.get("shop_id", cfg.shop_id or "") or "").strip()
 
@@ -8604,10 +8986,17 @@ def api_whatsapp_contatos_salvar():
     if not telefone and contato:
         telefone = contato.telefone
 
+    lojas_enviado = "lojas" in data
+    grupos_enviado = "grupos" in data
+    lote_ids_enviado = "lote_ids" in data or "lote_ids_json" in data
+
     lojas = data.get("lojas", []) or []
     grupos = data.get("grupos", []) or []
     lojas = [str(x).strip() for x in lojas if str(x).strip()]
     grupos = [str(x).strip() for x in grupos if str(x).strip()]
+    lote_ids = _to_int_list(data.get("lote_ids"))
+    if lote_ids is None and "lote_ids_json" in data:
+        lote_ids = _to_int_list(data.get("lote_ids_json"))
 
     loja_cnpj = str(data.get("loja_cnpj", "") or "").strip()
     loja_nome = str(data.get("loja_nome", "") or "").strip()
@@ -8641,12 +9030,14 @@ def api_whatsapp_contatos_salvar():
             contato.nome_contato = data.get("nome_contato", contato.nome_contato)
         if "ativo" in data:
             contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
-        if lojas:
+        if lojas_enviado:
             contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
-        if grupos:
+        if grupos_enviado:
             contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
         if horarios is not None:
             contato.horarios_json = json.dumps(horarios, ensure_ascii=False)
+        if lote_ids_enviado:
+            contato.lote_ids_json = json.dumps(lote_ids or [], ensure_ascii=False)
         if "resumo_geral" in data:
             contato.resumo_geral = _to_bool(data.get("resumo_geral"), False)
         if "agendamento_ativo" in data:
@@ -8662,6 +9053,7 @@ def api_whatsapp_contatos_salvar():
             lojas_json=json.dumps(lojas, ensure_ascii=False),
             grupos_json=json.dumps(grupos, ensure_ascii=False),
             horarios_json=json.dumps(horarios or [], ensure_ascii=False),
+            lote_ids_json=json.dumps(lote_ids or [], ensure_ascii=False),
             ativo=_to_bool(data.get("ativo"), True),
             resumo_geral=_to_bool(data.get("resumo_geral"), False),
         )
@@ -9135,10 +9527,17 @@ def api_email_contatos_criar():
     if (not email_addr or "@" not in email_addr) and not contato:
         return jsonify({"erro": "Email invalido"}), 400
 
+    lojas_enviado = "lojas" in data
+    grupos_enviado = "grupos" in data
+    lote_ids_enviado = "lote_ids" in data or "lote_ids_json" in data
+
     lojas = data.get("lojas", []) or []
     grupos = data.get("grupos", []) or []
     lojas = [str(x).strip() for x in lojas if str(x).strip()]
     grupos = [str(x).strip() for x in grupos if str(x).strip()]
+    lote_ids = _to_int_list(data.get("lote_ids"))
+    if lote_ids is None and "lote_ids_json" in data:
+        lote_ids = _to_int_list(data.get("lote_ids_json"))
 
     loja_cnpj = str(data.get("loja_cnpj", "") or "").strip() or "ALVO_CUSTOM"
     # Horarios multiplos: [{"dias":["seg","ter"],"horas":["07:00","11:30"]}, ...]
@@ -9154,12 +9553,14 @@ def api_email_contatos_criar():
             contato.ativo = _to_bool(data.get("ativo"), contato.ativo)
         if loja_cnpj and loja_cnpj != "ALVO_CUSTOM":
             contato.loja_cnpj = loja_cnpj
-        if lojas:
+        if lojas_enviado:
             contato.lojas_json = json.dumps(lojas, ensure_ascii=False)
-        if grupos:
+        if grupos_enviado:
             contato.grupos_json = json.dumps(grupos, ensure_ascii=False)
         if horarios is not None:
             contato.horarios_json = json.dumps(horarios, ensure_ascii=False)
+        if lote_ids_enviado:
+            contato.lote_ids_json = json.dumps(lote_ids or [], ensure_ascii=False)
     else:
         contato = EmailContact(
             user_id=user_id,
@@ -9169,6 +9570,7 @@ def api_email_contatos_criar():
             lojas_json=json.dumps(lojas, ensure_ascii=False),
             grupos_json=json.dumps(grupos, ensure_ascii=False),
             horarios_json=json.dumps(horarios or [], ensure_ascii=False),
+            lote_ids_json=json.dumps(lote_ids or [], ensure_ascii=False),
             ativo=True,
         )
         db.session.add(contato)
@@ -9317,12 +9719,56 @@ def api_lotes_excluir(lote_id):
     lote = TimeLote.query.get(lote_id)
     if not lote or lote.user_id != user_id:
         return jsonify({"erro": "Nao encontrado"}), 404
+
+    contatos_wa_afetados = []
+    for c in WhatsAppContact.query.filter_by(user_id=user_id).all():
+        try:
+            ids = json.loads(c.lote_ids_json or '[]')
+        except Exception:
+            ids = []
+        novos_ids = [x for x in ids if x != lote_id]
+        if novos_ids != ids:
+            c.lote_ids_json = json.dumps(novos_ids, ensure_ascii=False)
+            contatos_wa_afetados.append(c)
+
+    contatos_email_afetados = []
+    for c in EmailContact.query.filter_by(user_id=user_id).all():
+        try:
+            ids = json.loads(c.lote_ids_json or '[]')
+        except Exception:
+            ids = []
+        novos_ids = [x for x in ids if x != lote_id]
+        if novos_ids != ids:
+            c.lote_ids_json = json.dumps(novos_ids, ensure_ascii=False)
+            contatos_email_afetados.append(c)
+
     db.session.delete(lote)
     db.session.commit()
 
     # Re-register scheduler jobs (remove the deleted lote's job)
     if hasattr(app, '_beka_scheduler') and app._beka_scheduler:
-        app._beka_scheduler.registrar_jobs_lotes(user_id)
+        try:
+            app._beka_scheduler.registrar_jobs_lotes(user_id)
+            for c in contatos_wa_afetados:
+                try:
+                    ids_restantes = json.loads(c.lote_ids_json or '[]')
+                except Exception:
+                    ids_restantes = []
+                if ids_restantes:
+                    app._beka_scheduler.remover_job_contato(c.id, 'whatsapp')
+                else:
+                    app._beka_scheduler.registrar_job_contato(c, 'whatsapp')
+            for c in contatos_email_afetados:
+                try:
+                    ids_restantes = json.loads(c.lote_ids_json or '[]')
+                except Exception:
+                    ids_restantes = []
+                if ids_restantes:
+                    app._beka_scheduler.remover_job_contato(c.id, 'email')
+                else:
+                    app._beka_scheduler.registrar_job_contato(c, 'email')
+        except Exception as e:
+            print(f"[LoteExcluir] Erro ao sincronizar jobs apos excluir lote #{lote_id}: {e}")
 
     return jsonify({"ok": True})
 
@@ -9725,6 +10171,15 @@ def api_agendamentos_executar_agora():
     modo = data.get("modo_pipeline", "completo")
 
     if modo == "direto":
+        lock_ok, lock_atual = _iniciar_acao_massa(user_id, "direto")
+        if not lock_ok:
+            return jsonify({
+                "erro": (
+                    f"Processo em massa em andamento ({(lock_atual or {}).get('acao', 'processando')}). "
+                    "Aguarde finalizar antes de iniciar o envio direto."
+                )
+            }), 409
+
         def _run_direto():
             with app.app_context():
                 print(f"[ExecDireto] Iniciando pipeline direto para user {user_id}...")
@@ -9735,6 +10190,10 @@ def api_agendamentos_executar_agora():
                 db.session.add(log_exec)
                 db.session.commit()
                 try:
+                    user = db.session.get(User, user_id)
+                    if not user:
+                        raise RuntimeError("Usuario nao encontrado")
+
                     # Extrair lojas dos contatos configurados (WhatsApp + Email), expandindo grupos
                     lojas_contatos = set()
                     for c in WhatsAppContact.query.filter_by(user_id=user_id, ativo=True).all():
@@ -9790,6 +10249,8 @@ def api_agendamentos_executar_agora():
                     log_exec.detalhes = json.dumps({"erro": str(e)}, ensure_ascii=False)
                     log_exec.fim = _agora_brasil()
                     db.session.commit()
+                finally:
+                    _finalizar_acao_massa(user_id, "direto")
                 print(f"[ExecDireto] Finalizado. Status: {log_exec.status}")
 
         def _run_direto_com_timeout():
@@ -9812,7 +10273,11 @@ def api_agendamentos_executar_agora():
                         db.session.commit()
 
         thread = threading.Thread(target=_run_direto_com_timeout, daemon=True)
-        thread.start()
+        try:
+            thread.start()
+        except Exception:
+            _finalizar_acao_massa(user_id, "direto")
+            raise
         return jsonify({"mensagem": "Envio direto iniciado em background"})
 
     beka_scheduler.executar_agora(user_id)
@@ -9832,6 +10297,15 @@ def api_contato_executar_agora(tipo, contato_id):
         contato = EmailContact.query.filter_by(id=contato_id, user_id=user_id).first()
     if not contato:
         return jsonify({"erro": "Contato nao encontrado"}), 404
+
+    lock_ok, lock_atual = _iniciar_acao_massa(user_id, "direto")
+    if not lock_ok:
+        return jsonify({
+            "erro": (
+                f"Processo em massa em andamento ({(lock_atual or {}).get('acao', 'processando')}). "
+                "Aguarde finalizar antes de iniciar um envio individual."
+            )
+        }), 409
 
     def _run_individual():
         with app.app_context():
@@ -9880,6 +10354,8 @@ def api_contato_executar_agora(tipo, contato_id):
                 log_exec.detalhes = json.dumps({"erro": str(e)}, ensure_ascii=False)
                 log_exec.fim = _agora_brasil()
                 db.session.commit()
+            finally:
+                _finalizar_acao_massa(user_id, "direto")
 
     def _run_individual_com_timeout():
         """Wrapper com timeout de 15 minutos para evitar travamento infinito."""
@@ -9902,7 +10378,11 @@ def api_contato_executar_agora(tipo, contato_id):
                     db.session.commit()
 
     thread = threading.Thread(target=_run_individual_com_timeout, daemon=True)
-    thread.start()
+    try:
+        thread.start()
+    except Exception:
+        _finalizar_acao_massa(user_id, "direto")
+        raise
     return jsonify({"mensagem": f"Execucao iniciada para contato #{contato_id}"})
 
 
@@ -9975,7 +10455,11 @@ if __name__ == '__main__':
                 resizable=True,
                 text_select=True,
             )
-            webview.start(debug=False)
+            webview.start(
+                debug=False,
+                private_mode=False,
+                storage_path=_WEBVIEW_STORAGE_DIR,
+            )
 
         except ImportError:
             print("[AVISO] pywebview nao instalado, abrindo no navegador...")
