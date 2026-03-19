@@ -5308,7 +5308,7 @@ def _get_or_create_marketplace_api_config(user_id, marketplace: str = "shopee"):
         cfg = MarketplaceApiConfig(
             user_id=user_id,
             marketplace=mp,
-            api_base_url="https://partner.test-stable.shopeemobile.com",
+            api_base_url="https://openplatform.sandbox.test-stable.shopee.sg",
             status_conexao="nao_configurado",
             ativo=False,
         )
@@ -5407,7 +5407,7 @@ class _ShopeeOpenApiClient:
 
     def __init__(self, cfg: MarketplaceApiConfig):
         self.cfg = cfg
-        self.base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
+        self.base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
         self.partner_id = str(cfg.partner_id or "").strip()
         self.partner_key = str(cfg.get_partner_key() or "").strip()
         self.shop_id = str(cfg.shop_id or "").strip()
@@ -6469,7 +6469,7 @@ def api_marketplace_shopee_debug_sign():
 
     redirect_url = _get_shopee_redirect_url()
     state = _build_shopee_oauth_state(user_id)
-    auth_base = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
+    auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
     query = {
         "partner_id": partner_id,
         "timestamp": ts,
@@ -6556,7 +6556,7 @@ def _shopee_exchange_code_for_tokens_fast(
     t0 = time.time()
     code_txt = str(code or "").strip()
     shop_txt = str(shop_id or "").strip()
-    base_url = (base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
+    base_url = (base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
 
     if not partner_id:
         return {"ok": False, "erro": "Partner ID nao configurado."}
@@ -6642,7 +6642,7 @@ def _diagnosticar_partner_key_v2(cfg: MarketplaceApiConfig, partner_id: str, ts:
     Faz um GET simples no auth_partner para checar se a Shopee aceita o sign.
     Sem logica v1/v2 — apenas testa e reporta.
     """
-    base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
+    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
     path = "/api/v2/shop/auth_partner"
     try:
         r = requests.get(
@@ -6736,7 +6736,7 @@ def api_marketplace_shopee_login_url():
         }), 400
 
     # Registrar OAuth pendente no DB (funciona cross-worker no Railway).
-    auth_base = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip().rstrip("/")
+    auth_base = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip().rstrip("/")
     _register_pending_oauth(user_id)
     auth_url = (
         f"{auth_base}{path}"
@@ -6798,7 +6798,7 @@ def api_marketplace_shopee_callback():
     # --- FASE 2: Decrypt + Exchange IMEDIATO ---
     partner_id = str(cfg.partner_id or "").strip()
     partner_key = str(cfg.get_partner_key() or "").strip()
-    base_url = (cfg.api_base_url or "https://partner.test-stable.shopeemobile.com").strip()
+    base_url = (cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg").strip()
     print(f"[CALLBACK] t={int((time.time()-t_start)*1000)}ms creds OK pid={partner_id} key={'SET' if partner_key else 'VAZIO'}", flush=True, file=sys.stderr)
 
     troca = _shopee_exchange_code_for_tokens_fast(
@@ -6861,7 +6861,7 @@ def api_marketplace_config_set():
     data = request.get_json(force=True, silent=True) or {}
 
     cfg.loja_nome = str(data.get("loja_nome", cfg.loja_nome or "") or "").strip()
-    cfg.api_base_url = str(data.get("api_base_url", cfg.api_base_url or "https://partner.test-stable.shopeemobile.com") or "").strip() or "https://partner.test-stable.shopeemobile.com"
+    cfg.api_base_url = str(data.get("api_base_url", cfg.api_base_url or "https://openplatform.sandbox.test-stable.shopee.sg") or "").strip() or "https://openplatform.sandbox.test-stable.shopee.sg"
     cfg.partner_id = str(data.get("partner_id", cfg.partner_id or "") or "").strip()
     cfg.shop_id = str(data.get("shop_id", cfg.shop_id or "") or "").strip()
 

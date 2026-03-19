@@ -582,7 +582,7 @@ class MarketplaceApiConfig(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
     marketplace = db.Column(db.String(40), default='shopee', nullable=False)
     loja_nome = db.Column(db.String(200), default='')
-    api_base_url = db.Column(db.String(300), default='https://partner.test-stable.shopeemobile.com')
+    api_base_url = db.Column(db.String(300), default='https://openplatform.sandbox.test-stable.shopee.sg')
 
     partner_id = db.Column(db.String(80), default='')
     partner_key_enc = db.Column(db.Text, default='')
@@ -659,7 +659,7 @@ class MarketplaceApiConfig(db.Model):
             "id": self.id,
             "marketplace": self.marketplace,
             "loja_nome": (self.loja_nome or '').strip(),
-            "api_base_url": (self.api_base_url or '').strip() or 'https://partner.test-stable.shopeemobile.com',
+            "api_base_url": (self.api_base_url or '').strip() or 'https://openplatform.sandbox.test-stable.shopee.sg',
             "partner_id": (self.partner_id or '').strip(),
             "shop_id": (self.shop_id or '').strip(),
             "status_conexao": (self.status_conexao or 'nao_configurado'),
