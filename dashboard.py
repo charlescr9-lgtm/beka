@@ -7330,22 +7330,44 @@ def api_marketplace_shopee_criar_pedido_teste():
             return jsonify({"status": "erro", "erro": "item_id obrigatorio"}), 400
 
         # Se model_id nao foi fornecido, buscar automaticamente
+        model_debug = {}
         if not model_id:
             model_resp = cli.get_model_list(item_id)
-            if model_resp.get("ok"):
-                models = (model_resp.get("data") or {}).get("response", {}).get("model", [])
-                if models:
-                    # Pegar o primeiro modelo com estoque
-                    for m in models:
-                        stocks = m.get("stock_info_v2", {}).get("seller_stock", [])
-                        if stocks and stocks[0].get("stock", 0) > 0:
-                            model_id = m.get("model_id")
+            model_debug["raw_ok"] = model_resp.get("ok")
+            model_debug["raw_error"] = (model_resp.get("data") or {}).get("error")
+            model_debug["raw_message"] = (model_resp.get("data") or {}).get("message")
+            resp_data = (model_resp.get("data") or {}).get("response", {})
+            models = resp_data.get("model", [])
+            model_debug["models_count"] = len(models)
+            if models:
+                model_debug["first_model_keys"] = list(models[0].keys()) if models[0] else []
+                # Pegar o primeiro modelo com estoque (ou qualquer modelo)
+                for m in models:
+                    mid = m.get("model_id")
+                    if mid is not None and mid != 0:
+                        # Verificar estoque em varias estruturas possiveis
+                        stocks_v2 = (m.get("stock_info_v2") or {}).get("seller_stock", [])
+                        stocks_v1 = m.get("stock_info", [])
+                        stock_val = m.get("stock", 0)
+                        if stocks_v2 and stocks_v2[0].get("stock", 0) > 0:
+                            model_id = mid
                             break
-                    if not model_id and models:
-                        model_id = models[0].get("model_id")
+                        elif stocks_v1:
+                            model_id = mid
+                            break
+                        elif stock_val > 0:
+                            model_id = mid
+                            break
+                if not model_id and models:
+                    # Pegar qualquer model_id valido
+                    for m in models:
+                        mid = m.get("model_id")
+                        if mid is not None and mid != 0:
+                            model_id = mid
+                            break
 
         if not model_id:
-            return jsonify({"status": "erro", "erro": "model_id nao encontrado. Item pode nao ter models."}), 400
+            return jsonify({"status": "erro", "erro": "model_id nao encontrado. Item pode nao ter models.", "debug": model_debug}), 400
 
         item_list = [{
             "item_id": int(item_id),
