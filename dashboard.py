@@ -5567,8 +5567,31 @@ class _ShopeeOpenApiClient:
 
     def get_item_base_info(self, item_id_list):
         """Retorna info basica de itens."""
-        params = {"item_id_list": ",".join(str(i) for i in item_id_list)}
+        ids_str = ",".join(str(i) for i in item_id_list)
+        params = {"item_id_list": ids_str}
         return self._request("GET", "/api/v2/product/get_item_base_info", params=params, with_auth=True)
+
+    def get_model_list(self, item_id):
+        """Retorna lista de modelos/variacoes de um item."""
+        params = {"item_id": int(item_id)}
+        return self._request("GET", "/api/v2/product/get_model_list", params=params, with_auth=True)
+
+    def init_tier_variation(self, item_id, tier_variation, model_list):
+        """Inicializa variacoes de tier para um item (necessario para preco)."""
+        body = {
+            "item_id": int(item_id),
+            "tier_variation": tier_variation,
+            "model": model_list,
+        }
+        return self._request("POST", "/api/v2/product/init_tier_variation", body=body, with_auth=True)
+
+    def update_price(self, item_id, price_list):
+        """Atualiza preco de um item."""
+        body = {
+            "item_id": int(item_id),
+            "price_list": price_list,
+        }
+        return self._request("POST", "/api/v2/product/update_price", body=body, with_auth=True)
 
     def get_logistics_channel(self):
         """Lista canais de logistica disponiveis."""
@@ -7004,7 +7027,7 @@ def api_marketplace_reconectar():
 @app.route('/api/marketplace/shopee/diagnostico-itens', methods=['GET'])
 @jwt_required()
 def api_marketplace_shopee_diagnostico_itens():
-    """Diagnostico: lista itens e seu status na loja sandbox."""
+    """Diagnostico completo: lista itens, base info, modelos e preco."""
     user_id = int(get_jwt_identity())
     cfg = MarketplaceApiConfig.query.filter_by(user_id=user_id, marketplace="shopee").first()
     if not cfg:
@@ -7012,26 +7035,96 @@ def api_marketplace_shopee_diagnostico_itens():
     cli, err = _marketplace_cfg_to_client(cfg)
     if not cli:
         return jsonify({"status": "erro", "mensagem": err or "Token expirado"}), 400
+    result = {"status": "ok", "items": [], "errors": []}
     try:
-        # Get item list
-        item_list_resp = cli.get_item_list(item_status="NORMAL")
-        items = []
-        item_ids = []
-        for it in ((item_list_resp.get("response") or {}).get("item") or []):
-            items.append(it)
-            item_ids.append(it.get("item_id"))
-        # Get base info for those items
-        base_info = {}
+        # 1. Get item list (raw response from Shopee wrapper)
+        raw = cli.get_item_list(item_status="NORMAL")
+        raw_resp = (raw.get("response") or raw.get("data", {}).get("response") or {})
+        item_entries = raw_resp.get("item") or []
+        result["item_count"] = len(item_entries)
+        item_ids = [it.get("item_id") for it in item_entries if it.get("item_id")]
+
+        # 2. Get base info for items
         if item_ids:
             try:
-                bi_resp = cli.get_item_base_info(item_ids[:20])
-                for it in ((bi_resp.get("response") or {}).get("item_list") or []):
-                    base_info[it.get("item_id")] = it
+                bi_raw = cli.get_item_base_info(item_ids[:10])
+                bi_resp = (bi_raw.get("response") or bi_raw.get("data", {}).get("response") or {})
+                bi_items = bi_resp.get("item_list") or []
+                for it in bi_items:
+                    item_summary = {
+                        "item_id": it.get("item_id"),
+                        "item_name": it.get("item_name"),
+                        "item_status": it.get("item_status"),
+                        "price_info": it.get("price_info"),
+                        "has_model": it.get("has_model"),
+                        "stock_info_v2": it.get("stock_info_v2"),
+                        "image": it.get("image"),
+                        "condition": it.get("condition"),
+                        "brand": it.get("brand"),
+                        "logistic_info": it.get("logistic_info"),
+                    }
+                    # 3. Get model list for each item
+                    try:
+                        ml_raw = cli.get_model_list(it["item_id"])
+                        ml_resp = (ml_raw.get("response") or ml_raw.get("data", {}).get("response") or {})
+                        item_summary["model_list"] = ml_resp.get("model") or []
+                        item_summary["tier_variation"] = ml_resp.get("tier_variation") or []
+                        item_summary["model_raw_error"] = ml_raw.get("error") or ml_raw.get("data", {}).get("error")
+                    except Exception as me:
+                        item_summary["model_error"] = str(me)
+                    result["items"].append(item_summary)
             except Exception as e2:
-                base_info = {"error": str(e2)}
-        return jsonify({"status": "ok", "items": items, "base_info": base_info, "total": len(items), "raw_item_list": item_list_resp})
+                result["errors"].append(f"base_info: {e2}")
+                # Fallback: just list raw items
+                result["items"] = item_entries
+        result["raw_item_list_error"] = raw.get("error") or raw.get("data", {}).get("error")
     except Exception as e:
-        return jsonify({"status": "erro", "mensagem": str(e)}), 500
+        result["status"] = "erro"
+        result["errors"].append(str(e))
+    return jsonify(result)
+
+@app.route('/api/marketplace/shopee/fix-produto/<int:item_id>', methods=['POST'])
+@jwt_required()
+def api_marketplace_shopee_fix_produto(item_id):
+    """Tenta corrigir um produto para funcionar com Test Order."""
+    user_id = int(get_jwt_identity())
+    cfg = MarketplaceApiConfig.query.filter_by(user_id=user_id, marketplace="shopee").first()
+    if not cfg:
+        return jsonify({"status": "erro", "mensagem": "Shopee nao configurada"}), 400
+    cli, err = _marketplace_cfg_to_client(cfg)
+    if not cli:
+        return jsonify({"status": "erro", "mensagem": err or "Token expirado"}), 400
+    steps = []
+    try:
+        # 1. Check current model list
+        ml_raw = cli.get_model_list(item_id)
+        ml_resp = (ml_raw.get("response") or ml_raw.get("data", {}).get("response") or {})
+        models = ml_resp.get("model") or []
+        steps.append({"step": "get_model_list", "models": models, "error": ml_raw.get("error") or ml_raw.get("data", {}).get("error")})
+
+        # 2. If no models, init tier variation with a default model
+        if not models:
+            init_resp = cli.init_tier_variation(
+                item_id,
+                tier_variation=[],
+                model_list=[{"original_price": 59.9, "seller_stock": [{"stock": 50}]}]
+            )
+            steps.append({"step": "init_tier_variation", "response": init_resp})
+            # Re-check models
+            ml_raw2 = cli.get_model_list(item_id)
+            ml_resp2 = (ml_raw2.get("response") or ml_raw2.get("data", {}).get("response") or {})
+            models = ml_resp2.get("model") or []
+            steps.append({"step": "recheck_models", "models": models})
+
+        # 3. Try to update price if models exist
+        if models:
+            model_id = models[0].get("model_id", 0)
+            price_resp = cli.update_price(item_id, [{"model_id": model_id, "original_price": 59.9}])
+            steps.append({"step": "update_price", "response": price_resp})
+
+    except Exception as e:
+        steps.append({"step": "error", "message": str(e)})
+    return jsonify({"status": "ok", "item_id": item_id, "steps": steps})
 
 @app.route('/api/marketplace/shopee/criar-produto-teste', methods=['POST'])
 @jwt_required()
