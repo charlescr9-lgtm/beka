@@ -7047,18 +7047,44 @@ def api_marketplace_shopee_criar_produto_teste():
         if not logistic_info:
             logistic_info = [{"logistic_id": 0, "enabled": True}]
 
-        # 3. Upload de imagem placeholder
-        img_ret = cli.upload_image_url("https://via.placeholder.com/600x600.png?text=Produto+Teste")
+        # 3. Upload de imagem placeholder (gerar PNG simples em memoria)
         image_ids = []
-        if img_ret.get("ok"):
-            img_info = ((img_ret.get("data") or {}).get("response") or {}).get("image_info") or {}
-            if isinstance(img_info, dict) and img_info.get("image_id"):
-                image_ids = [img_info["image_id"]]
-            elif isinstance(img_info, list):
-                for ii in img_info:
-                    iid = ii.get("image_id") or ii.get("shopee_image_url") or ""
-                    if iid:
-                        image_ids.append(iid)
+        try:
+            import io, struct, zlib
+            # Gerar PNG 100x100 laranja simples
+            width, height = 100, 100
+            def create_png(w, h, r, g, b):
+                raw = b''
+                for _ in range(h):
+                    raw += b'\x00' + bytes([r, g, b]) * w
+                def chunk(ctype, data):
+                    c = ctype + data
+                    return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+                ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+                return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
+            png_bytes = create_png(width, height, 255, 140, 0)
+            import base64 as b64mod
+            png_b64 = b64mod.b64encode(png_bytes).decode()
+            # Upload via Shopee media space
+            up_ret = cli._request("POST", "/api/v2/media_space/upload_image", body={"image": png_b64}, with_auth=True)
+            if up_ret.get("ok"):
+                img_info = ((up_ret.get("data") or {}).get("response") or {}).get("image_info") or {}
+                if isinstance(img_info, dict) and img_info.get("image_id"):
+                    image_ids = [img_info["image_id"]]
+            # Fallback: tentar via URL
+            if not image_ids:
+                up_ret2 = cli._request("POST", "/api/v2/media_space/upload_image", body={"image_url_list": ["https://placehold.co/600x600/orange/white?text=TEST"]}, with_auth=True)
+                if up_ret2.get("ok"):
+                    img_info2 = ((up_ret2.get("data") or {}).get("response") or {}).get("image_info") or {}
+                    if isinstance(img_info2, dict) and img_info2.get("image_id"):
+                        image_ids = [img_info2["image_id"]]
+                    elif isinstance(img_info2, list):
+                        for ii in img_info2:
+                            iid = ii.get("image_id") or ""
+                            if iid:
+                                image_ids.append(iid)
+        except Exception:
+            pass
 
         # 4. Criar 3 produtos de teste
         produtos_teste = [
@@ -7082,6 +7108,7 @@ def api_marketplace_shopee_criar_produto_teste():
                 "item_status": "NORMAL",
                 "condition": "NEW",
                 "brand": {"brand_id": brand_id, "original_brand_name": brand_name},
+                "dimension": {"package_length": 20, "package_width": 15, "package_height": 5},
             }
             ret = cli._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
             if ret.get("ok"):
