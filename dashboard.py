@@ -7074,7 +7074,7 @@ def api_marketplace_shopee_criar_produto_teste():
                 "original_price": p["price"],
                 "description": p["desc"],
                 "item_name": p["name"],
-                "normal_stock": p["stock"],
+                "seller_stock": [{"stock": p["stock"]}],
                 "weight": 0.3,
                 "category_id": cat_id,
                 "image": {"image_id_list": image_ids} if image_ids else {},
