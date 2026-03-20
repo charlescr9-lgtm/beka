@@ -7037,9 +7037,10 @@ def api_marketplace_shopee_diagnostico_itens():
         return jsonify({"status": "erro", "mensagem": err or "Token expirado"}), 400
     result = {"status": "ok", "items": [], "errors": []}
     try:
-        # 1. Get item list (raw response from Shopee wrapper)
+        # 1. Get item list - _request returns {"ok":bool, "data": {"response":{...}}}
         raw = cli.get_item_list(item_status="NORMAL")
-        raw_resp = (raw.get("response") or raw.get("data", {}).get("response") or {})
+        raw_data = raw.get("data") or {}
+        raw_resp = raw_data.get("response") or {}
         item_entries = raw_resp.get("item") or []
         result["item_count"] = len(item_entries)
         item_ids = [it.get("item_id") for it in item_entries if it.get("item_id")]
@@ -7048,7 +7049,7 @@ def api_marketplace_shopee_diagnostico_itens():
         if item_ids:
             try:
                 bi_raw = cli.get_item_base_info(item_ids[:10])
-                bi_resp = (bi_raw.get("response") or bi_raw.get("data", {}).get("response") or {})
+                bi_resp = (bi_raw.get("data") or {}).get("response") or {}
                 bi_items = bi_resp.get("item_list") or []
                 for it in bi_items:
                     item_summary = {
@@ -7066,10 +7067,10 @@ def api_marketplace_shopee_diagnostico_itens():
                     # 3. Get model list for each item
                     try:
                         ml_raw = cli.get_model_list(it["item_id"])
-                        ml_resp = (ml_raw.get("response") or ml_raw.get("data", {}).get("response") or {})
+                        ml_resp = (ml_raw.get("data") or {}).get("response") or {}
                         item_summary["model_list"] = ml_resp.get("model") or []
                         item_summary["tier_variation"] = ml_resp.get("tier_variation") or []
-                        item_summary["model_raw_error"] = ml_raw.get("error") or ml_raw.get("data", {}).get("error")
+                        item_summary["model_raw_error"] = (ml_raw.get("data") or {}).get("error")
                     except Exception as me:
                         item_summary["model_error"] = str(me)
                     result["items"].append(item_summary)
@@ -7077,7 +7078,7 @@ def api_marketplace_shopee_diagnostico_itens():
                 result["errors"].append(f"base_info: {e2}")
                 # Fallback: just list raw items
                 result["items"] = item_entries
-        result["raw_item_list_error"] = raw.get("error") or raw.get("data", {}).get("error")
+        result["raw_item_list_error"] = (raw.get("data") or {}).get("error")
     except Exception as e:
         result["status"] = "erro"
         result["errors"].append(str(e))
@@ -7098,9 +7099,9 @@ def api_marketplace_shopee_fix_produto(item_id):
     try:
         # 1. Check current model list
         ml_raw = cli.get_model_list(item_id)
-        ml_resp = (ml_raw.get("response") or ml_raw.get("data", {}).get("response") or {})
+        ml_resp = (ml_raw.get("data") or {}).get("response") or {}
         models = ml_resp.get("model") or []
-        steps.append({"step": "get_model_list", "models": models, "error": ml_raw.get("error") or ml_raw.get("data", {}).get("error")})
+        steps.append({"step": "get_model_list", "models": models, "error": (ml_raw.get("data") or {}).get("error")})
 
         # 2. If no models, init tier variation with a default model
         if not models:
