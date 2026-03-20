@@ -7047,44 +7047,41 @@ def api_marketplace_shopee_criar_produto_teste():
         if not logistic_info:
             logistic_info = [{"logistic_id": 0, "enabled": True}]
 
-        # 3. Upload de imagem placeholder (gerar PNG simples em memoria)
+        # 3. Upload de imagem placeholder (multipart/form-data obrigatorio pela Shopee)
         image_ids = []
         try:
-            import io, struct, zlib
-            # Gerar PNG 100x100 laranja simples
-            width, height = 100, 100
-            def create_png(w, h, r, g, b):
-                raw = b''
-                for _ in range(h):
-                    raw += b'\x00' + bytes([r, g, b]) * w
-                def chunk(ctype, data):
-                    c = ctype + data
-                    return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
-                ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
-                return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b'')
-            png_bytes = create_png(width, height, 255, 140, 0)
-            import base64 as b64mod
-            png_b64 = b64mod.b64encode(png_bytes).decode()
-            # Upload via Shopee media space
-            up_ret = cli._request("POST", "/api/v2/media_space/upload_image", body={"image": png_b64}, with_auth=True)
-            if up_ret.get("ok"):
-                img_info = ((up_ret.get("data") or {}).get("response") or {}).get("image_info") or {}
-                if isinstance(img_info, dict) and img_info.get("image_id"):
-                    image_ids = [img_info["image_id"]]
-            # Fallback: tentar via URL
-            if not image_ids:
-                up_ret2 = cli._request("POST", "/api/v2/media_space/upload_image", body={"image_url_list": ["https://placehold.co/600x600/orange/white?text=TEST"]}, with_auth=True)
-                if up_ret2.get("ok"):
-                    img_info2 = ((up_ret2.get("data") or {}).get("response") or {}).get("image_info") or {}
-                    if isinstance(img_info2, dict) and img_info2.get("image_id"):
-                        image_ids = [img_info2["image_id"]]
-                    elif isinstance(img_info2, list):
-                        for ii in img_info2:
-                            iid = ii.get("image_id") or ""
-                            if iid:
-                                image_ids.append(iid)
-        except Exception:
-            pass
+            import struct, zlib
+            # Gerar PNG 200x200 laranja
+            w, h = 200, 200
+            raw = b''
+            for _ in range(h):
+                raw += b'\x00' + bytes([255, 140, 0]) * w
+            def _chunk(ct, d):
+                c = ct + d
+                return struct.pack('>I', len(d)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+            ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+            png_bytes = b'\x89PNG\r\n\x1a\n' + _chunk(b'IHDR', ihdr) + _chunk(b'IDAT', zlib.compress(raw)) + _chunk(b'IEND', b'')
+
+            # Upload via multipart/form-data (nao usa _request pois precisa de files=)
+            path = "/api/v2/media_space/upload_image"
+            ts = cli._timestamp()
+            sign = cli._sign(path, ts, cli.access_token, cli.shop_id)
+            params = {
+                "partner_id": cli.partner_id, "timestamp": ts, "sign": sign,
+                "access_token": cli.access_token, "shop_id": cli.shop_id,
+            }
+            url = f"{cli.base_url}{path}"
+            resp_img = requests.post(url, params=params, files={"image": ("test.png", png_bytes, "image/png")}, timeout=30)
+            img_data = resp_img.json() if resp_img.status_code < 400 else {}
+            img_info = (img_data.get("response") or {}).get("image_info") or {}
+            if isinstance(img_info, dict) and img_info.get("image_id"):
+                image_ids = [img_info["image_id"]]
+            elif isinstance(img_info, list):
+                for ii in img_info:
+                    if ii.get("image_id"):
+                        image_ids.append(ii["image_id"])
+        except Exception as img_err:
+            print(f"[SHOPEE] Image upload error: {img_err}", flush=True, file=sys.stderr)
 
         # 4. Criar 3 produtos de teste
         produtos_teste = [
