@@ -6819,7 +6819,9 @@ def api_marketplace_shopee_callback():
             db.session.commit()
         except Exception:
             pass
-        return redirect('/?shopee_login=erro&msg=' + quote_plus(troca.get("erro") or "Falha ao obter token Shopee."))
+        detail = json.dumps(troca.get("data") or {}, default=str)[:300]
+        msg_full = (troca.get("erro") or "Falha ao obter token Shopee.") + " | response: " + detail
+        return redirect('/?shopee_login=erro&msg=' + quote_plus(msg_full))
 
     cfg.shop_id = str(troca.get("shop_id") or shop_id or cfg.shop_id or "").strip()
     cfg.set_access_token(str(troca.get("access_token") or "").strip())
