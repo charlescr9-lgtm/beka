@@ -5482,13 +5482,16 @@ class _ShopeeOpenApiClient:
         if resp.status_code >= 400 or str((data or {}).get("error") or "").strip():
             return {"ok": False, "data": data, "http_status": resp.status_code}
 
-        payload = (data or {}).get("response") or {}
+        payload = (data or {}).get("response") or data or {}
+        shop_from = payload.get("shop_id") or ""
+        if not shop_from and isinstance(payload.get("shop_id_list"), list) and payload["shop_id_list"]:
+            shop_from = payload["shop_id_list"][0]
         return {
             "ok": True,
             "access_token": str(payload.get("access_token") or "").strip(),
             "refresh_token": str(payload.get("refresh_token") or "").strip(),
             "expire_in": int(payload.get("expire_in") or 0),
-            "shop_id": str(payload.get("shop_id") or self.shop_id).strip(),
+            "shop_id": str(shop_from or self.shop_id).strip(),
             "data": data,
         }
 
