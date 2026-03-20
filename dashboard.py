@@ -7381,7 +7381,20 @@ def api_marketplace_shopee_criar_pedido_teste():
                             break
 
         if not model_id:
-            return jsonify({"status": "erro", "erro": "model_id nao encontrado. Item pode nao ter models.", "debug": model_debug}), 400
+            # Para itens sem variações (tier_variation=[]), model_id=0 é o default
+            # Verificar via get_item_base_info se o item existe
+            base_info_resp = cli.get_item_base_info([item_id])
+            base_data = (base_info_resp.get("data") or {}).get("response", {}).get("item_list", [])
+            model_debug["base_info_count"] = len(base_data)
+            if base_data:
+                bi = base_data[0]
+                model_debug["has_model"] = bi.get("has_model", False)
+                model_debug["item_status"] = bi.get("item_status")
+                # Para itens simples, usar model_id=0
+                model_id = 0
+                model_debug["using_default_model_id"] = True
+            else:
+                return jsonify({"status": "erro", "erro": "Item nao encontrado via get_item_base_info", "debug": model_debug}), 400
 
         item_list = [{
             "item_id": int(item_id),
