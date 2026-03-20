@@ -5597,6 +5597,41 @@ class _ShopeeOpenApiClient:
         """Lista canais de logistica disponiveis."""
         return self._request("GET", "/api/v2/logistics/get_channel_list", with_auth=True)
 
+    def create_mock_order(self, item_list, shipping_channel_id=91008):
+        """Cria um pedido de teste (mock order) no sandbox.
+        item_list: [{"item_id": int, "model_id": int, "quantity": int}]
+        """
+        body = {
+            "item_list": item_list,
+            "shipping_channel_id": int(shipping_channel_id),
+        }
+        return self._request("POST", "/api/v2/mock_order/create_mock_order", body=body, with_auth=True)
+
+    def get_order_list(self, time_range_field="create_time", time_from=None, time_to=None, page_size=20, cursor=""):
+        """Lista pedidos da loja."""
+        import time as _time
+        if not time_from:
+            time_from = int(_time.time()) - 15 * 24 * 3600
+        if not time_to:
+            time_to = int(_time.time())
+        params = {
+            "time_range_field": time_range_field,
+            "time_from": int(time_from),
+            "time_to": int(time_to),
+            "page_size": int(page_size),
+            "cursor": cursor,
+        }
+        return self._request("GET", "/api/v2/order/get_order_list", params=params, with_auth=True)
+
+    def get_order_detail(self, order_sn_list):
+        """Retorna detalhes de pedidos."""
+        sns = ",".join(order_sn_list) if isinstance(order_sn_list, list) else order_sn_list
+        params = {
+            "order_sn_list": sns,
+            "response_optional_fields": "item_list,buyer_username,pay_time,shipping_carrier",
+        }
+        return self._request("GET", "/api/v2/order/get_order_detail", params=params, with_auth=True)
+
 
 def _marketplace_cfg_to_client(cfg: MarketplaceApiConfig):
     if not cfg:
@@ -7241,7 +7276,19 @@ def api_marketplace_shopee_criar_produto_teste():
             ret = cli._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
             if ret.get("ok"):
                 item_id = ((ret.get("data") or {}).get("response") or {}).get("item_id", "?")
-                criados.append({"name": p["name"], "item_id": item_id})
+                # Inicializar tier_variation para o produto ficar valido (com model)
+                init_ok = False
+                if item_id and item_id != "?":
+                    try:
+                        init_resp = cli.init_tier_variation(
+                            item_id,
+                            tier_variation=[],
+                            model_list=[{"original_price": p["price"], "seller_stock": [{"stock": p["stock"]}]}]
+                        )
+                        init_ok = init_resp.get("ok", False)
+                    except Exception as init_err:
+                        print(f"[SHOPEE] init_tier_variation error for {item_id}: {init_err}", flush=True, file=sys.stderr)
+                criados.append({"name": p["name"], "item_id": item_id, "model_initialized": init_ok})
             else:
                 err_msg = (ret.get("data") or {}).get("message") or (ret.get("data") or {}).get("error") or str(ret)
                 erros.append({"name": p["name"], "erro": err_msg, "data": ret.get("data")})
@@ -7257,6 +7304,93 @@ def api_marketplace_shopee_criar_produto_teste():
             "imagens": image_ids,
         })
 
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route('/api/marketplace/shopee/criar-pedido-teste', methods=['POST'])
+@jwt_required()
+def api_marketplace_shopee_criar_pedido_teste():
+    """Cria um pedido de teste (mock order) no sandbox da Shopee."""
+    try:
+        user_id = int(get_jwt_identity())
+        cfg = _get_or_create_marketplace_api_config(user_id, "shopee")
+        cli, err = _marketplace_cfg_to_client(cfg)
+        if err:
+            return jsonify({"status": "erro", "erro": err}), 400
+
+        data = request.get_json(silent=True) or {}
+        item_id = data.get("item_id")
+        model_id = data.get("model_id")
+        quantity = data.get("quantity", 1)
+        shipping_channel_id = data.get("shipping_channel_id", 91008)
+
+        if not item_id:
+            return jsonify({"status": "erro", "erro": "item_id obrigatorio"}), 400
+
+        # Se model_id nao foi fornecido, buscar automaticamente
+        if not model_id:
+            model_resp = cli.get_model_list(item_id)
+            if model_resp.get("ok"):
+                models = (model_resp.get("data") or {}).get("response", {}).get("model", [])
+                if models:
+                    # Pegar o primeiro modelo com estoque
+                    for m in models:
+                        stocks = m.get("stock_info_v2", {}).get("seller_stock", [])
+                        if stocks and stocks[0].get("stock", 0) > 0:
+                            model_id = m.get("model_id")
+                            break
+                    if not model_id and models:
+                        model_id = models[0].get("model_id")
+
+        if not model_id:
+            return jsonify({"status": "erro", "erro": "model_id nao encontrado. Item pode nao ter models."}), 400
+
+        item_list = [{
+            "item_id": int(item_id),
+            "model_id": int(model_id),
+            "quantity": int(quantity),
+        }]
+
+        resp = cli.create_mock_order(item_list, shipping_channel_id)
+        return jsonify({
+            "status": "ok" if resp.get("ok") else "erro",
+            "resposta_shopee": resp.get("data"),
+            "item_usado": item_list[0],
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
+
+
+@app.route('/api/marketplace/shopee/pedidos', methods=['GET'])
+@jwt_required()
+def api_marketplace_shopee_pedidos():
+    """Lista pedidos da loja Shopee sandbox."""
+    try:
+        user_id = int(get_jwt_identity())
+        cfg = _get_or_create_marketplace_api_config(user_id, "shopee")
+        cli, err = _marketplace_cfg_to_client(cfg)
+        if err:
+            return jsonify({"status": "erro", "erro": err}), 400
+
+        resp = cli.get_order_list()
+        order_list = []
+        raw_resp = (resp.get("data") or {}).get("response", {})
+        order_sns = [o.get("order_sn") for o in raw_resp.get("order_list", [])]
+
+        if order_sns:
+            detail_resp = cli.get_order_detail(order_sns)
+            detail_data = (detail_resp.get("data") or {}).get("response", {})
+            order_list = detail_data.get("order_list", [])
+
+        return jsonify({
+            "status": "ok",
+            "total": len(order_list),
+            "pedidos": order_list,
+            "raw_list": raw_resp,
+        })
     except Exception as e:
         import traceback
         return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
