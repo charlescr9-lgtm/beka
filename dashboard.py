@@ -7012,20 +7012,26 @@ def api_marketplace_shopee_diagnostico_itens():
     cli = _marketplace_cfg_to_client(cfg)
     if not cli:
         return jsonify({"status": "erro", "mensagem": "Token expirado"}), 400
-    # Get item list
-    item_list_resp = cli.get_item_list(item_status="NORMAL")
-    items = []
-    item_ids = []
-    for it in ((item_list_resp.get("response") or {}).get("item") or []):
-        items.append(it)
-        item_ids.append(it.get("item_id"))
-    # Get base info for those items
-    base_info = {}
-    if item_ids:
-        bi_resp = cli.get_item_base_info(item_ids[:20])
-        for it in ((bi_resp.get("response") or {}).get("item_list") or []):
-            base_info[it.get("item_id")] = it
-    return jsonify({"status": "ok", "items": items, "base_info": base_info, "total": len(items)})
+    try:
+        # Get item list
+        item_list_resp = cli.get_item_list(item_status="NORMAL")
+        items = []
+        item_ids = []
+        for it in ((item_list_resp.get("response") or {}).get("item") or []):
+            items.append(it)
+            item_ids.append(it.get("item_id"))
+        # Get base info for those items
+        base_info = {}
+        if item_ids:
+            try:
+                bi_resp = cli.get_item_base_info(item_ids[:20])
+                for it in ((bi_resp.get("response") or {}).get("item_list") or []):
+                    base_info[it.get("item_id")] = it
+            except Exception as e2:
+                base_info = {"error": str(e2)}
+        return jsonify({"status": "ok", "items": items, "base_info": base_info, "total": len(items), "raw_item_list": item_list_resp})
+    except Exception as e:
+        return jsonify({"status": "erro", "mensagem": str(e)}), 500
 
 @app.route('/api/marketplace/shopee/criar-produto-teste', methods=['POST'])
 @jwt_required()
