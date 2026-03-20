@@ -6617,10 +6617,15 @@ def _shopee_exchange_code_for_tokens_fast(
         msg = (data or {}).get("message") or err
         return {"ok": False, "erro": f"Erro Shopee token/get: {msg}", "data": data}
 
-    payload = (data or {}).get("response") or {}
+    # Shopee sandbox retorna tokens no nivel raiz; producao usa "response" nested.
+    payload = (data or {}).get("response") or data or {}
     access_token = str(payload.get("access_token") or "").strip()
     refresh_token = str(payload.get("refresh_token") or "").strip()
-    shop_final = str(payload.get("shop_id") or shop_txt).strip()
+    # shop_id pode estar em shop_id ou shop_id_list[0]
+    shop_from_payload = payload.get("shop_id") or ""
+    if not shop_from_payload and isinstance(payload.get("shop_id_list"), list) and payload["shop_id_list"]:
+        shop_from_payload = payload["shop_id_list"][0]
+    shop_final = str(shop_from_payload or shop_txt).strip()
     expire_in = int(payload.get("expire_in") or 0)
 
     if not access_token:
