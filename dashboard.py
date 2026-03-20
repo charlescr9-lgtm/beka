@@ -7427,6 +7427,89 @@ def api_marketplace_shopee_criar_pedido_teste():
         return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
 
 
+@app.route('/api/marketplace/shopee/diagnostico', methods=['GET'])
+@jwt_required()
+def api_marketplace_shopee_diagnostico():
+    """Diagnostico completo da loja Shopee sandbox."""
+    try:
+        user_id = int(get_jwt_identity())
+        cfg = _get_or_create_marketplace_api_config(user_id, "shopee")
+        cli, err = _marketplace_cfg_to_client(cfg)
+        if err:
+            return jsonify({"status": "erro", "erro": err}), 400
+
+        # Auto-refresh token
+        try:
+            if cfg.token_expires_at and cfg.token_expires_at <= (_agora_brasil() + timedelta(minutes=10)):
+                ref = cli.refresh_access_token()
+                if ref.get("ok"):
+                    cfg.set_access_token(ref.get("access_token", ""))
+                    if ref.get("refresh_token"):
+                        cfg.set_refresh_token(ref.get("refresh_token", ""))
+                    cfg.token_expires_at = _agora_brasil() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
+                    db.session.commit()
+                    cli = _ShopeeOpenApiClient(cfg)
+        except Exception:
+            pass
+
+        diag = {}
+
+        # 1. Canais logisticos da loja
+        log_ret = cli.get_logistics_channel()
+        channels = ((log_ret.get("data") or {}).get("response") or {}).get("logistics_channel_list") or []
+        diag["logistics_channels"] = [
+            {"id": ch.get("logistics_channel_id"), "name": ch.get("logistics_channel_name"), "enabled": ch.get("enabled"), "fee_type": ch.get("fee_type")}
+            for ch in channels[:10]
+        ]
+
+        # 2. Lista de itens com status NORMAL
+        items_ret = cli.get_item_list(item_status="NORMAL")
+        items = ((items_ret.get("data") or {}).get("response") or {}).get("item", [])
+        diag["items_normal_count"] = len(items)
+
+        # 3. Detalhes do primeiro item (se existir)
+        if items:
+            first_id = items[0].get("item_id")
+            bi_ret = cli.get_item_base_info([first_id])
+            bi_list = ((bi_ret.get("data") or {}).get("response") or {}).get("item_list") or []
+            if bi_list:
+                bi = bi_list[0]
+                diag["first_item"] = {
+                    "item_id": bi.get("item_id"),
+                    "item_name": bi.get("item_name"),
+                    "item_status": bi.get("item_status"),
+                    "has_model": bi.get("has_model"),
+                    "logistic_info": bi.get("logistic_info"),
+                    "price_info": bi.get("price_info"),
+                    "stock_info_v2": bi.get("stock_info_v2"),
+                    "condition": bi.get("condition"),
+                    "category_id": bi.get("category_id"),
+                }
+
+            # 4. Modelos do item
+            model_ret = cli.get_model_list(first_id)
+            models = ((model_ret.get("data") or {}).get("response") or {}).get("model") or []
+            diag["first_item_models"] = [
+                {"model_id": m.get("model_id"), "price_info": m.get("price_info"), "stock_info": m.get("stock_info"), "seller_stock": (m.get("stock_info_v2") or {}).get("seller_stock")}
+                for m in models[:5]
+            ]
+
+        # 5. Lista de itens UNLIST
+        items_unlist = cli.get_item_list(item_status="UNLIST")
+        unlist = ((items_unlist.get("data") or {}).get("response") or {}).get("item", [])
+        diag["items_unlist_count"] = len(unlist)
+
+        # 6. Itens BANNED
+        items_banned = cli.get_item_list(item_status="BANNED")
+        banned = ((items_banned.get("data") or {}).get("response") or {}).get("item", [])
+        diag["items_banned_count"] = len(banned)
+
+        return jsonify({"status": "ok", "diagnostico": diag})
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
+
+
 @app.route('/api/marketplace/shopee/pedidos', methods=['GET'])
 @jwt_required()
 def api_marketplace_shopee_pedidos():
