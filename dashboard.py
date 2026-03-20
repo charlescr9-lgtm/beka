@@ -5533,6 +5533,42 @@ class _ShopeeOpenApiClient:
 
         return {"ok": True, "total": total}
 
+    # ---- Product APIs (sandbox test) ----
+
+    def get_item_list(self, offset=0, page_size=50, item_status="NORMAL"):
+        params = {"offset": offset, "page_size": page_size, "item_status": item_status}
+        return self._request("GET", "/api/v2/product/get_item_list", params=params, with_auth=True)
+
+    def get_category_list(self, language="pt-BR"):
+        """Retorna arvore de categorias da Shopee."""
+        params = {"language": language}
+        return self._request("GET", "/api/v2/product/get_category", params=params, with_auth=True)
+
+    def upload_image_url(self, image_url="https://via.placeholder.com/600x600.png?text=TestProduct"):
+        """Faz upload de imagem para Shopee a partir de URL."""
+        body = {"image_url_list": [image_url]}
+        return self._request("POST", "/api/v2/media_space/upload_image", body=body, with_auth=True)
+
+    def add_item(self, item_name, category_id, description, price, stock, image_id_list=None, weight=0.5):
+        """Cria um produto na loja Shopee sandbox."""
+        body = {
+            "original_price": float(price),
+            "description": description,
+            "item_name": item_name,
+            "normal_stock": int(stock),
+            "weight": float(weight),
+            "category_id": int(category_id),
+            "image": {"image_id_list": image_id_list or []},
+            "logistic_info": [{"logistic_id": 0, "enabled": True}],
+            "item_status": "NORMAL",
+            "condition": "NEW",
+        }
+        return self._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
+
+    def get_logistics_channel(self):
+        """Lista canais de logistica disponiveis."""
+        return self._request("GET", "/api/v2/logistics/get_channel_list", with_auth=True)
+
 
 def _marketplace_cfg_to_client(cfg: MarketplaceApiConfig):
     if not cfg:
@@ -6958,6 +6994,99 @@ def api_marketplace_testar():
 def api_marketplace_reconectar():
     """Alias de teste/revalidacao para API direta."""
     return api_marketplace_testar()
+
+
+@app.route('/api/marketplace/shopee/criar-produto-teste', methods=['POST'])
+@jwt_required()
+def api_marketplace_shopee_criar_produto_teste():
+    """Cria produtos de teste na loja Shopee sandbox via API."""
+    user_id = int(get_jwt_identity())
+    cfg = _get_or_create_marketplace_api_config(user_id, "shopee")
+    cli, err = _marketplace_cfg_to_client(cfg)
+    if not cli:
+        return jsonify({"status": "erro", "erro": err}), 400
+
+    try:
+        # 1. Buscar categorias disponiveis
+        cat_ret = cli.get_category_list(language="en")
+        if not cat_ret.get("ok"):
+            # Tentar sem idioma
+            cat_ret = cli.get_category_list(language="")
+        cats = ((cat_ret.get("data") or {}).get("response") or {}).get("category_list") or []
+        # Pegar uma categoria folha (que tem has_children=False)
+        leaf_cats = [c for c in cats if not c.get("has_children", True)]
+        if not leaf_cats:
+            leaf_cats = cats[:5]  # fallback: pegar qualquer uma
+        if not leaf_cats:
+            return jsonify({"status": "erro", "erro": "Nenhuma categoria disponivel na Shopee sandbox"}), 400
+        cat_id = leaf_cats[0].get("category_id", 0)
+        cat_name = leaf_cats[0].get("display_category_name") or leaf_cats[0].get("category_name") or "Categoria"
+
+        # 2. Buscar canais de logistica
+        log_ret = cli.get_logistics_channel()
+        logistics = ((log_ret.get("data") or {}).get("response") or {}).get("logistics_channel_list") or []
+        logistic_info = []
+        for lg in logistics[:3]:
+            logistic_info.append({"logistic_id": lg.get("logistics_channel_id", 0), "enabled": True})
+        if not logistic_info:
+            logistic_info = [{"logistic_id": 0, "enabled": True}]
+
+        # 3. Upload de imagem placeholder
+        img_ret = cli.upload_image_url("https://via.placeholder.com/600x600.png?text=Produto+Teste")
+        image_ids = []
+        if img_ret.get("ok"):
+            img_info = ((img_ret.get("data") or {}).get("response") or {}).get("image_info") or {}
+            if isinstance(img_info, dict) and img_info.get("image_id"):
+                image_ids = [img_info["image_id"]]
+            elif isinstance(img_info, list):
+                for ii in img_info:
+                    iid = ii.get("image_id") or ii.get("shopee_image_url") or ""
+                    if iid:
+                        image_ids.append(iid)
+
+        # 4. Criar 3 produtos de teste
+        produtos_teste = [
+            {"name": "Camiseta Teste Beka - Preta M", "price": 59.90, "stock": 50, "desc": "Camiseta preta tamanho M para teste de integracao"},
+            {"name": "Caneca Personalizada Beka 300ml", "price": 29.90, "stock": 100, "desc": "Caneca ceramica 300ml para teste de integracao"},
+            {"name": "Adesivo Beka Kit com 10 unidades", "price": 14.90, "stock": 200, "desc": "Kit 10 adesivos variados para teste de integracao"},
+        ]
+
+        criados = []
+        erros = []
+        for p in produtos_teste:
+            body = {
+                "original_price": p["price"],
+                "description": p["desc"],
+                "item_name": p["name"],
+                "normal_stock": p["stock"],
+                "weight": 0.3,
+                "category_id": cat_id,
+                "image": {"image_id_list": image_ids} if image_ids else {},
+                "logistic_info": logistic_info,
+                "item_status": "NORMAL",
+                "condition": "NEW",
+            }
+            ret = cli._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
+            if ret.get("ok"):
+                item_id = ((ret.get("data") or {}).get("response") or {}).get("item_id", "?")
+                criados.append({"name": p["name"], "item_id": item_id})
+            else:
+                err_msg = (ret.get("data") or {}).get("message") or (ret.get("data") or {}).get("error") or str(ret)
+                erros.append({"name": p["name"], "erro": err_msg, "data": ret.get("data")})
+
+        return jsonify({
+            "status": "ok" if criados else "erro",
+            "mensagem": f"{len(criados)} produto(s) criado(s), {len(erros)} erro(s)",
+            "criados": criados,
+            "erros": erros,
+            "categoria_usada": {"id": cat_id, "nome": cat_name},
+            "logistica": logistic_info,
+            "imagens": image_ids,
+        })
+
+    except Exception as e:
+        import traceback
+        return jsonify({"status": "erro", "erro": str(e), "trace": traceback.format_exc()}), 500
 
 
 @app.route('/api/marketplace/desconectar', methods=['POST'])
