@@ -7320,6 +7320,20 @@ def api_marketplace_shopee_criar_pedido_teste():
         if err:
             return jsonify({"status": "erro", "erro": err}), 400
 
+        # Auto-refresh token se expirado
+        try:
+            if cfg.token_expires_at and cfg.token_expires_at <= (_agora_brasil() + timedelta(minutes=10)):
+                ref = cli.refresh_access_token()
+                if ref.get("ok"):
+                    cfg.set_access_token(ref.get("access_token", ""))
+                    if ref.get("refresh_token"):
+                        cfg.set_refresh_token(ref.get("refresh_token", ""))
+                    cfg.token_expires_at = _agora_brasil() + timedelta(seconds=max(1, int(ref.get("expire_in") or 0)))
+                    db.session.commit()
+                    cli = _ShopeeOpenApiClient(cfg)
+        except Exception as re:
+            print(f"[SHOPEE] Token refresh error: {re}", flush=True, file=sys.stderr)
+
         data = request.get_json(silent=True) or {}
         item_id = data.get("item_id")
         model_id = data.get("model_id")
