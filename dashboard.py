@@ -5565,6 +5565,11 @@ class _ShopeeOpenApiClient:
         }
         return self._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
 
+    def get_item_base_info(self, item_id_list):
+        """Retorna info basica de itens."""
+        params = {"item_id_list": ",".join(str(i) for i in item_id_list)}
+        return self._request("GET", "/api/v2/product/get_item_base_info", params=params, with_auth=True)
+
     def get_logistics_channel(self):
         """Lista canais de logistica disponiveis."""
         return self._request("GET", "/api/v2/logistics/get_channel_list", with_auth=True)
@@ -6995,6 +7000,32 @@ def api_marketplace_reconectar():
     """Alias de teste/revalidacao para API direta."""
     return api_marketplace_testar()
 
+
+@app.route('/api/marketplace/shopee/diagnostico-itens', methods=['GET'])
+@jwt_required()
+def api_marketplace_shopee_diagnostico_itens():
+    """Diagnostico: lista itens e seu status na loja sandbox."""
+    user_id = int(get_jwt_identity())
+    cfg = MarketplaceApiConfig.query.filter_by(user_id=user_id, marketplace="shopee").first()
+    if not cfg:
+        return jsonify({"status": "erro", "mensagem": "Shopee nao configurada"}), 400
+    cli = _marketplace_cfg_to_client(cfg)
+    if not cli:
+        return jsonify({"status": "erro", "mensagem": "Token expirado"}), 400
+    # Get item list
+    item_list_resp = cli.get_item_list(item_status="NORMAL")
+    items = []
+    item_ids = []
+    for it in ((item_list_resp.get("response") or {}).get("item") or []):
+        items.append(it)
+        item_ids.append(it.get("item_id"))
+    # Get base info for those items
+    base_info = {}
+    if item_ids:
+        bi_resp = cli.get_item_base_info(item_ids[:20])
+        for it in ((bi_resp.get("response") or {}).get("item_list") or []):
+            base_info[it.get("item_id")] = it
+    return jsonify({"status": "ok", "items": items, "base_info": base_info, "total": len(items)})
 
 @app.route('/api/marketplace/shopee/criar-produto-teste', methods=['POST'])
 @jwt_required()
