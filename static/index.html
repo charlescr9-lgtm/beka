@@ -831,6 +831,9 @@
         <button class="btn btn-secondary btn-sm" onclick="window.location.reload()" title="Atualizar pagina" style="padding:4px 10px;">
             <i class="fas fa-sync-alt"></i> Atualizar
         </button>
+        <button class="btn btn-secondary btn-sm" id="navAdmin" onclick="trocarTab('admin')" title="Admin" style="display:none; padding:4px 10px;">
+            <i class="fas fa-shield-alt"></i> Admin
+        </button>
         <span id="planoBadge" style="display:none;">Free</span>
         <button id="btnAssinar" style="display:none;">Assinar</button>
         <!-- Botao Sair oculto (sem login) -->
@@ -857,9 +860,6 @@
     <div class="nav-tab" data-tab="automacao-api" onclick="trocarTab('automacao-api')" style="display:none;">
         <i class="fas fa-plug"></i> Automacao API
     </div>
-    <div class="nav-tab" data-tab="admin" onclick="trocarTab('admin')" id="navAdmin" style="display:none;">
-        <i class="fas fa-shield-alt"></i> Admin
-    </div>
     <div class="nav-tab" data-tab="shopee-expert" onclick="trocarTab('shopee-expert')" style="display:none;">
         <i class="fas fa-magic"></i> Shopee Expert
     </div>
@@ -871,6 +871,12 @@
     </div>
     <div class="nav-tab" data-tab="calculadora" onclick="trocarTab('calculadora')">
         <i class="fas fa-calculator"></i> Calculadora
+    </div>
+    <div class="nav-tab" data-tab="funcionarios" onclick="trocarTab('funcionarios')">
+        <i class="fas fa-users"></i> Funcionarios
+    </div>
+    <div class="nav-tab" data-tab="shopee-monitor" onclick="trocarTab('shopee-monitor'); carregarShopeeMonitor();">
+        <i class="fas fa-store"></i> Shopee Monitor
     </div>
 </nav>
 
@@ -1363,14 +1369,19 @@
 
         <!-- LOTES DE ENVIO -->
         <div class="card" style="margin-bottom:20px; border:1px solid rgba(240,93,35,0.3); border-radius:12px;">
-            <div class="card-header">
+            <div class="card-header" data-collapse-id="lotesEnvio" onclick="toggleCardCollapse('lotesEnvio')" style="cursor:pointer;">
                 <span class="card-title"><i class="fas fa-boxes-stacked"></i> Lotes de Envio</span>
-                <button class="btn btn-primary" onclick="mostrarModalLote()" style="font-size:11px; padding:4px 10px;">
-                    <i class="fas fa-plus"></i> Criar Lote
-                </button>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <button class="btn btn-primary" onclick="event.stopPropagation(); mostrarModalLote()" style="font-size:11px; padding:4px 10px;">
+                        <i class="fas fa-plus"></i> Criar Lote
+                    </button>
+                    <i class="fas fa-chevron-down collapse-chevron" style="color:var(--text-secondary); font-size:12px; transition:transform 0.2s;"></i>
+                </div>
             </div>
-            <div id="tabelaLotes" style="overflow-x:auto;">
-                <p style="font-size:12px; color:var(--text-secondary);">Nenhum lote cadastrado.</p>
+            <div id="collapse-body-lotesEnvio">
+                <div id="tabelaLotes" style="overflow-x:auto;">
+                    <p style="font-size:12px; color:var(--text-secondary);">Nenhum lote cadastrado.</p>
+                </div>
             </div>
         </div>
 
@@ -1441,12 +1452,16 @@
 
         <!-- CONTATOS POR LOJA -->
         <div class="card" style="margin-bottom:20px;">
-            <div class="card-header">
+            <div class="card-header" data-collapse-id="contatosLoja" onclick="toggleCardCollapse('contatosLoja')" style="cursor:pointer;">
                 <span class="card-title"><i class="fas fa-address-book"></i> Contatos por Loja</span>
-                <button class="btn btn-primary" onclick="mostrarFormContato()" style="font-size:11px; padding:4px 10px;">
-                    <i class="fas fa-plus"></i> Adicionar
-                </button>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <button class="btn btn-primary" onclick="event.stopPropagation(); mostrarFormContato()" style="font-size:11px; padding:4px 10px;">
+                        <i class="fas fa-plus"></i> Adicionar
+                    </button>
+                    <i class="fas fa-chevron-down collapse-chevron" style="color:var(--text-secondary); font-size:12px; transition:transform 0.2s;"></i>
+                </div>
             </div>
+            <div id="collapse-body-contatosLoja">
             <!-- Formulario de adicionar -->
             <div id="formContato" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
                 <div class="form-row" style="flex-wrap:wrap; gap:8px;">
@@ -1498,79 +1513,7 @@
             <div id="tabelaContatos" style="overflow-x:auto;">
                 <p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>
             </div>
-        </div>
-
-        <!-- CONTATOS EMAIL -->
-        <div class="card" style="margin-bottom:20px;">
-            <div class="card-header">
-                <span class="card-title"><i class="fas fa-envelope"></i> Contatos Email</span>
-                <button class="btn btn-primary" onclick="mostrarFormEmail()" style="font-size:11px; padding:4px 10px;">
-                    <i class="fas fa-plus"></i> Adicionar
-                </button>
-            </div>
-            <div style="margin-bottom:10px; padding:10px; border:1px solid var(--border); border-radius:8px; background:rgba(255,255,255,0.02);">
-                <div style="font-size:11px; font-weight:600; margin-bottom:6px; color:var(--text-secondary);">
-                    <i class="fas fa-paper-plane"></i> Configurar Remetente
-                </div>
-                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
-                    <div class="form-group" style="flex:1; min-width:220px;">
-                        <label class="form-label">Email Remetente (obrigatorio)</label>
-                        <input class="form-input" id="emailRemetente" placeholder="remetente@dominio.com" style="font-size:12px;" type="email">
-                    </div>
-                    <div class="form-group" style="flex:1; min-width:220px;">
-                        <label class="form-label">Senha de app (obrigatoria)</label>
-                        <input class="form-input" id="smtpSenha" placeholder="Senha de app" style="font-size:12px;" type="password">
-                    </div>
-                    <div class="form-group" style="flex:0.7; min-width:190px; display:flex; align-items:flex-end; gap:6px;">
-                        <button class="btn btn-secondary" onclick="validarSalvarEmailRemetente()" style="font-size:11px;">
-                            <i class="fas fa-check-circle"></i> Validar e Salvar
-                        </button>
-                    </div>
-                </div>
-                <input type="hidden" id="emailRemetenteNome" value="Beka MultiPlace">
-                <div id="smtpStatusTxt" style="margin-top:6px; font-size:11px; color:var(--text-secondary);"></div>
-            </div>
-            <div id="formEmail" style="display:none; margin-bottom:15px; padding:12px; background:rgba(255,255,255,0.02); border-radius:8px; border:1px solid var(--border);">
-                <div class="form-row" style="flex-wrap:wrap; gap:8px;">
-                    <div class="form-group" style="flex:1; min-width:150px;">
-                        <label class="form-label">Nome Contato</label>
-                        <input class="form-input" id="emailNomeContato" placeholder="Fulano" style="font-size:12px;">
-                    </div>
-                    <div class="form-group" style="flex:1; min-width:200px;">
-                        <label class="form-label">Email</label>
-                        <input class="form-input" id="emailEndereco" placeholder="fulano@email.com" style="font-size:12px;" type="email">
-                    </div>
-                </div>
-                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
-                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
-                        <i class="fas fa-store"></i> Lojas para este destinatario
-                    </div>
-                    <div id="emailAlvoLojas" style="max-height:120px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
-                    <div style="font-size:11px; font-weight:600; margin:8px 0 4px 0; color:var(--text-secondary);">
-                        <i class="fas fa-layer-group"></i> Grupos para este destinatario
-                    </div>
-                    <div id="emailAlvoGrupos" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;"></div>
-                </div>
-                <div style="margin-top:8px; border:1px solid var(--border); border-radius:8px; padding:8px;">
-                    <div style="font-size:11px; font-weight:600; margin-bottom:4px; color:var(--text-secondary);">
-                        <i class="fas fa-boxes-stacked" style="color:var(--accent);"></i> Lotes de Envio
-                    </div>
-                    <div id="emailAlvoLotes" style="max-height:100px; overflow:auto; border:1px solid var(--border); border-radius:6px; padding:6px; font-size:11px;">
-                        <div style="color:var(--text-muted);">Nenhum lote cadastrado.</div>
-                    </div>
-                </div>
-                <div style="display:flex; gap:8px; margin-top:8px;">
-                    <button class="btn btn-primary" onclick="salvarContatoEmail()" style="font-size:11px;">
-                        <i class="fas fa-check"></i> Salvar
-                    </button>
-                    <button class="btn btn-secondary" onclick="_editandoContatoEmailId=null; document.getElementById('emailEndereco').disabled=false; document.getElementById('formEmail').style.display='none'" style="font-size:11px;">
-                        Cancelar
-                    </button>
-                </div>
-            </div>
-            <div id="tabelaContatosEmail" style="overflow-x:auto;">
-                <p style="font-size:12px; color:var(--text-secondary);">Nenhum contato de email cadastrado.</p>
-            </div>
+            </div><!-- /collapse-body-contatosLoja -->
         </div>
 
         <!-- AGENDAMENTOS (oculto - duplicado pelo Envio Automatico) -->
@@ -1852,6 +1795,17 @@
                     Verificando...
                 </div>
             </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);">
+                <label for="aiosMotorSelectQuick" style="font-size:11px;font-weight:700;color:var(--text-secondary);margin:0;">
+                    Motor da AIOS
+                </label>
+                <select id="aiosMotorSelectQuick" class="form-input" onchange="_aiosHandleMotorChange(this.value)" style="min-width:260px;max-width:100%;font-size:12px;padding:6px 10px;">
+                    <option value="">Selecione um motor...</option>
+                </select>
+                <div id="aiosMotorHint" style="font-size:11px;color:var(--text-muted);">
+                    Controla os agentes gerais. Cursor/Dev e Venice +18 mantem motores proprios.
+                </div>
+            </div>
             <div id="aiosBackendsList" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
         </div>
 
@@ -1879,9 +1833,26 @@
                     <select id="aiosAgentSelect" onchange="_aiosSelectAgent(this.value)" class="form-input" style="font-size:11px;padding:4px 8px;width:auto;">
                         <option value="">Selecione um agente...</option>
                     </select>
+                    <button onclick="_aiosClearLongMemory()" class="btn" style="font-size:11px;padding:4px 10px;" title="Limpa a memoria de longo prazo salva no servidor para este agente">
+                        <i class="fas fa-brain"></i> Memoria
+                    </button>
                     <button onclick="_aiosClearChat()" class="btn" style="font-size:11px;padding:4px 10px;">
                         <i class="fas fa-trash-alt"></i> Limpar
                     </button>
+                </div>
+            </div>
+
+            <div id="aiosCursorProjectRow" style="display:none;margin-bottom:12px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-secondary);">
+                <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                    <label for="aiosCursorProjectSelect" style="font-size:11px;font-weight:700;color:var(--text-secondary);margin:0;">
+                        Projeto do Codex
+                    </label>
+                    <select id="aiosCursorProjectSelect" class="form-input" onchange="_aiosHandleCursorProjectChange(this.value)" style="min-width:260px;max-width:100%;font-size:12px;padding:6px 10px;">
+                        <option value="">Selecione um projeto...</option>
+                    </select>
+                </div>
+                <div id="aiosCursorProjectHint" style="margin-top:6px;font-size:11px;color:var(--text-muted);">
+                    O agente Cursor/Dev vai usar esse workspace no Codex local.
                 </div>
             </div>
 
@@ -1903,15 +1874,18 @@
                 <img id="aiosImageThumb" style="max-height:80px;border-radius:8px;border:2px solid var(--border);">
                 <button onclick="_aiosRemoveImage()" style="position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;background:#e74c3c;color:#fff;border:none;cursor:pointer;font-size:11px;display:flex;align-items:center;justify-content:center;">&times;</button>
             </div>
+            <div id="aiosMediaUploadsPreview" style="display:none;margin-bottom:8px;">
+                <div id="aiosMediaUploadsList" style="display:flex;gap:8px;flex-wrap:wrap;"></div>
+            </div>
 
             <!-- Input de mensagem -->
             <div style="display:flex;gap:8px;align-items:flex-end;">
-                <button onclick="document.getElementById('aiosFileInput').click()" class="btn" style="padding:10px 12px;font-size:14px;flex-shrink:0;" title="Anexar imagem">
-                    <i class="fas fa-image"></i>
+                <button onclick="document.getElementById('aiosFileInput').click()" class="btn" style="padding:10px 12px;font-size:14px;flex-shrink:0;" title="Anexar midias">
+                    <i class="fas fa-paperclip"></i>
                 </button>
-                <input type="file" id="aiosFileInput" accept="image/*" style="display:none;" onchange="_aiosHandleFileSelect(this)">
+                <input type="file" id="aiosFileInput" accept="image/*,video/*,audio/*" multiple style="display:none;" onchange="_aiosHandleFileSelect(this)">
                 <textarea id="aiosChatInput" class="form-input"
-                    placeholder="Digite sua pergunta... (Shift+Enter = nova linha, Ctrl+V = colar imagem)"
+                    placeholder="Digite sua pergunta... (Shift+Enter = nova linha, Ctrl+V = colar imagem, botao de clipe = anexar varias midias)"
                     style="flex:1;font-size:13px;padding:10px 14px;resize:none;min-height:42px;max-height:150px;overflow-y:auto;line-height:1.4;"
                     rows="1"
                     onkeydown="_aiosHandleKeydown(event)"
@@ -1932,6 +1906,7 @@
                     <div>
                         <label style="font-size:11px;font-weight:600;color:var(--text-secondary);display:block;margin-bottom:4px;">Modelo Principal</label>
                         <select id="aiosModeloPrincipal" class="form-input" style="font-size:12px;">
+                            <option value="codex-local-gpt">GPT via Codex Local (sem API key)</option>
                             <option value="claude-sonnet-4-20250514">Claude Sonnet 4 (Anthropic)</option>
                             <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (Anthropic)</option>
                             <option value="claude-opus-4-6">Claude Opus 4.6 (Anthropic)</option>
@@ -1987,6 +1962,271 @@
         <iframe id="iframeCalculadora" src="" style="width:100%; height:calc(100vh - 80px); border:none; border-radius:12px; background:var(--bg-card);"></iframe>
     </div>
 
+    <!-- ===================== TAB FUNCIONARIOS ===================== -->
+    <div class="tab-content" id="tab-funcionarios">
+
+        <!-- CARD 1: FOLHA DE PAGAMENTO -->
+        <div class="card" style="max-width:1200px; margin-bottom:16px;">
+            <div class="card-header" data-collapse-id="folhaPagamento" onclick="toggleCardCollapse('folhaPagamento')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:10px 14px;">
+                <span class="card-title" style="font-size:14px; font-weight:700;">
+                    <i class="fas fa-file-invoice-dollar"></i> Folha de Pagamento
+                    <i class="fas fa-chevron-down collapse-chevron" style="font-size:11px; margin-left:6px; transition:transform .2s;"></i>
+                </span>
+            </div>
+            <div id="collapse-body-folhaPagamento" style="padding:10px 14px;">
+                <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap;">
+                    <label style="font-size:12px; font-weight:600; color:var(--text-secondary);">Quinzena:</label>
+                    <select id="func-periodo" onchange="carregarFolha()" style="padding:6px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;"></select>
+                    <button class="btn btn-primary" onclick="salvarFolha()" style="font-size:11px; padding:6px 14px;">
+                        <i class="fas fa-save"></i> Salvar
+                    </button>
+                    <button class="btn" onclick="exportarFolha()" style="font-size:11px; padding:6px 14px; background:var(--bg-hover); color:var(--text-primary); border:1px solid var(--border);">
+                        <i class="fas fa-file-excel"></i> Exportar Excel
+                    </button>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table id="func-folha-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+                        <thead>
+                            <tr style="background:var(--bg-hover);">
+                                <th style="padding:6px 8px; text-align:left; border-bottom:2px solid var(--border);">Funcionario</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Salario</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Quinzena</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border); color:#0066cc;">Faltas</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Desc.Faltas</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border); color:#0066cc;" title="Soma automatica das parcelas pendentes">Vales/Parc.</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border); color:#0066cc;">Desc. Avulso</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border); color:#0066cc;">H.Extras</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Valor H.Extra</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border); font-weight:700;">A Receber</th>
+                            </tr>
+                        </thead>
+                        <tbody id="func-folha-body"></tbody>
+                        <tfoot id="func-folha-foot"></tfoot>
+                    </table>
+                </div>
+                <p style="font-size:10px; color:var(--text-secondary); margin-top:8px;">
+                    <span style="color:#0066cc; font-weight:600;">Azul</span> = editavel |
+                    Falta: 1 dia = (salario/30) x 2 | Meio dia (0.5) = (salario/30) x 1
+                </p>
+            </div>
+        </div>
+
+        <!-- CARD 2: VALES E PARCELAS -->
+        <div class="card" style="max-width:1200px; margin-bottom:16px;">
+            <div class="card-header" data-collapse-id="valesParcelas" onclick="toggleCardCollapse('valesParcelas')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:10px 14px;">
+                <span class="card-title" style="font-size:14px; font-weight:700;">
+                    <i class="fas fa-hand-holding-usd"></i> Vales e Parcelas
+                    <i class="fas fa-chevron-down collapse-chevron" style="font-size:11px; margin-left:6px; transition:transform .2s;"></i>
+                </span>
+                <button class="btn btn-primary" onclick="event.stopPropagation(); mostrarModalVale()" style="font-size:10px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Novo
+                </button>
+            </div>
+            <div id="collapse-body-valesParcelas" style="padding:10px 14px; display:none;">
+                <div style="overflow-x:auto;">
+                    <table id="func-vales-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+                        <thead>
+                            <tr style="background:var(--bg-hover);">
+                                <th style="padding:6px 8px; text-align:left; border-bottom:2px solid var(--border);">Funcionario</th>
+                                <th style="padding:6px 8px; text-align:left; border-bottom:2px solid var(--border);">Descricao</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Total</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Parcela</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Parcelas</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border); color:#0066cc;">Pagas</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Restantes</th>
+                                <th style="padding:6px 8px; text-align:left; border-bottom:2px solid var(--border);">Prox. Desc.</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Status</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Acoes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="func-vales-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- CARD 3: CADASTRO FUNCIONARIOS -->
+        <div class="card" style="max-width:1200px;">
+            <div class="card-header" data-collapse-id="cadastroFunc" onclick="toggleCardCollapse('cadastroFunc')" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:10px 14px;">
+                <span class="card-title" style="font-size:14px; font-weight:700;">
+                    <i class="fas fa-user-cog"></i> Cadastro de Funcionarios
+                    <i class="fas fa-chevron-down collapse-chevron" style="font-size:11px; margin-left:6px; transition:transform .2s;"></i>
+                </span>
+                <button class="btn btn-primary" onclick="event.stopPropagation(); mostrarModalFunc()" style="font-size:10px; padding:4px 10px;">
+                    <i class="fas fa-plus"></i> Novo
+                </button>
+            </div>
+            <div id="collapse-body-cadastroFunc" style="padding:10px 14px; display:none;">
+                <div style="overflow-x:auto;">
+                    <table id="func-cadastro-table" style="width:100%; border-collapse:collapse; font-size:11px;">
+                        <thead>
+                            <tr style="background:var(--bg-hover);">
+                                <th style="padding:6px 8px; text-align:left; border-bottom:2px solid var(--border);">Nome</th>
+                                <th style="padding:6px 8px; text-align:right; border-bottom:2px solid var(--border);">Salario Mensal</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Ativo</th>
+                                <th style="padding:6px 8px; text-align:center; border-bottom:2px solid var(--border);">Acoes</th>
+                            </tr>
+                        </thead>
+                        <tbody id="func-cadastro-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL VALE -->
+        <div id="modal-vale" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+            <div style="background:var(--bg-card); border-radius:12px; padding:20px; max-width:420px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 14px; font-size:14px;"><i class="fas fa-hand-holding-usd"></i> <span id="modal-vale-title">Novo Vale</span></h3>
+                <input type="hidden" id="modal-vale-id">
+                <div style="display:grid; gap:8px;">
+                    <select id="modal-vale-func" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;"></select>
+                    <input id="modal-vale-desc" placeholder="Descricao" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <input id="modal-vale-total" type="number" step="0.01" placeholder="Valor Total" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                        <input id="modal-vale-parcela" type="number" step="0.01" placeholder="Valor Parcela" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <input id="modal-vale-nparcelas" type="number" placeholder="Nº Parcelas" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                        <input id="modal-vale-pagas" type="number" placeholder="Pagas" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; align-items:center;">
+                        <select id="modal-vale-prox-tipo" onchange="toggleValeDataEsp()" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                            <option value="1a Quinzena">1ª Quinzena</option>
+                            <option value="2a Quinzena">2ª Quinzena</option>
+                            <option value="data">Data especifica</option>
+                        </select>
+                        <input id="modal-vale-prox-data" type="month" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px; display:none;">
+                    </div>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:14px; justify-content:flex-end;">
+                    <button class="btn" onclick="fecharModalVale()" style="font-size:11px; padding:6px 14px; background:var(--bg-hover); color:var(--text-primary); border:1px solid var(--border);">Cancelar</button>
+                    <button class="btn btn-primary" onclick="salvarVale()" style="font-size:11px; padding:6px 14px;">Salvar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL FUNCIONARIO -->
+        <div id="modal-func" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+            <div style="background:var(--bg-card); border-radius:12px; padding:20px; max-width:360px; width:90%; box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+                <h3 style="margin:0 0 14px; font-size:14px;"><i class="fas fa-user-plus"></i> <span id="modal-func-title">Novo Funcionario</span></h3>
+                <input type="hidden" id="modal-func-id">
+                <div style="display:grid; gap:8px;">
+                    <input id="modal-func-nome" placeholder="Nome" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                    <input id="modal-func-salario" type="number" step="0.01" placeholder="Salario Mensal" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px;">
+                </div>
+                <div style="display:flex; gap:8px; margin-top:14px; justify-content:flex-end;">
+                    <button class="btn" onclick="fecharModalFunc()" style="font-size:11px; padding:6px 14px; background:var(--bg-hover); color:var(--text-primary); border:1px solid var(--border);">Cancelar</button>
+                    <button class="btn btn-primary" onclick="salvarFunc()" style="font-size:11px; padding:6px 14px;">Salvar</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ===================== ABA SHOPEE MONITOR ===================== -->
+    <div class="tab-content" id="tab-shopee-monitor">
+        <h2 class="page-title"><i class="fas fa-store"></i> Shopee Monitor</h2>
+
+        <!-- CARD: CONFIGURACAO -->
+        <div class="card" style="max-width:900px; margin-bottom:16px;">
+            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="this.parentElement.querySelector('.card-body-sm').classList.toggle('hidden')">
+                <h3 style="margin:0; font-size:14px;"><i class="fas fa-cog"></i> Configuracao</h3>
+                <i class="fas fa-chevron-down" style="font-size:11px; color:var(--text-secondary);"></i>
+            </div>
+            <div class="card-body-sm">
+                <div style="display:grid; grid-template-columns:120px 1fr; gap:10px; align-items:center; margin-bottom:12px;">
+                    <label style="font-size:12px; color:var(--text-secondary);">Horario:</label>
+                    <input id="sm-horario" type="time" value="07:00" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px; width:120px;">
+                </div>
+                <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+                    <label style="font-size:12px; color:var(--text-secondary); width:110px;">Dias:</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="seg" checked> Seg</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="ter" checked> Ter</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="qua" checked> Qua</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="qui" checked> Qui</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="sex" checked> Sex</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="sab"> Sab</label>
+                    <label style="font-size:11px; cursor:pointer;"><input type="checkbox" class="sm-dia" value="dom"> Dom</label>
+                </div>
+                <div style="display:grid; grid-template-columns:120px 1fr; gap:10px; align-items:center; margin-bottom:12px;">
+                    <label style="font-size:12px; color:var(--text-secondary);">Chrome CDP Port:</label>
+                    <input id="sm-cdp-port" type="number" value="9222" style="padding:6px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg-card); color:var(--text-primary); font-size:12px; width:100px;">
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button class="btn btn-primary" onclick="salvarShopeeConfig()" style="font-size:11px; padding:6px 14px;">
+                        <i class="fas fa-save"></i> Salvar Config
+                    </button>
+                    <label style="font-size:11px; cursor:pointer;">
+                        <input type="checkbox" id="sm-ativo"> Agendamento ativo
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- CARD: EXECUCAO -->
+        <div class="card" style="max-width:900px; margin-bottom:16px;">
+            <div class="card-header">
+                <h3 style="margin:0; font-size:14px;"><i class="fas fa-play-circle"></i> Execucao</h3>
+            </div>
+            <div class="card-body-sm">
+                <div style="display:flex; gap:12px; align-items:center; margin-bottom:10px;">
+                    <span style="font-size:12px;">Status:</span>
+                    <span id="sm-status-badge" style="font-size:11px; padding:3px 10px; border-radius:12px; background:var(--bg-hover); color:var(--text-secondary);">Aguardando</span>
+                    <span id="sm-etapa-info" style="font-size:11px; color:var(--text-secondary);"></span>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-primary" id="sm-btn-run" onclick="executarShopeeMonitor()" style="font-size:11px; padding:6px 14px;">
+                        <i class="fas fa-play"></i> Executar Agora
+                    </button>
+                    <button class="btn" id="sm-btn-stop" onclick="pararShopeeMonitor()" style="font-size:11px; padding:6px 14px; background:var(--bg-hover); color:var(--text-primary); border:1px solid var(--border); display:none;">
+                        <i class="fas fa-stop"></i> Parar
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- CARD: LOG -->
+        <div class="card" style="max-width:900px; margin-bottom:16px;">
+            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="this.parentElement.querySelector('.card-body-sm').classList.toggle('hidden')">
+                <h3 style="margin:0; font-size:14px;"><i class="fas fa-terminal"></i> Log</h3>
+                <i class="fas fa-chevron-down" style="font-size:11px; color:var(--text-secondary);"></i>
+            </div>
+            <div class="card-body-sm">
+                <pre id="sm-log" style="background:var(--bg-secondary); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:11px; color:var(--text-primary); max-height:300px; overflow-y:auto; white-space:pre-wrap; margin:0; font-family:'Cascadia Code','Fira Code',monospace;">Nenhuma execucao recente.</pre>
+            </div>
+        </div>
+
+        <!-- CARD: ULTIMO RESULTADO -->
+        <div class="card" style="max-width:900px; margin-bottom:16px;">
+            <div class="card-header" style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="this.parentElement.querySelector('.card-body-sm').classList.toggle('hidden')">
+                <h3 style="margin:0; font-size:14px;"><i class="fas fa-chart-bar"></i> Ultimo Resultado</h3>
+                <i class="fas fa-chevron-down" style="font-size:11px; color:var(--text-secondary);"></i>
+            </div>
+            <div class="card-body-sm">
+                <div id="sm-result-summary" style="display:flex; gap:16px; margin-bottom:12px; flex-wrap:wrap;">
+                    <div style="font-size:12px; color:var(--text-secondary);">Nenhum resultado ainda.</div>
+                </div>
+                <div style="overflow-x:auto;">
+                    <table id="sm-result-table" style="width:100%; border-collapse:collapse; font-size:11px; display:none;">
+                        <thead>
+                            <tr style="background:var(--bg-secondary); border-bottom:1px solid var(--border);">
+                                <th style="padding:8px; text-align:left;">Loja</th>
+                                <th style="padding:8px; text-align:center;">Envios</th>
+                                <th style="padding:8px; text-align:center; color:#dc3545;">Atrasados</th>
+                                <th style="padding:8px; text-align:center; color:#fd7e14;">Risco</th>
+                                <th style="padding:8px; text-align:center;">Reembolsos</th>
+                                <th style="padding:8px; text-align:center; color:#dc3545;">Erros Vend.</th>
+                                <th style="padding:8px; text-align:center;">Etiquetas</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sm-result-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- ===================== FIM ABA SHOPEE MONITOR ===================== -->
+
 </div>
 
 <script>
@@ -2020,7 +2260,7 @@ function toggleCardCollapse(collapseId) {
     } catch(e) {}
 }
 function _initCollapsibleCards() {
-    const defaults = { envioAuto: false, lojasPanel: true };
+    const defaults = { envioAuto: false, lojasPanel: true, lotesEnvio: true, contatosLoja: true, valesParcelas: true, cadastroFunc: true };
     let states;
     try { states = JSON.parse(localStorage.getItem('beka_card_states') || '{}'); } catch(e) { states = {}; }
     document.querySelectorAll('[data-collapse-id]').forEach(header => {
@@ -2370,6 +2610,437 @@ function trocarTab(tab) {
         if (iframe && !iframe.src.includes('5050')) {
             iframe.src = 'http://localhost:5050';
         }
+    }
+    if (realTab === 'funcionarios') {
+        carregarTabFuncionarios();
+    }
+}
+
+// =============================================
+// FUNCIONARIOS - Folha de Pagamento
+// =============================================
+
+let _funcListaCache = [];
+let _funcFolhaCache = [];
+
+function _fmtBRL(v) {
+    return (v || 0).toLocaleString('pt-BR', {style:'currency', currency:'BRL'});
+}
+
+function _fmtProxDesc(v) {
+    if (v === '1a Quinzena') return '1ª Quinzena';
+    if (v === '2a Quinzena') return '2ª Quinzena';
+    // Data especifica YYYY-MM -> Mes/Ano
+    const m = (v || '').match(/^(\d{4})-(\d{2})$/);
+    if (m) {
+        const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+        return meses[parseInt(m[2])-1] + '/' + m[1];
+    }
+    return v || '';
+}
+
+function _parseNum(el) {
+    const t = (el.textContent || '').replace(/[^\d.,-]/g, '').replace(',', '.');
+    return parseFloat(t) || 0;
+}
+
+function _gerarPeriodos() {
+    const sel = document.getElementById('func-periodo');
+    if (!sel) return;
+    const now = new Date();
+    sel.innerHTML = '';
+    const meses = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
+    for (let m = -2; m <= 3; m++) {
+        const d = new Date(now.getFullYear(), now.getMonth() + m, 1);
+        const y = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        for (let q = 1; q <= 2; q++) {
+            const val = `${y}-${mm}-${q}`;
+            const label = `${q}a Quinz. ${meses[d.getMonth()]}/${y}`;
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = label;
+            sel.appendChild(opt);
+        }
+    }
+    const curQ = now.getDate() <= 15 ? 1 : 2;
+    const curVal = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${curQ}`;
+    sel.value = curVal;
+}
+
+async function carregarTabFuncionarios() {
+    _gerarPeriodos();
+    _initCollapsibleCards();
+    const data = await fetchAPI('/api/funcionarios');
+    if (data) _funcListaCache = data;
+    await carregarFolha();
+    await carregarVales();
+    renderCadastroFunc();
+}
+
+async function carregarFolha() {
+    const periodo = document.getElementById('func-periodo')?.value || '';
+    const data = await fetchAPI(`/api/folha?periodo=${periodo}`);
+    if (!data) return;
+    _funcFolhaCache = data.folha || [];
+    renderFolha();
+}
+
+function renderFolha() {
+    const tbody = document.getElementById('func-folha-body');
+    const tfoot = document.getElementById('func-folha-foot');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const editStyle = 'color:#0066cc; cursor:text; min-width:40px; outline:none; border-bottom:1px dashed #0066cc;';
+
+    _funcFolhaCache.forEach((f, idx) => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border)';
+        if (idx % 2 === 0) tr.style.background = 'var(--bg-hover)';
+        tr.dataset.funcId = f.funcionario_id;
+        tr.innerHTML = `
+            <td style="padding:6px 8px; font-weight:600;">${f.nome}</td>
+            <td style="padding:6px 8px; text-align:right;">${_fmtBRL(f.salario_mensal)}</td>
+            <td style="padding:6px 8px; text-align:right;">${_fmtBRL(f.quinzena_base)}</td>
+            <td style="padding:6px 8px; text-align:center;"><span contenteditable="true" class="func-edit" data-field="faltas" style="${editStyle}">${f.faltas}</span></td>
+            <td style="padding:6px 8px; text-align:right;" class="func-desc-faltas">${_fmtBRL(f.desc_faltas)}</td>
+            <td style="padding:6px 8px; text-align:right; color:#dc3545; font-weight:600;" class="func-vale-auto" data-vale-auto="${f.vales_auto || 0}">${_fmtBRL(f.vale1)}</td>
+            <td style="padding:6px 8px; text-align:right;"><span contenteditable="true" class="func-edit" data-field="vale2" style="${editStyle}">${f.vale2}</span></td>
+            <td style="padding:6px 8px; text-align:center;"><span contenteditable="true" class="func-edit" data-field="horas_extras" style="${editStyle}">${f.horas_extras}</span></td>
+            <td style="padding:6px 8px; text-align:right;" class="func-valor-hextra">${_fmtBRL(f.valor_h_extra)}</td>
+            <td style="padding:6px 8px; text-align:right; font-weight:700;" class="func-a-receber">${_fmtBRL(f.a_receber)}</td>
+        `;
+        tr.querySelectorAll('.func-edit').forEach(el => {
+            el.addEventListener('input', () => recalcRow(tr));
+        });
+        tbody.appendChild(tr);
+    });
+    recalcTotais();
+}
+
+function recalcRow(tr) {
+    const funcId = parseInt(tr.dataset.funcId);
+    const fData = _funcFolhaCache.find(f => f.funcionario_id === funcId);
+    if (!fData) return;
+    const sal = fData.salario_mensal;
+    const quinzena = sal / 2;
+    const faltas = _parseNum(tr.querySelector('[data-field="faltas"]'));
+    const valeAutoEl = tr.querySelector('.func-vale-auto');
+    const vale1 = parseFloat(valeAutoEl?.dataset.valeAuto || '0') || 0;
+    const vale2 = _parseNum(tr.querySelector('[data-field="vale2"]'));
+    const hExtras = _parseNum(tr.querySelector('[data-field="horas_extras"]'));
+    const descFaltas = faltas * (sal / 30) * 2;
+    const valorHExtra = hExtras > 0 ? hExtras * (sal / 30 / 8) * 1.5 : 0;
+    const aReceber = quinzena - descFaltas - vale1 - vale2 + valorHExtra;
+    tr.querySelector('.func-desc-faltas').textContent = _fmtBRL(descFaltas);
+    tr.querySelector('.func-valor-hextra').textContent = _fmtBRL(valorHExtra);
+    tr.querySelector('.func-a-receber').textContent = _fmtBRL(aReceber);
+    recalcTotais();
+}
+
+function recalcTotais() {
+    const tfoot = document.getElementById('func-folha-foot');
+    if (!tfoot) return;
+    const rows = document.querySelectorAll('#func-folha-body tr');
+    let totSal=0, totQ=0, totDesc=0, totV1=0, totV2=0, totVH=0, totRec=0;
+    rows.forEach(tr => {
+        const cells = tr.querySelectorAll('td');
+        const fId = parseInt(tr.dataset.funcId);
+        const fData = _funcFolhaCache.find(f => f.funcionario_id === fId);
+        if (!fData) return;
+        const sal = fData.salario_mensal;
+        totSal += sal;
+        totQ += sal / 2;
+        const faltas = _parseNum(tr.querySelector('[data-field="faltas"]'));
+        const valeAutoEl = tr.querySelector('.func-vale-auto');
+        const v1 = parseFloat(valeAutoEl?.dataset.valeAuto || '0') || 0;
+        const v2 = _parseNum(tr.querySelector('[data-field="vale2"]'));
+        const he = _parseNum(tr.querySelector('[data-field="horas_extras"]'));
+        const desc = faltas * (sal / 30) * 2;
+        const vh = he > 0 ? he * (sal / 30 / 8) * 1.5 : 0;
+        totDesc += desc;
+        totV1 += v1;
+        totV2 += v2;
+        totVH += vh;
+        totRec += (sal/2 - desc - v1 - v2 + vh);
+    });
+    tfoot.innerHTML = `<tr style="background:var(--bg-hover); font-weight:700; border-top:2px solid var(--border);">
+        <td style="padding:6px 8px;">TOTAL</td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totSal)}</td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totQ)}</td>
+        <td style="padding:6px 8px;"></td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totDesc)}</td>
+        <td style="padding:6px 8px; text-align:right; color:#dc3545;">${_fmtBRL(totV1)}</td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totV2)}</td>
+        <td style="padding:6px 8px;"></td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totVH)}</td>
+        <td style="padding:6px 8px; text-align:right;">${_fmtBRL(totRec)}</td>
+    </tr>`;
+}
+
+async function salvarFolha() {
+    const periodo = document.getElementById('func-periodo')?.value;
+    if (!periodo) return;
+    const rows = document.querySelectorAll('#func-folha-body tr');
+    const itens = [];
+    rows.forEach(tr => {
+        const valeAutoEl = tr.querySelector('.func-vale-auto');
+        itens.push({
+            funcionario_id: parseInt(tr.dataset.funcId),
+            faltas: _parseNum(tr.querySelector('[data-field="faltas"]')),
+            vale1: parseFloat(valeAutoEl?.dataset.valeAuto || '0') || 0,
+            vale2: _parseNum(tr.querySelector('[data-field="vale2"]')),
+            horas_extras: _parseNum(tr.querySelector('[data-field="horas_extras"]')),
+        });
+    });
+    const res = await fetchAPI('/api/folha', {method:'POST', body:JSON.stringify({periodo, itens})});
+    if (res && res.ok) {
+        showToast('Folha salva com sucesso!', 'success');
+    }
+}
+
+function exportarFolha() {
+    const periodo = document.getElementById('func-periodo')?.value;
+    if (!periodo) return;
+    const token = localStorage.getItem('beka_token') || '';
+    window.open(`/api/folha/export?periodo=${periodo}&jwt=${token}`, '_blank');
+}
+
+// =============================================
+// VALES E PARCELAS
+// =============================================
+
+let _funcValesCache = [];
+
+async function carregarVales() {
+    const data = await fetchAPI('/api/vales');
+    if (data) {
+        _funcValesCache = data;
+        renderVales();
+    }
+}
+
+function renderVales() {
+    const tbody = document.getElementById('func-vales-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    _funcValesCache.forEach((v, idx) => {
+        const statusColor = v.status === 'QUITADO' ? '#28a745' : '#dc3545';
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border)';
+        if (idx % 2 === 0) tr.style.background = 'var(--bg-hover)';
+        tr.innerHTML = `
+            <td style="padding:6px 8px;">${v.nome}</td>
+            <td style="padding:6px 8px;">${v.descricao}</td>
+            <td style="padding:6px 8px; text-align:right;">${_fmtBRL(v.valor_total)}</td>
+            <td style="padding:6px 8px; text-align:right;">${_fmtBRL(v.valor_parcela)}</td>
+            <td style="padding:6px 8px; text-align:center;">${v.num_parcelas}</td>
+            <td style="padding:6px 8px; text-align:center; color:#0066cc; font-weight:600;">${v.pagas}</td>
+            <td style="padding:6px 8px; text-align:center;">${v.restantes}</td>
+            <td style="padding:6px 8px;">${_fmtProxDesc(v.prox_desconto)}</td>
+            <td style="padding:6px 8px; text-align:center; font-weight:600; color:${statusColor};">${v.status}</td>
+            <td style="padding:6px 8px; text-align:center;">
+                <button onclick="editarVale(${v.id})" style="background:none; border:none; cursor:pointer; color:var(--text-secondary); font-size:12px;" title="Editar"><i class="fas fa-edit"></i></button>
+                <button onclick="removerVale(${v.id})" style="background:none; border:none; cursor:pointer; color:#dc3545; font-size:12px;" title="Remover"><i class="fas fa-trash"></i></button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function toggleValeDataEsp() {
+    const tipo = document.getElementById('modal-vale-prox-tipo').value;
+    const dataInput = document.getElementById('modal-vale-prox-data');
+    dataInput.style.display = tipo === 'data' ? 'block' : 'none';
+}
+
+function _setValeProxModal(prox) {
+    const sel = document.getElementById('modal-vale-prox-tipo');
+    const dataInput = document.getElementById('modal-vale-prox-data');
+    if (prox === '1a Quinzena' || prox === '2a Quinzena') {
+        sel.value = prox;
+        dataInput.style.display = 'none';
+        dataInput.value = '';
+    } else if (prox) {
+        // Data especifica — tentar converter 'MM/YYYY' ou 'YYYY-MM' para input month
+        sel.value = 'data';
+        dataInput.style.display = 'block';
+        // Tentar parsear formatos comuns
+        const match = prox.match(/(\d{4})-(\d{2})/);
+        if (match) {
+            dataInput.value = prox;
+        } else {
+            dataInput.value = '';
+        }
+    } else {
+        sel.value = '1a Quinzena';
+        dataInput.style.display = 'none';
+    }
+}
+
+function _getValeProxValue() {
+    const tipo = document.getElementById('modal-vale-prox-tipo').value;
+    if (tipo === 'data') {
+        return document.getElementById('modal-vale-prox-data').value || '';
+    }
+    return tipo;
+}
+
+function mostrarModalVale(valeId) {
+    const modal = document.getElementById('modal-vale');
+    const selFunc = document.getElementById('modal-vale-func');
+    selFunc.innerHTML = _funcListaCache.filter(f => f.ativo).map(f =>
+        `<option value="${f.id}">${f.nome}</option>`
+    ).join('');
+
+    if (valeId) {
+        const v = _funcValesCache.find(x => x.id === valeId);
+        if (!v) return;
+        document.getElementById('modal-vale-title').textContent = 'Editar Vale';
+        document.getElementById('modal-vale-id').value = v.id;
+        selFunc.value = v.funcionario_id;
+        document.getElementById('modal-vale-desc').value = v.descricao;
+        document.getElementById('modal-vale-total').value = v.valor_total;
+        document.getElementById('modal-vale-parcela').value = v.valor_parcela;
+        document.getElementById('modal-vale-nparcelas').value = v.num_parcelas;
+        document.getElementById('modal-vale-pagas').value = v.pagas;
+        _setValeProxModal(v.prox_desconto);
+    } else {
+        document.getElementById('modal-vale-title').textContent = 'Novo Vale';
+        document.getElementById('modal-vale-id').value = '';
+        document.getElementById('modal-vale-desc').value = '';
+        document.getElementById('modal-vale-total').value = '';
+        document.getElementById('modal-vale-parcela').value = '';
+        document.getElementById('modal-vale-nparcelas').value = '';
+        document.getElementById('modal-vale-pagas').value = '0';
+        _setValeProxModal('1a Quinzena');
+    }
+    modal.style.display = 'flex';
+}
+
+function fecharModalVale() {
+    document.getElementById('modal-vale').style.display = 'none';
+}
+
+function editarVale(id) { mostrarModalVale(id); }
+
+async function salvarVale() {
+    const id = document.getElementById('modal-vale-id').value;
+    const payload = {
+        funcionario_id: parseInt(document.getElementById('modal-vale-func').value),
+        descricao: document.getElementById('modal-vale-desc').value,
+        valor_total: parseFloat(document.getElementById('modal-vale-total').value) || 0,
+        valor_parcela: parseFloat(document.getElementById('modal-vale-parcela').value) || 0,
+        num_parcelas: parseInt(document.getElementById('modal-vale-nparcelas').value) || 0,
+        pagas: parseInt(document.getElementById('modal-vale-pagas').value) || 0,
+        prox_desconto: _getValeProxValue(),
+    };
+    let res;
+    if (id) {
+        res = await fetchAPI(`/api/vales/${id}`, {method:'PUT', body:JSON.stringify(payload)});
+    } else {
+        res = await fetchAPI('/api/vales', {method:'POST', body:JSON.stringify(payload)});
+    }
+    if (res && !res.error) {
+        fecharModalVale();
+        await carregarVales();
+        showToast('Vale salvo!', 'success');
+    }
+}
+
+async function removerVale(id) {
+    if (!confirm('Remover este vale/parcela?')) return;
+    const res = await fetchAPI(`/api/vales/${id}`, {method:'DELETE'});
+    if (res && res.ok) {
+        await carregarVales();
+        showToast('Vale removido', 'success');
+    }
+}
+
+// =============================================
+// CADASTRO FUNCIONARIOS
+// =============================================
+
+function renderCadastroFunc() {
+    const tbody = document.getElementById('func-cadastro-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    _funcListaCache.forEach((f, idx) => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border)';
+        if (idx % 2 === 0) tr.style.background = 'var(--bg-hover)';
+        tr.innerHTML = `
+            <td style="padding:6px 8px; font-weight:600;">${f.nome}</td>
+            <td style="padding:6px 8px; text-align:right;">${_fmtBRL(f.salario_mensal)}</td>
+            <td style="padding:6px 8px; text-align:center;">
+                <span style="color:${f.ativo ? '#28a745' : '#dc3545'}; font-weight:600;">${f.ativo ? 'Sim' : 'Nao'}</span>
+            </td>
+            <td style="padding:6px 8px; text-align:center;">
+                <button onclick="editarFunc(${f.id})" style="background:none; border:none; cursor:pointer; color:var(--text-secondary); font-size:12px;" title="Editar"><i class="fas fa-edit"></i></button>
+                <button onclick="toggleFunc(${f.id}, ${!f.ativo})" style="background:none; border:none; cursor:pointer; color:${f.ativo ? '#dc3545' : '#28a745'}; font-size:12px;" title="${f.ativo ? 'Desativar' : 'Ativar'}">
+                    <i class="fas fa-${f.ativo ? 'user-slash' : 'user-check'}"></i>
+                </button>
+            </td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function mostrarModalFunc(funcId) {
+    const modal = document.getElementById('modal-func');
+    if (funcId) {
+        const f = _funcListaCache.find(x => x.id === funcId);
+        if (!f) return;
+        document.getElementById('modal-func-title').textContent = 'Editar Funcionario';
+        document.getElementById('modal-func-id').value = f.id;
+        document.getElementById('modal-func-nome').value = f.nome;
+        document.getElementById('modal-func-salario').value = f.salario_mensal;
+    } else {
+        document.getElementById('modal-func-title').textContent = 'Novo Funcionario';
+        document.getElementById('modal-func-id').value = '';
+        document.getElementById('modal-func-nome').value = '';
+        document.getElementById('modal-func-salario').value = '';
+    }
+    modal.style.display = 'flex';
+}
+
+function fecharModalFunc() {
+    document.getElementById('modal-func').style.display = 'none';
+}
+
+function editarFunc(id) { mostrarModalFunc(id); }
+
+async function salvarFunc() {
+    const id = document.getElementById('modal-func-id').value;
+    const payload = {
+        nome: document.getElementById('modal-func-nome').value,
+        salario_mensal: parseFloat(document.getElementById('modal-func-salario').value) || 0,
+    };
+    let res;
+    if (id) {
+        res = await fetchAPI(`/api/funcionarios/${id}`, {method:'PUT', body:JSON.stringify(payload)});
+    } else {
+        res = await fetchAPI('/api/funcionarios', {method:'POST', body:JSON.stringify(payload)});
+    }
+    if (res && !res.error) {
+        fecharModalFunc();
+        const data = await fetchAPI('/api/funcionarios');
+        if (data) _funcListaCache = data;
+        renderCadastroFunc();
+        await carregarFolha();
+        showToast('Funcionario salvo!', 'success');
+    }
+}
+
+async function toggleFunc(id, ativo) {
+    const res = await fetchAPI(`/api/funcionarios/${id}`, {method:'PUT', body:JSON.stringify({ativo})});
+    if (res && !res.error) {
+        const data = await fetchAPI('/api/funcionarios');
+        if (data) _funcListaCache = data;
+        renderCadastroFunc();
+        await carregarFolha();
+        showToast(ativo ? 'Funcionario ativado' : 'Funcionario desativado', 'success');
     }
 }
 
@@ -3831,15 +4502,18 @@ async function carregarDadosAutomacao() {
     atualizarResumoFilaWhatsApp();
     iniciarPollingFilaWhatsApp();
     carregarConfigEmail();
-    carregarContatos();
-    carregarContatosEmail();
+    const contatosLoad = Promise.allSettled([
+        carregarContatos(false),
+        carregarContatosEmail(false)
+    ]);
     carregarLojasPersistentes();
     _atualizarCardEnvioDisponivel();
     carregarHistoricoGeradas24h();
     carregarAgendamentos();
     carregarHistorico();
     carregarLotes();
-    carregarContatosUnificados();
+    await contatosLoad;
+    carregarContatosUnificados(_contatosCache, _contatosEmailCache);
 }
 
 let _automacaoAlvosCache = { lojas: [], grupos: [] };
@@ -5487,6 +6161,7 @@ async function salvarContato() {
         nome_contato: nome,
         lojas,
         grupos,
+        lote_ids: loteIds,
         loja_cnpj: 'ALVO_CUSTOM',
         loja_nome: resumoGeral ? 'Resumo Geral' : (lojas[0] || (grupos[0] || 'Todos')),
         resumo_geral: resumoGeral,
@@ -5528,12 +6203,15 @@ async function toggleAtivoContato(id) {
     } else toast(res?.erro || 'Erro', 'error');
 }
 
-async function carregarContatos() {
+async function carregarContatos(syncUnified = true) {
     const data = await fetchAPI('/api/whatsapp/contatos');
     _contatosCache = data || [];
     const container = document.getElementById('tabelaContatos');
     if (!data || data.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato cadastrado.</p>';
+        if (syncUnified && typeof carregarContatosUnificados === 'function') {
+            carregarContatosUnificados(_contatosCache, _contatosEmailCache);
+        }
         return;
     }
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
@@ -5564,7 +6242,9 @@ async function carregarContatos() {
     html += '</tbody></table>';
     container.innerHTML = html;
     // Sincronizar card Envio Automatico
-    if (typeof carregarContatosUnificados === 'function') carregarContatosUnificados();
+    if (syncUnified && typeof carregarContatosUnificados === 'function') {
+        carregarContatosUnificados(_contatosCache, _contatosEmailCache);
+    }
 }
 
 async function removerContato(id) {
@@ -5616,6 +6296,7 @@ async function salvarContatoEmail() {
         email: email,
         lojas,
         grupos,
+        lote_ids: loteIds,
         loja_cnpj: 'ALVO_CUSTOM',
         lote_ids_json: JSON.stringify(loteIds)
     };
@@ -5633,12 +6314,15 @@ async function salvarContatoEmail() {
     } else toast(res?.erro || 'Erro', 'error');
 }
 
-async function carregarContatosEmail() {
+async function carregarContatosEmail(syncUnified = true) {
     const data = await fetchAPI('/api/email/contatos');
     _contatosEmailCache = data || [];
     const container = document.getElementById('tabelaContatosEmail');
     if (!data || data.length === 0) {
         container.innerHTML = '<p style="font-size:12px; color:var(--text-secondary);">Nenhum contato de email cadastrado.</p>';
+        if (syncUnified && typeof carregarContatosUnificados === 'function') {
+            carregarContatosUnificados(_contatosCache, _contatosEmailCache);
+        }
         return;
     }
     let html = '<table style="width:100%; font-size:12px;"><thead><tr>';
@@ -5661,7 +6345,9 @@ async function carregarContatosEmail() {
     html += '</tbody></table>';
     container.innerHTML = html;
     // Sincronizar card Envio Automatico
-    if (typeof carregarContatosUnificados === 'function') carregarContatosUnificados();
+    if (syncUnified && typeof carregarContatosUnificados === 'function') {
+        carregarContatosUnificados(_contatosCache, _contatosEmailCache);
+    }
 }
 
 async function removerContatoEmail(id) {
@@ -6485,21 +7171,32 @@ function _removerLinhaAgendamento(tipo, id, idx) {
     if (editorDiv) editorDiv.innerHTML = _renderEditorAgendamento(tipo, id);
 }
 
+function _diasSeSobrepoem(diasA, diasB) {
+    const a = Array.isArray(diasA) ? diasA : [];
+    const b = Array.isArray(diasB) ? diasB : [];
+    if (!a.length || !b.length) return false;
+    return a.some(d => b.includes(d));
+}
+
 function _verificarIntervaloMinimo(horarios) {
-    // Coleta TODOS os horarios de todas as linhas (mesmo dia pode ter conflito entre linhas)
     const todasHoras = [];
     (horarios || []).forEach(linha => {
+        const dias = Array.isArray(linha?.dias) ? linha.dias.slice() : [];
         (linha.horas || []).forEach(h => {
             const [hh, mm] = h.split(':').map(Number);
-            if (!isNaN(hh) && !isNaN(mm)) todasHoras.push({ str: h, min: hh * 60 + mm });
+            if (!isNaN(hh) && !isNaN(mm)) {
+                todasHoras.push({ str: h, min: hh * 60 + mm, dias });
+            }
         });
     });
-    todasHoras.sort((a, b) => a.min - b.min);
     const alertas = [];
-    for (let i = 1; i < todasHoras.length; i++) {
-        const diff = todasHoras[i].min - todasHoras[i - 1].min;
-        if (diff <= 5) {
-            alertas.push(`${todasHoras[i - 1].str} e ${todasHoras[i].str} (${diff} min)`);
+    for (let i = 0; i < todasHoras.length; i++) {
+        for (let j = i + 1; j < todasHoras.length; j++) {
+            if (!_diasSeSobrepoem(todasHoras[i].dias, todasHoras[j].dias)) continue;
+            const diff = Math.abs(todasHoras[j].min - todasHoras[i].min);
+            if (diff <= 5) {
+                alertas.push(`${todasHoras[i].str} e ${todasHoras[j].str} (${diff} min)`);
+            }
         }
     }
     return alertas;
@@ -6542,16 +7239,23 @@ async function _salvarHorariosContato(tipo, id) {
     }
 }
 
-async function carregarContatosUnificados() {
-    let waData = [], emailData = [];
-    try {
-        [waData, emailData] = await Promise.all([
-            fetchAPI('/api/whatsapp/contatos'),
-            fetchAPI('/api/email/contatos'),
-        ]);
-    } catch(e) {
-        console.error('[carregarContatosUnificados] Erro ao buscar contatos:', e);
+async function carregarContatosUnificados(waDataOverride = null, emailDataOverride = null) {
+    let waData = Array.isArray(waDataOverride) ? waDataOverride : null;
+    let emailData = Array.isArray(emailDataOverride) ? emailDataOverride : null;
+
+    if (waData === null || emailData === null) {
+        try {
+            [waData, emailData] = await Promise.all([
+                waData === null ? fetchAPI('/api/whatsapp/contatos') : Promise.resolve(waData),
+                emailData === null ? fetchAPI('/api/email/contatos') : Promise.resolve(emailData),
+            ]);
+        } catch(e) {
+            console.error('[carregarContatosUnificados] Erro ao buscar contatos:', e);
+        }
     }
+
+    if (Array.isArray(waData)) _contatosCache = waData;
+    if (Array.isArray(emailData)) _contatosEmailCache = emailData;
 
     const container = document.getElementById('tabelaContatosUnificados');
     if (!container) { console.error('[carregarContatosUnificados] container nao encontrado'); return; }
@@ -6579,6 +7283,7 @@ async function carregarContatosUnificados() {
         const alvos = []
             .concat((c.lojas || []).map(x => x))
             .concat((c.grupos || []).map(x => `[${x}]`));
+        const controladoPorLote = Array.isArray(c.lote_ids) && c.lote_ids.length > 0;
         const ativoIcon = c.ativo !== false
             ? '<span style="color:#25D366;">&#10003;</span>'
             : '<span style="color:#e74c3c;">&#10007;</span>';
@@ -6603,16 +7308,22 @@ async function carregarContatosUnificados() {
             <td style="font-size:10px;">${_renderLotesBadges(c.lote_ids || [])}</td>
             <td>${ativoIcon}</td>
             <td style="min-width:160px;">
-                <div style="display:flex; align-items:center; gap:6px;">
-                    <button onclick="toggleAgendamentoAtivo('${c.tipo}',${c.id})" title="${agToggleTitle}"
-                        style="background:none; border:none; cursor:pointer; font-size:16px; color:${agToggleColor}; padding:0; line-height:1;">
-                        <i class="fas ${agToggleIcon}"></i>
-                    </button>
-                    <div onclick="_toggleAgendamentoEditor('${c.tipo}',${c.id})" style="cursor:pointer; opacity:${agOpacity};" title="Clique para editar agendamento">
-                        <span id="agendamento-resumo-${c.tipo}-${c.id}">${resumoHtml}</span>
-                        <i class="fas fa-pen" style="font-size:8px; color:var(--text-muted); margin-left:4px;"></i>
-                    </div>
-                </div>
+                ${controladoPorLote
+                    ? `<div title="Contato vinculado a lote. O horario individual fica desconsiderado enquanto houver lote associado."
+                           style="display:inline-flex; align-items:center; gap:6px; background:rgba(240,93,35,0.12); color:var(--accent); border:1px solid rgba(240,93,35,0.25); border-radius:999px; padding:4px 8px; font-size:10px; font-weight:600;">
+                           <i class="fas fa-layer-group"></i> Controlado por lote
+                       </div>`
+                    : `<div style="display:flex; align-items:center; gap:6px;">
+                           <button onclick="toggleAgendamentoAtivo('${c.tipo}',${c.id})" title="${agToggleTitle}"
+                               style="background:none; border:none; cursor:pointer; font-size:16px; color:${agToggleColor}; padding:0; line-height:1;">
+                               <i class="fas ${agToggleIcon}"></i>
+                           </button>
+                           <div onclick="_toggleAgendamentoEditor('${c.tipo}',${c.id})" style="cursor:pointer; opacity:${agOpacity};" title="Clique para editar agendamento">
+                               <span id="agendamento-resumo-${c.tipo}-${c.id}">${resumoHtml}</span>
+                               <i class="fas fa-pen" style="font-size:8px; color:var(--text-muted); margin-left:4px;"></i>
+                           </div>
+                       </div>`
+                }
                 <div id="agendamento-editor-${c.tipo}-${c.id}" style="display:none;"></div>
             </td>
             <td style="text-align:center; white-space:nowrap;">
@@ -6813,14 +7524,19 @@ function renderLotes(lotes) {
     container.innerHTML = html;
 }
 
+async function _recarregarAutomacaoAposLote() {
+    await Promise.allSettled([
+        carregarLotes(),
+        carregarContatos(false),
+        carregarContatosEmail(false)
+    ]);
+    carregarContatosUnificados(_contatosCache, _contatosEmailCache);
+}
+
 function _renderLoteContatos(loteId) {
     const container = document.getElementById('loteContatosContainer');
     if (!container) return;
-    // Combinar WA + Email
-    const todos = [
-        ...(_contatosCache || []).map(c => ({...c, tipo: 'whatsapp'})),
-        ...(_contatosEmailCache || []).map(c => ({...c, tipo: 'email'})),
-    ];
+    const todos = (_contatosCache || []).map(c => ({...c, tipo: 'whatsapp'}));
     if (todos.length === 0) {
         container.innerHTML = '<span style="color:var(--text-muted); font-size:11px;">Nenhum contato cadastrado.</span>';
         return;
@@ -6829,9 +7545,7 @@ function _renderLoteContatos(loteId) {
     todos.forEach(c => {
         const loteIds = c.lote_ids || [];
         const checked = loteIds.includes(loteId) ? 'checked' : '';
-        const icone = c.tipo === 'whatsapp'
-            ? '<i class="fab fa-whatsapp" style="color:#25D366; font-size:11px;"></i>'
-            : '<i class="fas fa-envelope" style="color:#2196F3; font-size:11px;"></i>';
+        const icone = '<i class="fab fa-whatsapp" style="color:#25D366; font-size:11px;"></i>';
         const lojas = (c.lojas || []).join(', ');
         html += `<label style="display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:4px; cursor:pointer; font-size:12px; margin-bottom:2px; background:rgba(255,255,255,0.02);">
             <input type="checkbox" class="loteContatoCb" value="${c.tipo}_${c.id}" ${checked} style="accent-color:var(--accent);">
@@ -6902,9 +7616,7 @@ async function salvarLote() {
         if (res && !res.erro) {
             toast(editId ? 'Lote atualizado!' : 'Lote criado!', 'success');
             fecharModalLote();
-            carregarLotes();
-            carregarContatos();
-            carregarContatosUnificados();
+            await _recarregarAutomacaoAposLote();
         } else {
             toast(res?.erro || 'Erro ao salvar lote', 'error');
         }
@@ -6919,7 +7631,7 @@ async function excluirLote(id) {
         const res = await fetchAPI(`/api/lotes/${id}`, { method: 'DELETE' });
         if (res && !res.erro) {
             toast('Lote excluido', 'success');
-            carregarLotes();
+            await _recarregarAutomacaoAposLote();
         } else {
             toast(res?.erro || 'Erro ao excluir', 'error');
         }
@@ -6966,7 +7678,7 @@ function _renderLotesFormulario(prefix, selectedLoteIds = []) {
     container.innerHTML = _lotesCache.map(lote => `
         <label style="display:flex; align-items:center; gap:6px; padding:2px 0;">
             <input type="checkbox" class="${prefix}-alvo-lote" value="${lote.id}" ${selectedSet.has(lote.id) ? 'checked' : ''} style="accent-color:var(--accent);">
-            <span>${escapeHtml(lote.nome || '')} <span style="color:var(--text-muted); font-size:10px;">(${lote.horario || ''})</span></span>
+            <span>${escapeHtml(lote.nome || '')} <span style="color:var(--text-muted); font-size:10px;">(${escapeHtml(lote.hora || lote.horario || '')})</span></span>
         </label>
     `).join('');
 }
@@ -7087,7 +7799,210 @@ async function avulsasAbrirPasta() {
 
 // AIOS: codigo movido para static/aios.js (modulo isolado)
 
+
+// =============================================
+// SHOPEE MONITOR
+// =============================================
+
+let _smPolling = null;
+let _smLoaded = false;
+
+async function carregarShopeeMonitor() {
+    if (_smLoaded) return;
+    _smLoaded = true;
+    await carregarShopeeConfig();
+    await carregarShopeeResultados();
+}
+
+async function carregarShopeeConfig() {
+    const cfg = await fetchAPI('/api/shopee-monitor/config');
+    if (!cfg || cfg.error) return;
+
+    document.getElementById('sm-horario').value = cfg.horario || '07:00';
+    document.getElementById('sm-cdp-port').value = cfg.cdp_port || 9222;
+    document.getElementById('sm-ativo').checked = cfg.ativo || false;
+
+    const dias = cfg.dias || [];
+    document.querySelectorAll('.sm-dia').forEach(cb => {
+        cb.checked = dias.includes(cb.value);
+    });
+}
+
+async function salvarShopeeConfig() {
+    const dias = [];
+    document.querySelectorAll('.sm-dia:checked').forEach(cb => dias.push(cb.value));
+
+    const payload = {
+        horario: document.getElementById('sm-horario').value,
+        cdp_port: parseInt(document.getElementById('sm-cdp-port').value) || 9222,
+        ativo: document.getElementById('sm-ativo').checked,
+        dias: dias,
+    };
+
+    const res = await fetchAPI('/api/shopee-monitor/config', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+    if (res && !res.error) {
+        showToast('Config salva!', 'success');
+    }
+}
+
+async function executarShopeeMonitor() {
+    const res = await fetchAPI('/api/shopee-monitor/run', { method: 'POST' });
+    if (res && res.error) {
+        showToast(res.error, 'error');
+        return;
+    }
+    showToast('Monitoramento iniciado!', 'success');
+    document.getElementById('sm-btn-run').style.display = 'none';
+    document.getElementById('sm-btn-stop').style.display = 'inline-flex';
+    _smSetStatus('running', 'Executando...');
+    document.getElementById('sm-log').textContent = '';
+
+    // Iniciar polling
+    if (_smPolling) clearInterval(_smPolling);
+    _smPolling = setInterval(pollShopeeStatus, 3000);
+}
+
+async function pararShopeeMonitor() {
+    await fetchAPI('/api/shopee-monitor/stop', { method: 'POST' });
+    _smStopPolling();
+    _smSetStatus('idle', 'Parado');
+    showToast('Monitoramento parado', 'info');
+}
+
+function _smStopPolling() {
+    if (_smPolling) {
+        clearInterval(_smPolling);
+        _smPolling = null;
+    }
+    document.getElementById('sm-btn-run').style.display = 'inline-flex';
+    document.getElementById('sm-btn-stop').style.display = 'none';
+}
+
+async function pollShopeeStatus() {
+    const res = await fetchAPI('/api/shopee-monitor/status');
+    if (!res) return;
+
+    // Atualizar log
+    const logEl = document.getElementById('sm-log');
+    if (res.log_lines && res.log_lines.length > 0) {
+        logEl.textContent = res.log_lines.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Atualizar status
+    if (res.status === 'running') {
+        _smSetStatus('running', 'Executando...');
+    } else if (res.status === 'done' || res.status === 'concluido') {
+        _smSetStatus('done', 'Concluido');
+        _smStopPolling();
+        await carregarShopeeResultados();
+    } else if (res.status === 'error' || res.status === 'erro') {
+        _smSetStatus('error', 'Erro');
+        _smStopPolling();
+    } else if (res.status === 'idle') {
+        // Pode ter terminado entre polls
+        if (res.log_lines && res.log_lines.length > 0) {
+            _smSetStatus('done', 'Concluido');
+            _smStopPolling();
+            await carregarShopeeResultados();
+        }
+    }
+}
+
+function _smSetStatus(type, text) {
+    const badge = document.getElementById('sm-status-badge');
+    badge.textContent = text;
+    if (type === 'running') {
+        badge.style.background = '#1e3a5f';
+        badge.style.color = '#60a5fa';
+    } else if (type === 'done') {
+        badge.style.background = '#1a3d1a';
+        badge.style.color = '#4ade80';
+    } else if (type === 'error') {
+        badge.style.background = '#3d1a1a';
+        badge.style.color = '#f87171';
+    } else {
+        badge.style.background = 'var(--bg-hover)';
+        badge.style.color = 'var(--text-secondary)';
+    }
+}
+
+async function carregarShopeeResultados() {
+    const res = await fetchAPI('/api/shopee-monitor/results');
+    if (!res || !res.resultado) return;
+
+    const r = res.resultado;
+    const sumEl = document.getElementById('sm-result-summary');
+    const table = document.getElementById('sm-result-table');
+    const tbody = document.getElementById('sm-result-tbody');
+
+    // Resumo
+    const dt = r.inicio ? new Date(r.inicio).toLocaleString('pt-BR') : '---';
+    sumEl.innerHTML = `
+        <div style="padding:8px 14px; background:var(--bg-secondary); border-radius:8px; font-size:12px;">
+            <div style="color:var(--text-secondary); font-size:10px;">Data</div>
+            <div style="font-weight:600;">${dt}</div>
+        </div>
+        <div style="padding:8px 14px; background:var(--bg-secondary); border-radius:8px; font-size:12px;">
+            <div style="color:var(--text-secondary); font-size:10px;">Lojas</div>
+            <div style="font-weight:600;">${r.total_lojas || 0}</div>
+        </div>
+        <div style="padding:8px 14px; background:var(--bg-secondary); border-radius:8px; font-size:12px;">
+            <div style="color:var(--text-secondary); font-size:10px;">Alertas</div>
+            <div style="font-weight:600; color:${r.total_alertas > 0 ? '#f87171' : '#4ade80'};">${r.total_alertas || 0}</div>
+        </div>
+        <div style="padding:8px 14px; background:var(--bg-secondary); border-radius:8px; font-size:12px;">
+            <div style="color:var(--text-secondary); font-size:10px;">Etiquetas</div>
+            <div style="font-weight:600;">${r.total_etiquetas || 0}</div>
+        </div>
+    `;
+
+    // Tabela detalhada
+    const resultado = r.resultado || {};
+    const alertas = resultado.alertas || [];
+    const reembolsos = resultado.reembolsos || [];
+
+    if (alertas.length === 0) {
+        table.style.display = 'none';
+        return;
+    }
+
+    table.style.display = 'table';
+    tbody.innerHTML = '';
+
+    // Indexar reembolsos por username
+    const reembMap = {};
+    reembolsos.forEach(re => { reembMap[re.username] = re; });
+
+    // Indexar etiquetas
+    const etiqMap = {};
+    (resultado.etiquetas?.resultado || []).forEach(e => { etiqMap[e.username] = e.etiquetas_abertas || 0; });
+
+    alertas.forEach(loja => {
+        const re = reembMap[loja.username] || {};
+        const nErros = (re.erros_vendedor || []).length;
+        const nReemb = re.reembolsos_shopee_hoje || 0;
+        const nEtiq = etiqMap[loja.username] || 0;
+
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--border)';
+        tr.innerHTML = `
+            <td style="padding:6px 8px; font-weight:500;">${loja.nome}</td>
+            <td style="padding:6px 8px; text-align:center;">${loja.envios_processados || 0}</td>
+            <td style="padding:6px 8px; text-align:center; color:${loja.atrasado > 0 ? '#f87171' : 'var(--text-primary)'}; font-weight:${loja.atrasado > 0 ? '700' : '400'};">${loja.atrasado || 0}</td>
+            <td style="padding:6px 8px; text-align:center; color:${loja.risco > 0 ? '#fd7e14' : 'var(--text-primary)'}; font-weight:${loja.risco > 0 ? '700' : '400'};">${loja.risco || 0}</td>
+            <td style="padding:6px 8px; text-align:center;">${nReemb}</td>
+            <td style="padding:6px 8px; text-align:center; color:${nErros > 0 ? '#f87171' : 'var(--text-primary)'}; font-weight:${nErros > 0 ? '700' : '400'};">${nErros}</td>
+            <td style="padding:6px 8px; text-align:center;">${nEtiq}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
 </script>
-<script src="/static/aios.js"></script>
+<script src="/static/aios.js?v=20260316b"></script>
 </body>
 </html>

@@ -53,6 +53,24 @@ def _normalizar_cnpj_chave(valor: str) -> str:
     return re.sub(r"\s+", " ", bruto).strip().upper()
 
 
+def _extrair_cnpj_chaves(valor: str) -> List[str]:
+    """Aceita CNPJ unico ou lista separada por virgula/pipe/ponto e virgula."""
+    bruto = str(valor or "").strip()
+    if not bruto:
+        return []
+
+    chaves: List[str] = []
+    partes = re.split(r"[;,|]+", bruto)
+    if not partes:
+        partes = [bruto]
+
+    for parte in partes:
+        chave = _normalizar_cnpj_chave(parte)
+        if chave and chave not in chaves:
+            chaves.append(chave)
+    return chaves
+
+
 def normalizar_nome_loja(nome: str) -> str:
     """Normaliza nome da loja para comparacao robusta."""
     if not nome:
@@ -121,22 +139,95 @@ def _arquivo_ext_permitido(path: str) -> bool:
     return ext in _ALLOWED_FILE_EXTENSIONS
 
 
+def _extrair_timestamp_batch(pdf_hint: str) -> str:
+    """Extrai timestamp do lote a partir do nome do PDF (ex: '20260314_091240')."""
+    import re
+    m = re.search(r'(\d{8}_\d{6})', pdf_hint or "")
+    return m.group(1) if m else ""
+
+
+def _extrair_timestamp_nome_arquivo(nome_arquivo: str) -> str:
+    m = re.search(r'(\d{8}_\d{6})', str(nome_arquivo or ""))
+    return m.group(1) if m else ""
+
+
+def _normalizar_nome_arquivo_logico(nome_arquivo: str) -> str:
+    nome = os.path.basename(str(nome_arquivo or "")).strip().lower()
+    if not nome:
+        return ""
+    nome = re.sub(r'\d{8}_\d{6}', '', nome)
+    nome = re.sub(r'[_-]{2,}', '_', nome)
+    nome = re.sub(r'[_-]+(?=\.)', '', nome)
+    return nome
+
+
+def _deduplicar_entregas_logicas(entregas: List[dict], destino_key: str) -> Tuple[List[dict], int]:
+    """
+    Deduplica entregas logicas mantendo a versao mais recente do mesmo arquivo.
+
+    Exemplo real: evita enviar `etiquetas_vini2_113037.pdf` e
+    `etiquetas_vini2_113038.pdf` para o mesmo destino no mesmo lote.
+    """
+    escolhidos: Dict[tuple, dict] = {}
+    for idx, entrega in enumerate(entregas or []):
+        destino = str((entrega or {}).get(destino_key, "") or "").strip().lower()
+        file_path = str((entrega or {}).get("file_path", (entrega or {}).get("pdf_path", "")) or "").strip()
+        loja = normalizar_nome_loja((entrega or {}).get("loja", ""))
+        if not destino or not file_path:
+            continue
+
+        nome_arquivo = os.path.basename(file_path)
+        logical_name = _normalizar_nome_arquivo_logico(nome_arquivo)
+        ext = os.path.splitext(nome_arquivo)[1].lower()
+        chave = (destino, loja, logical_name, ext)
+
+        ts = _extrair_timestamp_nome_arquivo(nome_arquivo)
+        try:
+            mtime = float(os.path.getmtime(file_path))
+        except Exception:
+            mtime = 0.0
+        score = (ts or "", mtime, idx)
+
+        atual = escolhidos.get(chave)
+        if atual is None or score > atual["score"]:
+            escolhidos[chave] = {
+                "entrega": entrega,
+                "score": score,
+                "ordem": atual["ordem"] if atual is not None else idx,
+            }
+
+    deduped = [
+        item["entrega"]
+        for item in sorted(escolhidos.values(), key=lambda item: item["ordem"])
+    ]
+    return deduped, max(0, len(entregas or []) - len(deduped))
+
+
 def _listar_arquivos_loja(pasta_saida: str, loja_nome: str, pdf_hint: str = "") -> List[str]:
     """
     Lista arquivos de envio de uma loja:
     - PDF de etiquetas
     - imagens auxiliares
     - XLSX/XLS de resumo
+
+    Quando pdf_hint é fornecido, filtra apenas arquivos do lote atual
+    (cujo nome contém o mesmo timestamp), evitando enviar arquivos de
+    lotes anteriores que ainda estejam na pasta (retenção 24h).
     """
     pasta_loja = os.path.join(pasta_saida, loja_nome)
     arquivos: List[str] = []
+    batch_ts = _extrair_timestamp_batch(pdf_hint)
 
     if os.path.isdir(pasta_loja):
         for raiz, _, nomes in os.walk(pasta_loja):
             for nome in nomes:
                 caminho = os.path.abspath(os.path.join(raiz, nome))
-                if _arquivo_ext_permitido(caminho):
-                    arquivos.append(caminho)
+                if not _arquivo_ext_permitido(caminho):
+                    continue
+                # Se temos timestamp do lote, só inclui arquivos deste lote
+                if batch_ts and batch_ts not in nome:
+                    continue
+                arquivos.append(caminho)
 
     # Compatibilidade: garante o PDF principal do resultado, quando existir.
     if pdf_hint:
@@ -203,11 +294,12 @@ def resolver_contatos_loja(
     2) Nome normalizado (fallback)
     """
     encontrados = []
-    cnpj_key = _normalizar_cnpj_chave(loja_cnpj)
+    cnpj_keys = _extrair_cnpj_chaves(loja_cnpj)
     nome_key = normalizar_nome_loja(loja_nome)
 
-    if cnpj_key and cnpj_key in contatos_por_cnpj:
-        encontrados.extend(contatos_por_cnpj[cnpj_key])
+    for cnpj_key in cnpj_keys:
+        if cnpj_key in contatos_por_cnpj:
+            encontrados.extend(contatos_por_cnpj[cnpj_key])
     if nome_key and nome_key in contatos_por_nome:
         encontrados.extend(contatos_por_nome[nome_key])
 
@@ -311,6 +403,9 @@ def montar_entregas_por_resultado(
                 })
                 diagnostico["arquivos_totais"] += 1
 
+    entregas, duplicados_logicos = _deduplicar_entregas_logicas(entregas, "telefone")
+    diagnostico["duplicados_logicos_ignorados"] = duplicados_logicos
+    diagnostico["arquivos_totais"] = len(entregas)
     diagnostico["entregas_totais"] = len(entregas)
     return entregas, diagnostico
 
@@ -399,5 +494,8 @@ def montar_destinos_por_resultado(
                 })
                 diagnostico["arquivos_totais"] += 1
 
+    envios, duplicados_logicos = _deduplicar_entregas_logicas(envios, "destino")
+    diagnostico["duplicados_logicos_ignorados"] = duplicados_logicos
+    diagnostico["arquivos_totais"] = len(envios)
     diagnostico["entregas_totais"] = len(envios)
     return envios, diagnostico

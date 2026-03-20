@@ -4691,38 +4691,19 @@ def main():
         if not os.path.exists(pasta_loja):
             os.makedirs(pasta_loja)
 
-        # Separar etiquetas regulares, CPF e Retirada
-        etiq_regular = [e for e in etiquetas_loja if e.get('tipo_especial') not in ('cpf', 'retirada')]
-        etiq_cpf_loja = [e for e in etiquetas_loja if e.get('tipo_especial') == 'cpf']
-        etiq_retirada = [e for e in etiquetas_loja if e.get('tipo_especial') == 'retirada']
-
+        # Todas as etiquetas juntas no mesmo PDF (regular, cpf, retirada)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         total_pags = 0
         n_simples = n_multi = com_xml = sem_xml = 0
 
-        # Gerar PDF regular (CNPJ/retirada)
-        if etiq_regular:
+        if etiquetas_loja:
             caminho_pdf = os.path.join(pasta_loja, f"etiquetas_{nome_loja}_{timestamp}.pdf")
             total_pags, n_simples, n_multi, com_xml, sem_xml = proc.gerar_pdf_loja(
-                etiq_regular, caminho_pdf
+                etiquetas_loja, caminho_pdf
             )
             print(f"    PDF: {total_pags} paginas ({n_simples} simples + {n_multi} multi-produto)")
             if sem_xml > 0:
                 print(f"    AVISO: {sem_xml} etiquetas sem XML correspondente")
-
-        # Gerar PDF CPF separado (formato 150x225mm)
-        if etiq_cpf_loja:
-            caminho_cpf_pdf = os.path.join(pasta_loja, f"cpf_{nome_loja}_{timestamp}.pdf")
-            total_cpf = proc.gerar_pdf_cpf(etiq_cpf_loja, caminho_cpf_pdf)
-            total_pags += total_cpf
-            print(f"    PDF CPF: {total_cpf} paginas")
-
-        # Gerar PDF Retirada separado (formato 150x225mm, sem endereço)
-        if etiq_retirada:
-            caminho_retirada_pdf = os.path.join(pasta_loja, f"retirada_{nome_loja}_{timestamp}.pdf")
-            total_retirada = proc.gerar_pdf_cpf(etiq_retirada, caminho_retirada_pdf)  # Usa mesmo formato do CPF
-            total_pags += total_retirada
-            print(f"    PDF RETIRADA: {total_retirada} paginas (sem endereço - cliente retira na loja)")
 
         # Gerar XLSX (inclui regular + CPF)
         caminho_xlsx = os.path.join(pasta_loja, f"resumo_{nome_loja}_{timestamp}.xlsx")
