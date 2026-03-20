@@ -7009,9 +7009,9 @@ def api_marketplace_shopee_diagnostico_itens():
     cfg = MarketplaceApiConfig.query.filter_by(user_id=user_id, marketplace="shopee").first()
     if not cfg:
         return jsonify({"status": "erro", "mensagem": "Shopee nao configurada"}), 400
-    cli = _marketplace_cfg_to_client(cfg)
+    cli, err = _marketplace_cfg_to_client(cfg)
     if not cli:
-        return jsonify({"status": "erro", "mensagem": "Token expirado"}), 400
+        return jsonify({"status": "erro", "mensagem": err or "Token expirado"}), 400
     try:
         # Get item list
         item_list_resp = cli.get_item_list(item_status="NORMAL")
