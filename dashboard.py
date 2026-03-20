@@ -7010,17 +7010,33 @@ def api_marketplace_shopee_criar_produto_teste():
         # 1. Buscar categorias disponiveis
         cat_ret = cli.get_category_list(language="en")
         if not cat_ret.get("ok"):
-            # Tentar sem idioma
             cat_ret = cli.get_category_list(language="")
         cats = ((cat_ret.get("data") or {}).get("response") or {}).get("category_list") or []
-        # Pegar uma categoria folha (que tem has_children=False)
         leaf_cats = [c for c in cats if not c.get("has_children", True)]
         if not leaf_cats:
-            leaf_cats = cats[:5]  # fallback: pegar qualquer uma
+            leaf_cats = cats[:5]
         if not leaf_cats:
             return jsonify({"status": "erro", "erro": "Nenhuma categoria disponivel na Shopee sandbox"}), 400
         cat_id = leaf_cats[0].get("category_id", 0)
         cat_name = leaf_cats[0].get("display_category_name") or leaf_cats[0].get("category_name") or "Categoria"
+
+        # 1b. Buscar marcas disponiveis para a categoria
+        brand_ret = cli._request("GET", "/api/v2/product/get_brand_list", params={
+            "offset": 0, "page_size": 10, "category_id": cat_id, "status": 1
+        }, with_auth=True)
+        brand_list = ((brand_ret.get("data") or {}).get("response") or {}).get("brand_list") or []
+        # Usar "No Brand" (id=0) ou a primeira marca disponivel
+        brand_id = 0
+        brand_name = "NoBrand"
+        for b in brand_list:
+            bn = str(b.get("original_brand_name") or b.get("display_brand_name") or "").lower()
+            if "no brand" in bn or bn == "nobrand":
+                brand_id = b.get("brand_id", 0)
+                brand_name = b.get("original_brand_name") or "NoBrand"
+                break
+        if brand_id == 0 and brand_list:
+            brand_id = brand_list[0].get("brand_id", 0)
+            brand_name = brand_list[0].get("original_brand_name") or "Brand"
 
         # 2. Buscar canais de logistica
         log_ret = cli.get_logistics_channel()
@@ -7065,6 +7081,7 @@ def api_marketplace_shopee_criar_produto_teste():
                 "logistic_info": logistic_info,
                 "item_status": "NORMAL",
                 "condition": "NEW",
+                "brand": {"brand_id": brand_id, "original_brand_name": brand_name},
             }
             ret = cli._request("POST", "/api/v2/product/add_item", body=body, with_auth=True)
             if ret.get("ok"):
@@ -7080,6 +7097,7 @@ def api_marketplace_shopee_criar_produto_teste():
             "criados": criados,
             "erros": erros,
             "categoria_usada": {"id": cat_id, "nome": cat_name},
+            "brand_usada": {"id": brand_id, "nome": brand_name},
             "logistica": logistic_info,
             "imagens": image_ids,
         })
