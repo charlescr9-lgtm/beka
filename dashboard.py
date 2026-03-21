@@ -1265,9 +1265,14 @@ def index():
     except Exception as e:
         print(f"[ROTA /] auto-login erro: {e}", flush=True, file=sys.stderr)
 
-    # Ler index.html e injetar auto-login script antes do </head>
+    # Servir demo.html na versao Railway (producao usa index.html localmente)
     import os as _os
-    html_path = _os.path.join(app.static_folder, 'index.html')
+    demo_path = _os.path.join(app.static_folder, 'demo.html')
+    # Se demo.html existir, servir demo; senao, fallback para index.html
+    if _os.path.exists(demo_path):
+        html_path = demo_path
+    else:
+        html_path = _os.path.join(app.static_folder, 'index.html')
     with open(html_path, 'r', encoding='utf-8') as f:
         html = f.read()
 
