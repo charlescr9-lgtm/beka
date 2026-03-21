@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Redimensionador de Imagens - Beka MKT</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0f172a;--card:#1e293b;--border:#334155;--primary:#3b82f6;--primary-hover:#2563eb;--green:#22c55e;--text:#f1f5f9;--muted:#94a3b8;--danger:#ef4444;--orange:#f59e0b}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:20px}
+.container{max-width:1200px;margin:0 auto}
+h1{text-align:center;margin-bottom:8px;font-size:1.8rem;background:linear-gradient(135deg,var(--primary),#8b5cf6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.subtitle{text-align:center;color:var(--muted);margin-bottom:30px;font-size:.9rem}
+.tab-bar{display:flex;gap:0;margin-bottom:24px;border-radius:10px;overflow:hidden;border:1px solid var(--border)}
+.tab-bar button{flex:1;padding:12px 16px;font-size:.95rem;font-weight:600;cursor:pointer;background:var(--card);border:none;color:var(--muted);transition:all .2s}
+.tab-bar button.active{background:var(--primary);color:#fff}
+.tab-bar button:hover:not(.active){background:rgba(59,130,246,.12);color:var(--text)}
+.tab-content{display:none}.tab-content.active{display:block}
+.drop-zone{border:2px dashed var(--border);border-radius:16px;padding:60px 20px;text-align:center;cursor:pointer;transition:all .3s;background:var(--card);margin-bottom:24px}
+.drop-zone:hover,.drop-zone.dragover{border-color:var(--primary);background:rgba(59,130,246,.08)}
+.drop-zone-icon{font-size:3rem;margin-bottom:12px}
+.drop-zone-text{color:var(--muted);font-size:1rem}
+.drop-zone-text span{color:var(--primary);text-decoration:underline;cursor:pointer}
+.controls{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px}
+@media(max-width:700px){.controls{grid-template-columns:1fr}}
+.control-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px}
+.control-card h3{font-size:.95rem;margin-bottom:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.input-group{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.input-group label{min-width:70px;font-size:.9rem;color:var(--muted)}
+.input-group input[type=number]{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:.95rem;width:120px;outline:none;transition:border .2s}
+.input-group input[type=number]:focus{border-color:var(--primary)}
+.input-group .unit{color:var(--muted);font-size:.85rem}
+.checkbox-group{display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer}
+.checkbox-group input[type=checkbox]{accent-color:var(--primary);width:16px;height:16px;cursor:pointer}
+.checkbox-group label{font-size:.9rem;cursor:pointer}
+.radio-group{display:flex;gap:0;margin-bottom:14px;border-radius:8px;overflow:hidden;border:1px solid var(--border)}
+.radio-group label{flex:1;text-align:center;padding:8px 12px;font-size:.85rem;cursor:pointer;background:var(--bg);transition:all .2s;color:var(--muted)}
+.radio-group input{display:none}
+.radio-group input:checked+label{background:var(--primary);color:#fff}
+.format-select{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px 12px;color:var(--text);font-size:.9rem;width:100%;outline:none;cursor:pointer}
+.format-select:focus{border-color:var(--primary)}
+.quality-row{display:flex;align-items:center;gap:12px;margin-top:12px}
+.quality-row input[type=range]{flex:1;accent-color:var(--primary)}
+.quality-row .val{min-width:40px;text-align:right;font-weight:600;color:var(--primary)}
+.btn-row{display:flex;gap:12px;justify-content:center;margin-bottom:24px;flex-wrap:wrap}
+.btn{padding:12px 28px;border-radius:10px;font-size:1rem;font-weight:600;border:none;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:8px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover:not(:disabled){background:var(--primary-hover);transform:translateY(-1px)}
+.btn-green{background:var(--green);color:#fff}.btn-green:hover:not(:disabled){background:#16a34a;transform:translateY(-1px)}
+.btn-orange{background:var(--orange);color:#000}.btn-orange:hover:not(:disabled){background:#d97706;transform:translateY(-1px)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--muted)}.btn-outline:hover:not(:disabled){border-color:var(--primary);color:var(--primary)}
+.results{display:none;margin-bottom:24px}.results.active{display:block}
+.results-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+@media(max-width:700px){.results-grid{grid-template-columns:1fr}}
+.preview-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.preview-header{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.preview-header h4{font-size:.85rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.preview-header .info{font-size:.8rem;color:var(--primary);font-weight:600}
+.preview-body{padding:16px;display:flex;align-items:center;justify-content:center;min-height:250px;background:repeating-conic-gradient(#1a1a2e 0% 25%,#16162a 0% 50%) 50%/20px 20px}
+.preview-body img{max-width:100%;max-height:400px;object-fit:contain;border-radius:4px}
+.stats-bar{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px 20px;margin-bottom:20px;display:flex;justify-content:center;gap:40px;flex-wrap:wrap}
+.stat{text-align:center}.stat .label{font-size:.75rem;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.stat .value{font-size:1.1rem;font-weight:700}.stat .value.green{color:var(--green)}.stat .value.blue{color:var(--primary)}.stat .value.red{color:var(--danger)}
+.batch-list{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px;display:none}.batch-list.active{display:block}
+.batch-item{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:.9rem}.batch-item:last-child{border-bottom:none}
+.batch-item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.batch-item .size{color:var(--muted);font-size:.8rem;min-width:80px;text-align:right}
+.batch-item .remove-btn{background:none;border:none;color:var(--danger);cursor:pointer;font-size:1.1rem;padding:2px 6px;border-radius:4px;opacity:.6;transition:opacity .2s}.batch-item .remove-btn:hover{opacity:1}
+.hidden{display:none}
+input[type=file]{display:none}
+.toast{position:fixed;bottom:20px;right:20px;background:var(--green);color:#fff;padding:12px 20px;border-radius:10px;font-weight:600;opacity:0;transform:translateY(20px);transition:all .3s;z-index:999;pointer-events:none}.toast.show{opacity:1;transform:translateY(0)}
+.progress-bar{width:100%;height:4px;background:var(--border);border-radius:2px;margin-bottom:20px;overflow:hidden;display:none}.progress-bar.active{display:block}
+.progress-bar .fill{height:100%;background:linear-gradient(90deg,var(--primary),var(--green));border-radius:2px;transition:width .3s;width:0}
+
+/* Ratio pills */
+.ratio-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+.ratio-pill{padding:6px 14px;border-radius:8px;font-size:.82rem;font-weight:600;cursor:pointer;border:1px solid var(--border);background:var(--bg);color:var(--muted);transition:all .2s}
+.ratio-pill:hover{border-color:var(--primary);color:var(--text)}
+.ratio-pill.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.ratio-pill .mini{display:inline-block;width:12px;height:12px;border:1.5px solid currentColor;border-radius:2px;vertical-align:middle;margin-right:4px}
+.ratio-pill .mini.r1x1{width:12px;height:12px}.ratio-pill .mini.r4x3{width:14px;height:10px}.ratio-pill .mini.r3x4{width:10px;height:14px}
+.ratio-pill .mini.r16x9{width:16px;height:9px}.ratio-pill .mini.r9x16{width:9px;height:16px}.ratio-pill .mini.r21x9{width:18px;height:8px}
+
+/* Custom ratio inputs */
+.custom-ratio-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.custom-ratio-row input{width:60px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px;color:var(--text);font-size:.9rem;text-align:center;outline:none}
+.custom-ratio-row input:focus{border-color:var(--primary)}
+.custom-ratio-row span{color:var(--muted);font-weight:600}
+
+/* Crop modal */
+.crop-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:1000;align-items:center;justify-content:center;flex-direction:column;padding:20px}
+.crop-overlay.active{display:flex}
+.crop-header{color:#fff;margin-bottom:10px;text-align:center;width:100%;max-width:800px}
+.crop-header h2{font-size:1.2rem;margin-bottom:4px}
+.crop-header p{font-size:.85rem;color:var(--muted)}
+.crop-counter{font-size:.8rem;color:var(--primary);margin-top:4px;font-weight:600}
+.crop-canvas-wrap{position:relative;overflow:hidden;border-radius:12px;border:2px solid var(--border);cursor:move;user-select:none;-webkit-user-select:none;background:repeating-conic-gradient(#1a1a2e 0% 25%,#16162a 0% 50%) 50%/20px 20px}
+.crop-canvas-wrap canvas{display:block}
+.crop-btns{display:flex;gap:12px;margin-top:14px;justify-content:center;flex-wrap:wrap}
+.crop-btns .btn{padding:10px 24px;font-size:.9rem}
+.crop-info{color:var(--muted);font-size:.8rem;margin-top:6px;text-align:center}
+.crop-thumbs{display:flex;gap:8px;margin-top:10px;max-width:800px;overflow-x:auto;padding:4px 0}
+.crop-thumb{width:48px;height:48px;border-radius:6px;border:2px solid var(--border);cursor:pointer;object-fit:cover;opacity:.5;transition:all .2s;flex-shrink:0}
+.crop-thumb.active{border-color:var(--primary);opacity:1}.crop-thumb.done{border-color:var(--green);opacity:.8}
+</style>
+</head>
+<body>
+<div class="container">
+    <h1>Redimensionador de Imagens</h1>
+    <p class="subtitle">Redimensione e recorte sem perder qualidade - 100% no navegador</p>
+    <div class="tab-bar">
+        <button class="active" onclick="switchTab('resize')">Redimensionar</button>
+        <button onclick="switchTab('crop')">Recortar</button>
+    </div>
+
+    <!-- ===================== TAB: RESIZE ===================== -->
+    <div class="tab-content active" id="tabResize">
+        <div class="drop-zone" id="dropZone">
+            <div class="drop-zone-icon">🖼️</div>
+            <div class="drop-zone-text">Arraste imagens aqui ou <span id="browseBtn">clique para selecionar</span></div>
+            <div style="color:var(--muted);font-size:.8rem;margin-top:8px">PNG, JPG, WEBP, BMP, TIFF - Multiplas imagens</div>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" multiple>
+        <div class="batch-list" id="batchList"></div>
+        <div class="controls">
+            <div class="control-card">
+                <h3>Dimensoes</h3>
+                <div style="margin-bottom:14px">
+                    <div class="radio-group">
+                        <input type="radio" name="mode" id="modePx" value="px" checked><label for="modePx">Pixels</label>
+                        <input type="radio" name="mode" id="modePct" value="pct"><label for="modePct">Porcentagem</label>
+                    </div>
+                </div>
+                <div id="pxControls">
+                    <div class="input-group"><label for="inputW">Largura</label><input type="number" id="inputW" min="1" max="20000" value="1080"><span class="unit">px</span></div>
+                    <div class="input-group"><label for="inputH">Altura</label><input type="number" id="inputH" min="1" max="20000" value="1080"><span class="unit">px</span></div>
+                </div>
+                <div id="pctControls" class="hidden">
+                    <div class="input-group"><label for="inputPct">Escala</label><input type="number" id="inputPct" min="1" max="1000" value="50"><span class="unit">%</span></div>
+                </div>
+                <div class="checkbox-group"><input type="checkbox" id="keepRatio" checked><label for="keepRatio">Manter proporcao (aspect ratio)</label></div>
+                <div class="checkbox-group"><input type="checkbox" id="noUpscale"><label for="noUpscale">Nao ampliar se menor que o alvo</label></div>
+            </div>
+            <div class="control-card">
+                <h3>Formato e Qualidade</h3>
+                <div class="input-group" style="margin-bottom:14px"><label>Formato</label>
+                    <select class="format-select" id="formatSelect"><option value="original">Manter original</option><option value="png">PNG (sem perda)</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select>
+                </div>
+                <div class="quality-row" id="qualityRow"><label style="font-size:.9rem;color:var(--muted)">Qualidade</label><input type="range" id="qualitySlider" min="1" max="100" value="100"><span class="val" id="qualityVal">100%</span></div>
+                <div style="margin-top:16px"><h3 style="margin-bottom:10px">Preset Rapido</h3>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap">
+                        <button class="btn btn-outline" onclick="setPreset(1080,1080)" style="padding:6px 14px;font-size:.8rem">1080x1080</button>
+                        <button class="btn btn-outline" onclick="setPreset(800,800)" style="padding:6px 14px;font-size:.8rem">800x800</button>
+                        <button class="btn btn-outline" onclick="setPreset(1200,628)" style="padding:6px 14px;font-size:.8rem">1200x628</button>
+                        <button class="btn btn-outline" onclick="setPreset(1920,1080)" style="padding:6px 14px;font-size:.8rem">1920x1080</button>
+                        <button class="btn btn-outline" onclick="setPreset(500,500)" style="padding:6px 14px;font-size:.8rem">500x500</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="btn-row">
+            <button class="btn btn-primary" id="btnProcess" disabled>Redimensionar</button>
+            <button class="btn btn-green" id="btnDownload" disabled>Baixar Todas</button>
+            <button class="btn btn-outline" id="btnClear" disabled>Limpar Tudo</button>
+        </div>
+        <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+        <div class="stats-bar hidden" id="statsBar">
+            <div class="stat"><div class="label">Imagens</div><div class="value blue" id="statCount">0</div></div>
+            <div class="stat"><div class="label">Tamanho Original</div><div class="value" id="statOriginal">0</div></div>
+            <div class="stat"><div class="label">Tamanho Final</div><div class="value green" id="statFinal">0</div></div>
+            <div class="stat"><div class="label">Reducao</div><div class="value green" id="statReduction">0%</div></div>
+        </div>
+        <div class="results" id="results"><div class="results-grid" id="resultsGrid"></div></div>
+    </div>
+
+    <!-- ===================== TAB: CROP ===================== -->
+    <div class="tab-content" id="tabCrop">
+        <div class="drop-zone" id="cropDropZone">
+            <div class="drop-zone-icon">✂️</div>
+            <div class="drop-zone-text">Arraste imagens aqui ou <span id="cropBrowseBtn">clique para selecionar</span></div>
+            <div style="color:var(--muted);font-size:.8rem;margin-top:8px">Recorte em massa com posicionamento manual para cada imagem</div>
+        </div>
+        <input type="file" id="cropFileInput" accept="image/*" multiple>
+        <div class="batch-list" id="cropBatchList"></div>
+        <div class="controls">
+            <div class="control-card">
+                <h3>Proporcao do Recorte</h3>
+                <div class="ratio-pills" id="ratioPills">
+                    <div class="ratio-pill active" data-rw="1" data-rh="1"><span class="mini r1x1"></span>1:1</div>
+                    <div class="ratio-pill" data-rw="4" data-rh="3"><span class="mini r4x3"></span>4:3</div>
+                    <div class="ratio-pill" data-rw="3" data-rh="4"><span class="mini r3x4"></span>3:4</div>
+                    <div class="ratio-pill" data-rw="16" data-rh="9"><span class="mini r16x9"></span>16:9</div>
+                    <div class="ratio-pill" data-rw="9" data-rh="16"><span class="mini r9x16"></span>9:16</div>
+                    <div class="ratio-pill" data-rw="21" data-rh="9"><span class="mini r21x9"></span>21:9</div>
+                    <div class="ratio-pill" data-rw="0" data-rh="0">Livre</div>
+                    <div class="ratio-pill" data-rw="-1" data-rh="-1">Personalizado</div>
+                </div>
+                <div class="custom-ratio-row hidden" id="customRatioRow">
+                    <input type="number" id="customRW" min="1" max="100" value="5" placeholder="L">
+                    <span>:</span>
+                    <input type="number" id="customRH" min="1" max="100" value="4" placeholder="A">
+                </div>
+                <div class="input-group">
+                    <label>Largura final</label>
+                    <input type="number" id="cropOutputW" min="1" max="10000" value="1080">
+                    <span class="unit">px</span>
+                </div>
+                <div class="input-group" id="cropOutputHRow">
+                    <label>Altura final</label>
+                    <input type="number" id="cropOutputH" min="1" max="10000" value="1080">
+                    <span class="unit">px</span>
+                </div>
+            </div>
+            <div class="control-card">
+                <h3>Formato e Qualidade</h3>
+                <div class="input-group" style="margin-bottom:14px"><label>Formato</label>
+                    <select class="format-select" id="cropFormatSelect"><option value="original">Manter original</option><option value="png">PNG (sem perda)</option><option value="jpeg">JPEG</option><option value="webp">WebP</option></select>
+                </div>
+                <div class="quality-row" id="cropQualityRow"><label style="font-size:.9rem;color:var(--muted)">Qualidade</label><input type="range" id="cropQualitySlider" min="1" max="100" value="100"><span class="val" id="cropQualityVal">100%</span></div>
+            </div>
+        </div>
+        <div class="btn-row">
+            <button class="btn btn-orange" id="btnStartCrop" disabled>Iniciar Recorte Manual</button>
+            <button class="btn btn-green" id="btnCropDownload" disabled>Baixar Todas</button>
+            <button class="btn btn-outline" id="btnCropClear" disabled>Limpar Tudo</button>
+        </div>
+        <div class="stats-bar hidden" id="cropStatsBar">
+            <div class="stat"><div class="label">Imagens</div><div class="value blue" id="cropStatCount">0</div></div>
+            <div class="stat"><div class="label">Recortadas</div><div class="value green" id="cropStatDone">0</div></div>
+        </div>
+        <div class="results" id="cropResults"><div class="results-grid" id="cropResultsGrid"></div></div>
+    </div>
+</div>
+
+<!-- CROP MODAL -->
+<div class="crop-overlay" id="cropOverlay">
+    <div class="crop-header">
+        <h2 id="cropModalTitle">Posicione o recorte</h2>
+        <p>Arraste a imagem para posicionar a area de recorte</p>
+        <div class="crop-counter" id="cropCounter">1 / 1</div>
+    </div>
+    <div class="crop-canvas-wrap" id="cropCanvasWrap"><canvas id="cropCanvas"></canvas></div>
+    <div class="crop-info" id="cropInfoText">Arraste para mover</div>
+    <div class="crop-thumbs" id="cropThumbs"></div>
+    <div class="crop-btns">
+        <button class="btn btn-outline" id="btnCropCenter">Centralizar</button>
+        <button class="btn btn-primary" id="btnCropConfirm">Confirmar Recorte</button>
+        <button class="btn btn-outline" style="border-color:var(--danger);color:var(--danger)" id="btnCropCancel">Cancelar</button>
+    </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ===== TAB =====
+function switchTab(tab) {
+    document.querySelectorAll('.tab-bar button').forEach((b, i) => b.classList.toggle('active', (tab==='resize'?0:1)===i));
+    document.getElementById('tabResize').classList.toggle('active', tab==='resize');
+    document.getElementById('tabCrop').classList.toggle('active', tab==='crop');
+}
+
+// ===== SHARED =====
+function loadImage(file) { return new Promise((res, rej) => { const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = URL.createObjectURL(file); }); }
+function canvasToBlob(c, m, q) { return new Promise(r => c.toBlob(b => r(b), m, q)); }
+function downloadBlob(b, n) { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = n; a.click(); URL.revokeObjectURL(a.href); }
+function formatSize(b) { if (b < 1024) return b+' B'; if (b < 1048576) return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(2)+' MB'; }
+function showToast(m) { const t = document.getElementById('toast'); t.textContent = m; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 3000); }
+function getFormat(sel, name) {
+    const f = sel.value, ext = name.split('.').pop().toLowerCase();
+    if (f==='original') { if (['jpg','jpeg'].includes(ext)) return {mime:'image/jpeg',ext:'jpg'}; if (ext==='webp') return {mime:'image/webp',ext:'webp'}; return {mime:'image/png',ext:'png'}; }
+    if (f==='jpeg') return {mime:'image/jpeg',ext:'jpg'}; if (f==='webp') return {mime:'image/webp',ext:'webp'}; return {mime:'image/png',ext:'png'};
+}
+function lanczosResize(img, tw, th) {
+    let sw=img.naturalWidth||img.width, sh=img.naturalHeight||img.height;
+    const c=document.createElement('canvas'), ctx=c.getContext('2d');
+    ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+    if (tw<sw||th<sh) {
+        let tc=document.createElement('canvas'), tctx=tc.getContext('2d'); tctx.imageSmoothingEnabled=true; tctx.imageSmoothingQuality='high';
+        let cw=sw, ch=sh, src=img;
+        while(cw/2>tw&&ch/2>th){ const nw=Math.round(cw/2),nh=Math.round(ch/2); tc.width=nw;tc.height=nh; tctx.drawImage(src,0,0,nw,nh); src=tc;cw=nw;ch=nh; tc=document.createElement('canvas');tctx=tc.getContext('2d');tctx.imageSmoothingEnabled=true;tctx.imageSmoothingQuality='high'; }
+        c.width=tw;c.height=th;ctx.drawImage(src,0,0,tw,th);
+    } else { c.width=tw;c.height=th;ctx.drawImage(img,0,0,tw,th); }
+    return c;
+}
+
+// ===================================================================
+//  RESIZE TAB
+// ===================================================================
+const dropZone=document.getElementById('dropZone'),fileInput=document.getElementById('fileInput'),batchList=document.getElementById('batchList');
+const btnProcess=document.getElementById('btnProcess'),btnDownload=document.getElementById('btnDownload'),btnClear=document.getElementById('btnClear');
+const resultsGrid=document.getElementById('resultsGrid'),qualitySlider=document.getElementById('qualitySlider'),qualityVal=document.getElementById('qualityVal'),formatSelect=document.getElementById('formatSelect');
+let files=[],processedBlobs=[];
+document.getElementById('browseBtn').addEventListener('click',e=>{e.stopPropagation();fileInput.click();});
+dropZone.addEventListener('click',()=>fileInput.click());
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('dragover');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('dragover');addFiles(e.dataTransfer.files);});
+fileInput.addEventListener('change',()=>{addFiles(fileInput.files);fileInput.value='';});
+function addFiles(nf){for(const f of nf)if(f.type.startsWith('image/'))files.push(f);renderBL();btnProcess.disabled=!files.length;btnClear.disabled=!files.length;}
+function removeFile(i){files.splice(i,1);renderBL();btnProcess.disabled=!files.length;btnClear.disabled=!files.length;}
+function renderBL(){if(!files.length){batchList.classList.remove('active');return;}batchList.classList.add('active');batchList.innerHTML=files.map((f,i)=>`<div class="batch-item"><div class="name" title="${f.name}">${f.name}</div><div class="size">${formatSize(f.size)}</div><button class="remove-btn" onclick="removeFile(${i})">&times;</button></div>`).join('');}
+document.querySelectorAll('input[name=mode]').forEach(r=>r.addEventListener('change',()=>{const px=document.getElementById('modePx').checked;document.getElementById('pxControls').classList.toggle('hidden',!px);document.getElementById('pctControls').classList.toggle('hidden',px);}));
+qualitySlider.addEventListener('input',()=>{qualityVal.textContent=qualitySlider.value+'%';});
+formatSelect.addEventListener('change',()=>{document.getElementById('qualityRow').style.display=['jpeg','webp'].includes(formatSelect.value)?'flex':'none';});
+function setPreset(w,h){document.getElementById('modePx').checked=true;document.getElementById('modePx').dispatchEvent(new Event('change'));document.getElementById('inputW').value=w;document.getElementById('inputH').value=h;document.getElementById('pxControls').classList.remove('hidden');document.getElementById('pctControls').classList.add('hidden');}
+function calcDimensions(ow,oh){const isPx=document.getElementById('modePx').checked,kr=document.getElementById('keepRatio').checked,nu=document.getElementById('noUpscale').checked;let w,h;if(isPx){w=parseInt(document.getElementById('inputW').value)||ow;h=parseInt(document.getElementById('inputH').value)||oh;}else{const p=(parseInt(document.getElementById('inputPct').value)||100)/100;w=Math.round(ow*p);h=Math.round(oh*p);}if(kr&&isPx){const r=Math.min(w/ow,h/oh);w=Math.round(ow*r);h=Math.round(oh*r);}if(nu){w=Math.min(w,ow);h=Math.min(h,oh);}return[Math.max(1,w),Math.max(1,h)];}
+
+btnProcess.addEventListener('click',async()=>{
+    if(!files.length)return;btnProcess.disabled=true;btnDownload.disabled=true;processedBlobs=[];resultsGrid.innerHTML='';
+    document.getElementById('results').classList.add('active');const pb=document.getElementById('progressBar'),pf=document.getElementById('progressFill');pb.classList.add('active');pf.style.width='0%';
+    let to=0,tf=0;
+    for(let i=0;i<files.length;i++){pf.style.width=((i/files.length)*100)+'%';const file=files[i];to+=file.size;const img=await loadImage(file);const[tw,th]=calcDimensions(img.naturalWidth,img.naturalHeight);
+    const canvas=lanczosResize(img,tw,th);const fmt=getFormat(formatSelect,file.name);const q=['image/jpeg','image/webp'].includes(fmt.mime)?(parseInt(qualitySlider.value)/100):undefined;
+    const blob=await canvasToBlob(canvas,fmt.mime,q);tf+=blob.size;const bn=file.name.replace(/\.[^.]+$/,'');processedBlobs.push({blob,name:`${bn}_${tw}x${th}.${fmt.ext}`});
+    const ou=URL.createObjectURL(file),nu2=URL.createObjectURL(blob);
+    resultsGrid.innerHTML+=`<div class="preview-card"><div class="preview-header"><h4>Original</h4><span class="info">${img.naturalWidth}x${img.naturalHeight} - ${formatSize(file.size)}</span></div><div class="preview-body"><img src="${ou}"></div></div><div class="preview-card"><div class="preview-header"><h4>Redimensionada</h4><span class="info">${tw}x${th} - ${formatSize(blob.size)}</span></div><div class="preview-body"><img src="${nu2}"></div></div>`;}
+    pf.style.width='100%';setTimeout(()=>pb.classList.remove('active'),500);
+    document.getElementById('statsBar').classList.remove('hidden');document.getElementById('statCount').textContent=files.length;document.getElementById('statOriginal').textContent=formatSize(to);document.getElementById('statFinal').textContent=formatSize(tf);
+    const rd=to>0?Math.round((1-tf/to)*100):0;const re=document.getElementById('statReduction');re.textContent=(rd>=0?'-':'+')+Math.abs(rd)+'%';re.className='value '+(rd>=0?'green':'red');
+    btnProcess.disabled=false;btnDownload.disabled=false;showToast(`${files.length} imagem(ns) redimensionada(s)!`);
+});
+btnDownload.addEventListener('click',async()=>{if(!processedBlobs.length)return;if(processedBlobs.length===1){downloadBlob(processedBlobs[0].blob,processedBlobs[0].name);return;}const{default:JSZip}=await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');const z=new JSZip();processedBlobs.forEach(p=>z.file(p.name,p.blob));downloadBlob(await z.generateAsync({type:'blob'}),'imagens_redimensionadas.zip');showToast('ZIP baixado!');});
+btnClear.addEventListener('click',()=>{files=[];processedBlobs=[];batchList.classList.remove('active');batchList.innerHTML='';document.getElementById('results').classList.remove('active');resultsGrid.innerHTML='';document.getElementById('statsBar').classList.add('hidden');btnProcess.disabled=true;btnDownload.disabled=true;btnClear.disabled=true;});
+
+// ===================================================================
+//  CROP TAB
+// ===================================================================
+const cropDropZone=document.getElementById('cropDropZone'),cropFileInput=document.getElementById('cropFileInput'),cropBatchList=document.getElementById('cropBatchList');
+const btnStartCrop=document.getElementById('btnStartCrop'),btnCropDownload=document.getElementById('btnCropDownload'),btnCropClear=document.getElementById('btnCropClear');
+const cropQualitySlider=document.getElementById('cropQualitySlider'),cropQualityVal=document.getElementById('cropQualityVal'),cropFormatSelect=document.getElementById('cropFormatSelect');
+let cropFiles=[],cropImages=[],cropOffsets=[],croppedBlobs=[],cropCurrentIdx=0;
+
+// Ratio state
+let cropRatioW=1, cropRatioH=1; // 0,0 = free
+
+document.getElementById('cropBrowseBtn').addEventListener('click',e=>{e.stopPropagation();cropFileInput.click();});
+cropDropZone.addEventListener('click',()=>cropFileInput.click());
+cropDropZone.addEventListener('dragover',e=>{e.preventDefault();cropDropZone.classList.add('dragover');});
+cropDropZone.addEventListener('dragleave',()=>cropDropZone.classList.remove('dragover'));
+cropDropZone.addEventListener('drop',e=>{e.preventDefault();cropDropZone.classList.remove('dragover');addCF(e.dataTransfer.files);});
+cropFileInput.addEventListener('change',()=>{addCF(cropFileInput.files);cropFileInput.value='';});
+cropQualitySlider.addEventListener('input',()=>{cropQualityVal.textContent=cropQualitySlider.value+'%';});
+cropFormatSelect.addEventListener('change',()=>{document.getElementById('cropQualityRow').style.display=['jpeg','webp'].includes(cropFormatSelect.value)?'flex':'none';});
+
+function addCF(nf){for(const f of nf)if(f.type.startsWith('image/'))cropFiles.push(f);renderCBL();btnStartCrop.disabled=!cropFiles.length;btnCropClear.disabled=!cropFiles.length;}
+function removeCF(i){cropFiles.splice(i,1);renderCBL();btnStartCrop.disabled=!cropFiles.length;btnCropClear.disabled=!cropFiles.length;}
+function renderCBL(){if(!cropFiles.length){cropBatchList.classList.remove('active');return;}cropBatchList.classList.add('active');cropBatchList.innerHTML=cropFiles.map((f,i)=>`<div class="batch-item"><div class="name" title="${f.name}">${f.name}</div><div class="size">${formatSize(f.size)}</div><button class="remove-btn" onclick="removeCF(${i})">&times;</button></div>`).join('');}
+btnCropClear.addEventListener('click',()=>{cropFiles=[];cropImages=[];cropOffsets=[];croppedBlobs=[];cropBatchList.classList.remove('active');cropBatchList.innerHTML='';document.getElementById('cropResults').classList.remove('active');document.getElementById('cropResultsGrid').innerHTML='';document.getElementById('cropStatsBar').classList.add('hidden');btnStartCrop.disabled=true;btnCropDownload.disabled=true;btnCropClear.disabled=true;});
+
+// Ratio pills
+document.getElementById('ratioPills').addEventListener('click', e => {
+    const pill = e.target.closest('.ratio-pill');
+    if (!pill) return;
+    document.querySelectorAll('.ratio-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    const rw = parseInt(pill.dataset.rw), rh = parseInt(pill.dataset.rh);
+    document.getElementById('customRatioRow').classList.toggle('hidden', rw !== -1);
+
+    if (rw === -1) { // Custom
+        cropRatioW = parseInt(document.getElementById('customRW').value) || 1;
+        cropRatioH = parseInt(document.getElementById('customRH').value) || 1;
+    } else {
+        cropRatioW = rw; cropRatioH = rh;
+    }
+    updateOutputFields();
+});
+document.getElementById('customRW').addEventListener('input', () => { cropRatioW = parseInt(document.getElementById('customRW').value) || 1; updateOutputFields(); });
+document.getElementById('customRH').addEventListener('input', () => { cropRatioH = parseInt(document.getElementById('customRH').value) || 1; updateOutputFields(); });
+
+function updateOutputFields() {
+    const hRow = document.getElementById('cropOutputHRow');
+    if (cropRatioW === 0) {
+        // Free: show both W and H as independent
+        hRow.classList.remove('hidden');
+    } else {
+        // Fixed ratio: auto-calc H from W
+        const w = parseInt(document.getElementById('cropOutputW').value) || 1080;
+        const h = Math.round(w * cropRatioH / cropRatioW);
+        document.getElementById('cropOutputH').value = h;
+        hRow.classList.remove('hidden');
+    }
+}
+document.getElementById('cropOutputW').addEventListener('input', updateOutputFields);
+updateOutputFields();
+
+// Get current crop ratio as {w, h} in normalized form (or {0,0} for free)
+function getCropRatio() {
+    if (cropRatioW === 0) return { w: 0, h: 0 }; // free
+    return { w: cropRatioW, h: cropRatioH };
+}
+
+// Calculate crop rect size in image coords for given image
+function calcCropRect(iw, ih) {
+    const r = getCropRatio();
+    if (r.w === 0) {
+        // Free: use output W and H as aspect ratio
+        const ow = parseInt(document.getElementById('cropOutputW').value) || iw;
+        const oh = parseInt(document.getElementById('cropOutputH').value) || ih;
+        const scale = Math.min(iw / ow, ih / oh);
+        return { cw: Math.round(ow * scale), ch: Math.round(oh * scale) };
+    }
+    // Fixed ratio
+    const scale = Math.min(iw / r.w, ih / r.h);
+    return { cw: Math.round(r.w * scale), ch: Math.round(r.h * scale) };
+}
+
+// ===== CROP MODAL =====
+const cropOverlay=document.getElementById('cropOverlay'),cropCanvas=document.getElementById('cropCanvas'),cropCtx=cropCanvas.getContext('2d'),cropCanvasWrap=document.getElementById('cropCanvasWrap');
+let cropDragging=false, cropDragStart={x:0,y:0}, cropPanOffset={x:0,y:0}, cropScale=1;
+let cropRectW=0, cropRectH=0; // crop rect in image coords
+let cropDispW=0, cropDispH=0; // canvas display size
+
+btnStartCrop.addEventListener('click', async () => {
+    if (!cropFiles.length) return;
+    btnStartCrop.disabled = true;
+    cropImages = []; cropOffsets = []; croppedBlobs = [];
+    for (const f of cropFiles) {
+        const img = await loadImage(f);
+        cropImages.push(img);
+        const { cw, ch } = calcCropRect(img.naturalWidth, img.naturalHeight);
+        cropOffsets.push({ x: Math.round((img.naturalWidth - cw) / 2), y: Math.round((img.naturalHeight - ch) / 2) });
+    }
+    cropCurrentIdx = 0;
+    openCropModal(0);
+});
+
+function openCropModal(idx) {
+    cropCurrentIdx = idx;
+    cropOverlay.classList.add('active');
+    const img = cropImages[idx];
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const { cw, ch } = calcCropRect(iw, ih);
+    cropRectW = cw; cropRectH = ch;
+
+    const r = getCropRatio();
+    const ratioLabel = r.w === 0 ? 'Livre' : `${r.w}:${r.h}`;
+    document.getElementById('cropModalTitle').textContent = `Posicione o recorte ${ratioLabel}`;
+    document.getElementById('cropCounter').textContent = `${idx + 1} / ${cropFiles.length}`;
+
+    // Fit canvas to viewport maintaining crop aspect
+    const maxW = Math.min(700, window.innerWidth - 40);
+    const maxH = Math.min(window.innerHeight * 0.50, 550);
+    const canvasRatio = cw / ch;
+    if (canvasRatio >= 1) { cropDispW = Math.min(maxW, maxH * canvasRatio); cropDispH = cropDispW / canvasRatio; }
+    else { cropDispH = Math.min(maxH, maxW / canvasRatio); cropDispW = cropDispH * canvasRatio; }
+    cropDispW = Math.round(cropDispW); cropDispH = Math.round(cropDispH);
+
+    cropCanvas.width = cropDispW; cropCanvas.height = cropDispH;
+    cropCanvasWrap.style.width = cropDispW + 'px'; cropCanvasWrap.style.height = cropDispH + 'px';
+
+    cropScale = cropDispW / cw; // same as cropDispH / ch
+
+    const off = cropOffsets[idx];
+    cropPanOffset.x = -off.x * cropScale;
+    cropPanOffset.y = -off.y * cropScale;
+    drawCrop(); renderCropThumbs();
+}
+
+function drawCrop() {
+    const img = cropImages[cropCurrentIdx];
+    cropCtx.clearRect(0, 0, cropDispW, cropDispH);
+    cropCtx.drawImage(img, cropPanOffset.x, cropPanOffset.y, img.naturalWidth * cropScale, img.naturalHeight * cropScale);
+    // Rule of thirds
+    cropCtx.strokeStyle = 'rgba(255,255,255,0.4)'; cropCtx.lineWidth = 1;
+    for (let i = 1; i < 3; i++) {
+        const x = cropDispW * i / 3, y = cropDispH * i / 3;
+        cropCtx.beginPath(); cropCtx.moveTo(x, 0); cropCtx.lineTo(x, cropDispH); cropCtx.stroke();
+        cropCtx.beginPath(); cropCtx.moveTo(0, y); cropCtx.lineTo(cropDispW, y); cropCtx.stroke();
+    }
+    cropCtx.strokeStyle = 'rgba(255,255,255,0.9)'; cropCtx.lineWidth = 2;
+    cropCtx.strokeRect(1, 1, cropDispW - 2, cropDispH - 2);
+    const offX = Math.round(-cropPanOffset.x / cropScale), offY = Math.round(-cropPanOffset.y / cropScale);
+    document.getElementById('cropInfoText').textContent = `Recorte: ${cropRectW}x${cropRectH}px desde (${offX}, ${offY})`;
+}
+
+function clampPan() {
+    const img = cropImages[cropCurrentIdx];
+    const dw = img.naturalWidth * cropScale, dh = img.naturalHeight * cropScale;
+    cropPanOffset.x = Math.min(0, Math.max(cropDispW - dw, cropPanOffset.x));
+    cropPanOffset.y = Math.min(0, Math.max(cropDispH - dh, cropPanOffset.y));
+}
+
+cropCanvasWrap.addEventListener('mousedown', e => { cropDragging = true; cropDragStart = { x: e.clientX - cropPanOffset.x, y: e.clientY - cropPanOffset.y }; e.preventDefault(); });
+window.addEventListener('mousemove', e => { if (!cropDragging) return; cropPanOffset.x = e.clientX - cropDragStart.x; cropPanOffset.y = e.clientY - cropDragStart.y; clampPan(); drawCrop(); });
+window.addEventListener('mouseup', () => cropDragging = false);
+cropCanvasWrap.addEventListener('touchstart', e => { if (e.touches.length !== 1) return; cropDragging = true; const t = e.touches[0]; cropDragStart = { x: t.clientX - cropPanOffset.x, y: t.clientY - cropPanOffset.y }; e.preventDefault(); }, { passive: false });
+window.addEventListener('touchmove', e => { if (!cropDragging || e.touches.length !== 1) return; const t = e.touches[0]; cropPanOffset.x = t.clientX - cropDragStart.x; cropPanOffset.y = t.clientY - cropDragStart.y; clampPan(); drawCrop(); }, { passive: false });
+window.addEventListener('touchend', () => cropDragging = false);
+
+document.getElementById('btnCropCenter').addEventListener('click', () => {
+    const img = cropImages[cropCurrentIdx];
+    cropPanOffset.x = -(img.naturalWidth - cropRectW) / 2 * cropScale;
+    cropPanOffset.y = -(img.naturalHeight - cropRectH) / 2 * cropScale;
+    clampPan(); drawCrop();
+});
+document.getElementById('btnCropCancel').addEventListener('click', () => { cropOverlay.classList.remove('active'); btnStartCrop.disabled = false; });
+
+document.getElementById('btnCropConfirm').addEventListener('click', async () => {
+    const offX = Math.round(-cropPanOffset.x / cropScale), offY = Math.round(-cropPanOffset.y / cropScale);
+    cropOffsets[cropCurrentIdx] = { x: offX, y: offY };
+    const img = cropImages[cropCurrentIdx];
+    const outW = parseInt(document.getElementById('cropOutputW').value) || 1080;
+    const outH = parseInt(document.getElementById('cropOutputH').value) || 1080;
+    const tc = document.createElement('canvas'); tc.width = outW; tc.height = outH;
+    const tctx = tc.getContext('2d'); tctx.imageSmoothingEnabled = true; tctx.imageSmoothingQuality = 'high';
+    tctx.drawImage(img, offX, offY, cropRectW, cropRectH, 0, 0, outW, outH);
+    const fmt = getFormat(cropFormatSelect, cropFiles[cropCurrentIdx].name);
+    const q = ['image/jpeg','image/webp'].includes(fmt.mime) ? (parseInt(cropQualitySlider.value) / 100) : undefined;
+    const blob = await canvasToBlob(tc, fmt.mime, q);
+    const bn = cropFiles[cropCurrentIdx].name.replace(/\.[^.]+$/, '');
+    const rl = getCropRatio(); const ratioStr = rl.w === 0 ? 'livre' : `${rl.w}x${rl.h}`;
+    croppedBlobs[cropCurrentIdx] = { blob, name: `${bn}_${ratioStr}_${outW}x${outH}.${fmt.ext}` };
+    renderCropThumbs();
+    if (cropCurrentIdx < cropFiles.length - 1) openCropModal(cropCurrentIdx + 1);
+    else { cropOverlay.classList.remove('active'); finishCropBatch(); }
+});
+
+function renderCropThumbs() {
+    const c = document.getElementById('cropThumbs'); c.innerHTML = '';
+    cropImages.forEach((img, i) => {
+        const t = document.createElement('img'); t.src = img.src; t.className = 'crop-thumb';
+        if (i === cropCurrentIdx) t.classList.add('active');
+        if (croppedBlobs[i]) t.classList.add('done');
+        t.addEventListener('click', () => {
+            cropOffsets[cropCurrentIdx] = { x: Math.round(-cropPanOffset.x / cropScale), y: Math.round(-cropPanOffset.y / cropScale) };
+            openCropModal(i);
+        });
+        c.appendChild(t);
+    });
+}
+
+function finishCropBatch() {
+    btnStartCrop.disabled = false; btnCropDownload.disabled = false;
+    const grid = document.getElementById('cropResultsGrid'); grid.innerHTML = '';
+    document.getElementById('cropResults').classList.add('active');
+    let count = 0;
+    croppedBlobs.forEach((item, i) => {
+        if (!item) return; count++;
+        grid.innerHTML += `<div class="preview-card"><div class="preview-header"><h4>Original</h4><span class="info">${cropImages[i].naturalWidth}x${cropImages[i].naturalHeight}</span></div><div class="preview-body"><img src="${cropImages[i].src}"></div></div><div class="preview-card"><div class="preview-header"><h4>Recortada</h4><span class="info">${formatSize(item.blob.size)}</span></div><div class="preview-body"><img src="${URL.createObjectURL(item.blob)}"></div></div>`;
+    });
+    document.getElementById('cropStatsBar').classList.remove('hidden');
+    document.getElementById('cropStatCount').textContent = cropFiles.length;
+    document.getElementById('cropStatDone').textContent = count;
+    showToast(`${count} imagem(ns) recortada(s)!`);
+}
+
+btnCropDownload.addEventListener('click', async () => {
+    const v = croppedBlobs.filter(Boolean); if (!v.length) return;
+    if (v.length === 1) { downloadBlob(v[0].blob, v[0].name); return; }
+    const { default: JSZip } = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+    const z = new JSZip(); v.forEach(p => z.file(p.name, p.blob));
+    downloadBlob(await z.generateAsync({ type: 'blob' }), 'imagens_recortadas.zip'); showToast('ZIP baixado!');
+});
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && cropOverlay.classList.contains('active')) { cropOverlay.classList.remove('active'); btnStartCrop.disabled = false; } });
+</script>
+</body>
+</html>
