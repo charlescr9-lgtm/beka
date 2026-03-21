@@ -4217,7 +4217,7 @@ async function adminRevogarAcesso() {
 }
 
 // ================================================================
-// AUTOMACAO - UpSeller + WhatsApp + Agendamentos
+// AUTOMACAO - Shopee + WhatsApp + Agendamentos
 // ================================================================
 
 async function carregarDadosAutomacao() {
@@ -5253,9 +5253,9 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
     const totalPedidosCalculado = lojasOrdenadas.reduce((acc, l) => acc + (parseInt(l.pedidos || 0, 10) || 0), 0);
     totalPedidos = totalPedidosCalculado;
     sidebarInfo = sidebarInfo || {};
-    const origemNome = _isMarketplaceApiMode() ? 'Marketplace API' : 'UpSeller';
+    const origemNome = 'Shopee API';
 
-    // ===== CARDS DE ATALHOS DO UPSELLER (sidebar) =====
+    // ===== CARDS DE ATALHOS =====
     const atalhos = [
         { key: 'Para Emitir',   label: 'Emitir Notas Fiscais', icon: 'fa-file-invoice',  color: '#f39c12', bg: 'rgba(243,156,18,0.12)', action: 'emitir' },
         { key: 'Para Enviar',   label: 'Gerar Pedidos',        icon: 'fa-shipping-fast',  color: '#2196F3', bg: 'rgba(33,150,243,0.12)', action: 'programar' },
@@ -5339,7 +5339,7 @@ function _renderPainelLojas(lojas, totalPedidos, detalhes, sidebarInfo) {
             <button onclick="this.closest('#syncResultadoPanel').remove()" style="background:none;border:none;color:#fff;cursor:pointer;font-size:16px;">&times;</button>
         </div>
 
-        <!-- Atalhos do UpSeller (sidebar counts) -->
+        <!-- Atalhos Shopee (sidebar counts) -->
         <div style="display:flex;gap:10px;padding:12px 15px;flex-wrap:wrap;">
             ${atalhosHTML}
         </div>
@@ -6580,7 +6580,7 @@ async function carregarLojasPersistentes() {
             </div>
         </div>
 
-        <!-- Atalhos do UpSeller -->
+        <!-- Atalhos Shopee -->
         <div id="collapse-body-lojasPanel" style="display:${_lojasCollapsed ? 'none' : 'block'};">
         <div style="display:flex;gap:8px;padding:10px 15px;flex-wrap:wrap;">
             ${atalhosHTML}
@@ -6714,7 +6714,7 @@ async function removerAgendamento(id) {
 
 // --- EXECUCAO MANUAL ---
 async function executarPipelineAgora() {
-    if (!confirm('Executar pipeline completo agora? (UpSeller → Processar → WhatsApp)')) return;
+    if (!confirm('Executar pipeline completo agora? (Shopee → Processar → WhatsApp)')) return;
     const res = await fetchAPI('/api/agendamentos/executar-agora', { method: 'POST' });
     if (res && !res.erro) toast('Pipeline iniciado em background!', 'success');
     else toast(res?.erro || 'Erro', 'error');
