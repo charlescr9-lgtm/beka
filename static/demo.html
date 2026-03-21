@@ -852,7 +852,7 @@
         <i class="fas fa-store"></i> Resultados
     </div>
     <div class="nav-tab" data-tab="lucro" onclick="trocarTab('lucro')" style="display:none;">
-        <i class="fas fa-dollar-sign"></i> Lucro
+        <i class="fas fa-dollar-sign"></i> Lucro (old)
     </div>
     <div class="nav-tab active" data-tab="automacao" onclick="trocarTab('automacao')">
         <i class="fas fa-robot"></i> Automacao
@@ -1188,7 +1188,7 @@
 
             <div id="collapse-body-envioAuto" style="padding:8px 0;">
                 <p style="font-size:11px; color:var(--text-secondary); margin-bottom:12px;">
-                    Fluxo direto: baixa etiquetas do UpSeller, processa e envia via WhatsApp/Email.
+                    Fluxo direto: sincroniza pedidos da Shopee, processa etiquetas e envia via WhatsApp/Email.
                     <strong>Pula</strong> "Emitir Notas" e "Gerar Pedidos".
                 </p>
 
@@ -1528,7 +1528,7 @@
                     </div>
                 </div>
                 <div style="display:flex; gap:12px; margin-top:10px; font-size:11px; color:var(--text-secondary);">
-                    <label><input type="checkbox" id="agendUpseller" checked> Baixar UpSeller</label>
+                    <label><input type="checkbox" id="agendUpseller" checked> Sincronizar Shopee</label>
                     <label><input type="checkbox" id="agendProcessar" checked> Processar Etiquetas</label>
                     <label><input type="checkbox" id="agendWhatsapp" checked> Enviar WhatsApp</label>
                 </div>
@@ -1563,7 +1563,7 @@
                 <span class="card-title"><i class="fas fa-play-circle"></i> Execucao Manual</span>
             </div>
             <p id="execucaoManualDescricao" style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
-                Executa o pipeline completo: baixar do UpSeller → processar etiquetas → enviar via WhatsApp.
+                Executa o pipeline completo: sincronizar Shopee → processar etiquetas → enviar via WhatsApp.
             </p>
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
                 <button class="btn btn-primary" onclick="executarPipelineAgora()" style="font-size:12px;">
@@ -1765,7 +1765,100 @@
 
     <!-- ===================== TAB CALCULADORA ===================== -->
     <div class="tab-content" id="tab-calculadora">
-        <iframe id="iframeCalculadora" src="" style="width:100%; height:calc(100vh - 80px); border:none; border-radius:12px; background:var(--bg-card);"></iframe>
+        <h3 class="section-title"><i class="fas fa-calculator"></i> Calculadora de Lucro</h3>
+
+        <!-- Upload de ZIP/XML para lucro -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-file-archive"></i> Arquivos de Notas Fiscais</span>
+                <button class="btn btn-secondary btn-sm" onclick="limparUploadsLucro()" id="btnLimparCalc" style="display:none; font-size:11px;">
+                    <i class="fas fa-trash-alt"></i> Limpar
+                </button>
+            </div>
+            <div class="upload-zone" id="uploadZoneCalc"
+                 ondragover="event.preventDefault(); this.classList.add('dragover')"
+                 ondragleave="this.classList.remove('dragover')"
+                 ondrop="handleDropLucro(event)"
+                 onclick="document.getElementById('fileInputCalc').click()">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <h4>Arraste ZIPs ou XMLs aqui</h4>
+                <p>Aceita arquivos ZIP (notas fiscais XML) e XML avulsos</p>
+            </div>
+            <input type="file" id="fileInputCalc" hidden multiple accept=".zip,.xml" onchange="handleUploadLucro(this.files)">
+            <div id="listaArquivosCalc" style="margin-top:12px;"></div>
+        </div>
+
+        <!-- Parametros de calculo -->
+        <div class="card" style="margin-bottom:20px;">
+            <div class="card-header">
+                <span class="card-title"><i class="fas fa-calculator"></i> Parametros de Calculo</span>
+                <button class="btn-help" onclick="mostrarAjuda('calculadora')" title="Como funciona a calculadora">
+                    <i class="fas fa-question-circle"></i>
+                </button>
+            </div>
+            <p style="font-size:12px; color:var(--text-secondary); margin-bottom:16px;">
+                Parametros para o calculo de lucro. O match de SKU busca o SKU completo ou o maior prefixo correspondente.
+            </p>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">% Valor Declarado</label>
+                    <input class="form-input" id="cfgPercDeclaradoCalc" type="number" min="1" max="100" value="100" style="width:120px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Taxa Shopee (%)</label>
+                    <input class="form-input" id="cfgTaxaShopeeCalc" type="number" min="0" max="100" step="0.5" value="18" style="width:120px;">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Aliquota (%)</label>
+                    <input class="form-input" id="cfgImpostoSimplesCalc" type="number" min="0" max="100" step="0.5" value="4" style="width:120px;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Custo Fixo (R$)</label>
+                    <input class="form-input" id="cfgCustoFixoCalc" type="number" min="0" step="0.50" value="3" style="width:120px;">
+                </div>
+            </div>
+            <div class="form-group" style="margin-top:12px;">
+                <label class="form-label">Planilha de Custos (.xlsx)</label>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <button class="btn btn-primary btn-sm" onclick="document.getElementById('inputCustosCalc').click()">
+                        <i class="fas fa-upload"></i> Upload Planilha
+                    </button>
+                    <a class="btn btn-secondary btn-sm" href="/api/exemplo-custos" target="_blank">
+                        <i class="fas fa-download"></i> Baixar Exemplo
+                    </a>
+                    <input type="file" id="inputCustosCalc" accept=".xlsx" style="display:none;" onchange="uploadCustos(this)">
+                    <span id="lblPlanilhaCustosCalc" style="font-size:12px; color:var(--text-muted);">Nenhuma planilha carregada</span>
+                </div>
+                <span style="font-size:11px; color:var(--text-muted); margin-top:4px; display:block;">Formato: Coluna A = SKU, Coluna B = Custo unitario</span>
+            </div>
+
+            <!-- Config por loja -->
+            <div id="configLucroLojasCalc" style="margin-top:20px; display:none;">
+                <div style="font-size:13px; font-weight:600; margin-bottom:12px; color:var(--text-secondary); display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                    <span><i class="fas fa-store"></i> Configuracao Individual por Loja</span>
+                    <span style="font-size:11px; font-weight:400; color:var(--text-muted);">Deixe vazio para usar o padrao global</span>
+                    <button class="btn btn-secondary btn-sm" onclick="atualizarLojasLucro()" style="font-size:11px; margin-left:auto;">
+                        <i class="fas fa-sync-alt"></i> Atualizar Lojas
+                    </button>
+                </div>
+                <div id="tabelaConfigLojasCalc" style="overflow-x:auto;"></div>
+                <button class="btn btn-primary btn-sm" onclick="salvarConfigLucroLojas()" style="margin-top:12px;">
+                    <i class="fas fa-save"></i> Salvar Config Lojas
+                </button>
+            </div>
+        </div>
+
+        <!-- Botao gerar lucro -->
+        <div style="margin-bottom:20px;">
+            <button class="btn btn-lg" id="btnLucroCalc" onclick="gerarLucro()" style="background: #28a745; color: white; border: none; cursor: pointer; width:100%;">
+                <i class="fas fa-dollar-sign"></i> Gerar Resumo de Lucro
+            </button>
+        </div>
+
+        <!-- Resultado do lucro -->
+        <div id="resumoLucroCalc" style="margin-bottom:24px;"></div>
     </div>
 
 
@@ -2201,7 +2294,7 @@ function atualizarInfoUsuario(user) {
 // TABS
 // ================================================================
 let configCarregada = false;
-let _automacaoModoAtual = 'upseller'; // upseller | marketplace_api
+let _automacaoModoAtual = 'marketplace_api'; // sempre shopee api na demo
 
 function _isMarketplaceApiMode() {
     return _automacaoModoAtual === 'marketplace_api';
@@ -2209,21 +2302,13 @@ function _isMarketplaceApiMode() {
 
 function _aplicarModoAutomacaoUI() {
     const titulo = document.getElementById('automacaoTitulo');
-    const upCard = document.getElementById('upsellerCard');
-    const mpCard = document.getElementById('marketplaceApiCard');
+    const shopeeCard = document.getElementById('shopeeLoginCard');
     const desc = document.getElementById('execucaoManualDescricao');
 
-    if (_isMarketplaceApiMode()) {
-        if (titulo) titulo.innerHTML = '<i class="fas fa-plug"></i> Automacao - API Direta Marketplaces';
-        if (upCard) upCard.style.display = 'none';
-        if (mpCard) mpCard.style.display = '';
-        if (desc) desc.textContent = 'Executa o pipeline por API direta (Shopee), com login simplificado para assinantes.';
-    } else {
-        if (titulo) titulo.innerHTML = '<i class="fas fa-robot"></i> Automacao - Shopee + WhatsApp';
-        if (upCard) upCard.style.display = '';
-        if (mpCard) mpCard.style.display = 'none';
-        if (desc) desc.textContent = 'Executa o pipeline completo: baixar do UpSeller → processar etiquetas → enviar via WhatsApp.';
-    }
+    // Demo: sempre modo Shopee API
+    if (titulo) titulo.innerHTML = '<i class="fas fa-store" style="color:#EE4D2D;"></i> Automacao - Shopee + WhatsApp';
+    if (shopeeCard) shopeeCard.style.display = '';
+    if (desc) desc.textContent = 'Sincroniza pedidos da Shopee via API → processa etiquetas → envia via WhatsApp.';
 }
 
 function trocarTab(tab) {
@@ -2239,7 +2324,7 @@ function trocarTab(tab) {
     if (tabEl) tabEl.classList.add('active');
 
     if (tab === 'automacao' || isAutomacaoApiTab) {
-        _automacaoModoAtual = isAutomacaoApiTab ? 'marketplace_api' : 'upseller';
+        _automacaoModoAtual = 'marketplace_api'; // demo: sempre Shopee API
         _aplicarModoAutomacaoUI();
     }
 
@@ -2257,10 +2342,7 @@ function trocarTab(tab) {
         carregarAIOS();
     }
     if (realTab === 'calculadora') {
-        const iframe = document.getElementById('iframeCalculadora');
-        if (iframe && !iframe.src.includes('5050')) {
-            iframe.src = 'http://localhost:5050';
-        }
+        carregarLojasLucro();
     }
     if (realTab === 'funcionarios') {
         carregarTabFuncionarios();
@@ -4143,11 +4225,8 @@ async function carregarDadosAutomacao() {
     _initCollapsibleCards();
     await _carregarOpcoesAlvoAutomacao(true);
     _aplicarPrefixoPaisWhatsApp();
-    if (_isMarketplaceApiMode()) {
-        carregarMarketplaceApiConfig();
-    } else {
-        carregarUpsellerConfig();
-    }
+    // Demo: sempre usa Shopee API, verifica conexao ao carregar
+    carregarShopeeLoginStatus();
     verificarWhatsApp();
     carregarConfigWhatsApp();
     atualizarResumoFilaWhatsApp();
@@ -4579,7 +4658,31 @@ async function desconectarMarketplaceApi() {
     if (panel) panel.remove();
 }
 
-// --- UPSELLER ---
+// --- SHOPEE LOGIN STATUS (demo) ---
+async function carregarShopeeLoginStatus() {
+    const statusEl = document.getElementById('shopeeLoginStatus');
+    const divOff = document.getElementById('shopeeDesconectado');
+    const divOn = document.getElementById('shopeeConectado');
+    const syncEl = document.getElementById('shopeeUltimaSync');
+    try {
+        const res = await fetchAPI('/api/marketplace/status');
+        if (res && res.status === 'ok') {
+            if (statusEl) { statusEl.textContent = 'Conectado'; statusEl.style.background = '#25D366'; }
+            if (divOff) divOff.style.display = 'none';
+            if (divOn) divOn.style.display = 'block';
+            if (syncEl && res.ultima_sincronizacao) syncEl.textContent = 'Ultima sincronizacao: ' + res.ultima_sincronizacao;
+        } else {
+            if (statusEl) { statusEl.textContent = 'Desconectado'; statusEl.style.background = '#e74c3c'; }
+            if (divOff) divOff.style.display = 'block';
+            if (divOn) divOn.style.display = 'none';
+            if (syncEl) syncEl.textContent = '';
+        }
+    } catch (e) {
+        if (statusEl) { statusEl.textContent = 'Erro'; statusEl.style.background = '#e74c3c'; }
+    }
+}
+
+// --- UPSELLER (legacy - mantido para compatibilidade) ---
 async function carregarUpsellerConfig() {
     const data = await fetchAPI('/api/upseller/status');
     const statusEl = document.getElementById('upsellerStatus');
@@ -6540,7 +6643,7 @@ async function salvarAgendamento() {
         method: 'POST',
         body: JSON.stringify({
             nome, hora, dias_semana: dias,
-            baixar_upseller: document.getElementById('agendUpseller').checked,
+            sincronizar_shopee: document.getElementById('agendUpseller').checked,
             processar_etiquetas: document.getElementById('agendProcessar').checked,
             enviar_whatsapp: document.getElementById('agendWhatsapp').checked,
             lojas,
