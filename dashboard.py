@@ -1265,14 +1265,9 @@ def index():
     except Exception as e:
         print(f"[ROTA /] auto-login erro: {e}", flush=True, file=sys.stderr)
 
-    # Servir demo.html na versao Railway (producao usa index.html localmente)
+    # Servir index.html (versão desktop original)
     import os as _os
-    demo_path = _os.path.join(app.static_folder, 'demo.html')
-    # Se demo.html existir, servir demo; senao, fallback para index.html
-    if _os.path.exists(demo_path):
-        html_path = demo_path
-    else:
-        html_path = _os.path.join(app.static_folder, 'index.html')
+    html_path = _os.path.join(app.static_folder, 'index.html')
     with open(html_path, 'r', encoding='utf-8') as f:
         html = f.read()
 
