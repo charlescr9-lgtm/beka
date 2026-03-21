@@ -4223,27 +4223,9 @@ async function adminRevogarAcesso() {
 async function carregarDadosAutomacao() {
     _aplicarModoAutomacaoUI();
     _initCollapsibleCards();
-    await _carregarOpcoesAlvoAutomacao(true);
-    _aplicarPrefixoPaisWhatsApp();
-    // Demo: sempre usa Shopee API, verifica conexao ao carregar
-    carregarShopeeLoginStatus();
-    verificarWhatsApp();
-    carregarConfigWhatsApp();
-    atualizarResumoFilaWhatsApp();
-    iniciarPollingFilaWhatsApp();
-    carregarConfigEmail();
-    const contatosLoad = Promise.allSettled([
-        carregarContatos(false),
-        carregarContatosEmail(false)
-    ]);
-    carregarLojasPersistentes();
-    _atualizarCardEnvioDisponivel();
-    carregarHistoricoGeradas24h();
-    carregarAgendamentos();
-    carregarHistorico();
+    // Demo: nao carrega dados reais — mostra tela limpa para revisores
+    // Shopee e WhatsApp ficam "Desconectado" por padrao
     carregarLotes();
-    await contatosLoad;
-    carregarContatosUnificados(_contatosCache, _contatosEmailCache);
 }
 
 let _automacaoAlvosCache = { lojas: [], grupos: [] };
