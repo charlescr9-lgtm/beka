@@ -1294,6 +1294,51 @@ def index():
     return resp
 
 
+@app.route('/demo')
+def demo_page():
+    """Serve a versao de demonstracao do dashboard (sem AIOS, Funcionarios, com Shopee API)."""
+    import sys, os as _os
+    print(f"[ROTA /demo] Servindo versao demonstracao", flush=True, file=sys.stderr)
+
+    # Auto-login identico ao /
+    auto_token = ""
+    auto_user_json = "{}"
+    try:
+        user = User.query.first()
+        if user:
+            token = create_access_token(identity=str(user.id))
+            auto_token = token
+            auto_user_json = json.dumps(user.to_dict())
+    except Exception as e:
+        print(f"[ROTA /demo] auto-login erro: {e}", flush=True, file=sys.stderr)
+
+    html_path = _os.path.join(app.static_folder, 'demo.html')
+    with open(html_path, 'r', encoding='utf-8') as f:
+        html = f.read()
+
+    if auto_token:
+        safe_user_json = auto_user_json.replace("'", "\\'")
+        inject_script = (
+            "<script>\n"
+            "// Auto-login injetado pelo servidor (demo)\n"
+            "localStorage.setItem('token', '" + auto_token + "');\n"
+            "localStorage.setItem('user', '" + safe_user_json + "');\n"
+            "</script>"
+        )
+        html = html.replace('</head>', inject_script + '\n</head>')
+
+    resp = make_response(html)
+    resp.content_type = 'text/html; charset=utf-8'
+    resp.cache_control.no_store = True
+    resp.cache_control.no_cache = True
+    resp.cache_control.must_revalidate = True
+    resp.cache_control.max_age = 0
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    resp.headers['X-Beka-Ui-Version'] = 'demo-v1'
+    return resp
+
+
 @app.route('/login')
 def login_page():
     # Redireciona para o dashboard — login automatico via /api/auth/local-token
