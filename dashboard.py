@@ -7609,6 +7609,22 @@ def api_marketplace_desconectar():
     return jsonify({"status": "desconectado", "mensagem": "API direta desativada"})
 
 
+@app.route('/api/marketplace/_export-tokens', methods=['GET'])
+@jwt_required()
+def api_marketplace_export_tokens():
+    """Temporario: exporta tokens para sincronizar com desktop local."""
+    user_id = int(get_jwt_identity())
+    cfg = _get_or_create_marketplace_api_config(user_id, "shopee")
+    return jsonify({
+        "shop_id": cfg.shop_id or "",
+        "access_token": cfg.get_access_token() or "",
+        "refresh_token": cfg.get_refresh_token() or "",
+        "token_expires_at": str(cfg.token_expires_at or ""),
+        "status_conexao": cfg.status_conexao or "",
+        "loja_nome": cfg.loja_nome or "",
+    })
+
+
 @app.route('/api/marketplace/lojas', methods=['GET'])
 @jwt_required()
 def api_marketplace_lojas_listar():
